@@ -15,3 +15,7 @@ Thumbs.db
 Desktop.ini
 
 model/
+
+# Secure assets (encrypted keys)
+app/src/main/assets/secure/*.enc
+app/release
