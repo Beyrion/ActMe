@@ -1,0 +1,11 @@
+model_provider = "Model_Studio_Token_Plan"
+model = "qwen3.6-plus"
+model_reasoning_effort = "medium"
+disable_response_storage = true
+preferred_auth_method = "apikey"
+
+[model_providers.Model_Studio_Token_Plan]
+name = "Model_Studio_Token_Plan"
+base_url = "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+wire_api = "chat_completions"
+requires_openai_auth = false
