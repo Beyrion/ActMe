@@ -42,7 +42,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.MicOff
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -177,9 +177,7 @@ fun ChatScreen(
             val text = manager.transcribe(file)
             Log.i("ChatScreen", "ASR transcribed: $text")
             if (text.isNotBlank()) {
-                input = text
-                // Auto-send the transcribed text to the LLM
-                onSend(text, null, null)
+                input = input + text
             } else {
                 Log.w("ChatScreen", "ASR returned blank text")
                 Toast.makeText(context, "未识别到语音内容", Toast.LENGTH_SHORT).show()
@@ -349,19 +347,6 @@ fun ChatScreen(
                     }
                 }
 
-                if (isTranscribing) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(bottom = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                        Text("正在识别语音...", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
-                    }
-                }
-
                 Surface(
                     shape = RoundedCornerShape(24.dp),
                     color = MaterialTheme.colorScheme.surface,
@@ -393,31 +378,77 @@ fun ChatScreen(
                             }) {
                                 Icon(Icons.Filled.Image, contentDescription = "选择图片")
                             }
-                            if (isVoiceRecording) {
-                                IconButton(onClick = {
-                                    audioRecorder?.stopRecording()
-                                    isVoiceRecording = false
-                                    onStopRecording?.invoke()
-                                }) {
-                                    Icon(Icons.Filled.MicOff, contentDescription = "停止录音", tint = Color.Red)
-                                }
-                            } else {
-                                IconButton(onClick = {
-                                    if (!isModelReady) {
-                                        showModelDialog = true
-                                    } else {
-                                        val act = activity ?: return@IconButton
-                                        if (ContextCompat.checkSelfPermission(act, Manifest.permission.RECORD_AUDIO)
-                                            == PackageManager.PERMISSION_GRANTED) {
-                                            audioRecorder?.startRecording(context.cacheDir)
-                                            isVoiceRecording = true
-                                            onStartRecording?.invoke()
-                                        } else {
-                                            audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                            when {
+                                isVoiceRecording -> {
+                                    Surface(
+                                        shape = RoundedCornerShape(24.dp),
+                                        color = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.clickable {
+                                            audioRecorder?.stopRecording()
+                                            isVoiceRecording = false
+                                            onStopRecording?.invoke()
+                                        }
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        ) {
+                                            Icon(
+                                                Icons.Filled.Stop,
+                                                contentDescription = "停止录音",
+                                                tint = Color.White,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                            Text(
+                                                "对话中",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = Color.White
+                                            )
                                         }
                                     }
-                                }) {
-                                    Icon(Icons.Filled.Mic, contentDescription = "语音输入")
+                                }
+                                isTranscribing -> {
+                                    Surface(
+                                        shape = RoundedCornerShape(24.dp),
+                                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        ) {
+                                            CircularProgressIndicator(
+                                                modifier = Modifier.size(16.dp),
+                                                strokeWidth = 2.dp,
+                                                color = Color.White
+                                            )
+                                            Text(
+                                                "识别中",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = Color.White
+                                            )
+                                        }
+                                    }
+                                }
+                                else -> {
+                                    IconButton(onClick = {
+                                        if (!isModelReady) {
+                                            showModelDialog = true
+                                        } else {
+                                            val act = activity ?: return@IconButton
+                                            if (ContextCompat.checkSelfPermission(act, Manifest.permission.RECORD_AUDIO)
+                                                == PackageManager.PERMISSION_GRANTED) {
+                                                audioRecorder?.startRecording(context.cacheDir)
+                                                isVoiceRecording = true
+                                                onStartRecording?.invoke()
+                                            } else {
+                                                audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                            }
+                                        }
+                                    }) {
+                                        Icon(Icons.Filled.Mic, contentDescription = "语音输入")
+                                    }
                                 }
                             }
                             Spacer(modifier = Modifier.weight(1f))
