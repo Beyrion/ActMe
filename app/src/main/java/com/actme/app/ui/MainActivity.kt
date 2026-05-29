@@ -9,6 +9,17 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.Chat
+import androidx.compose.material.icons.filled.Psychology
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.outlined.CalendarMonth
+import androidx.compose.material.icons.outlined.Chat
+import androidx.compose.material.icons.outlined.Psychology
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
@@ -32,6 +43,8 @@ import com.actme.app.ui.memory.MemoryListScreen
 import com.actme.app.ui.memory.MemoryViewModel
 import com.actme.app.ui.schedule.ScheduleScreen
 import com.actme.app.ui.schedule.ScheduleViewModel
+import com.actme.app.ui.settings.SettingsScreen
+import com.actme.app.ui.settings.SettingsViewModel
 import java.io.File
 
 class MainActivity : ComponentActivity() {
@@ -43,6 +56,7 @@ class MainActivity : ComponentActivity() {
     private val chatViewModel: ChatViewModel by viewModels { viewModelFactory }
     private val memoryViewModel: MemoryViewModel by viewModels { viewModelFactory }
     private val scheduleViewModel: ScheduleViewModel by viewModels { viewModelFactory }
+    private val settingsViewModel: SettingsViewModel by viewModels { viewModelFactory }
 
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -55,9 +69,10 @@ class MainActivity : ComponentActivity() {
         setContent {
             val navController = rememberNavController()
             val tabs = listOf(
-                BottomTab("chat", "聊天", "聊"),
-                BottomTab("memory", "记忆", "忆"),
-                BottomTab("schedule", "日程", "程")
+                BottomTab("chat", "聊天", { icon: Boolean -> if (icon) Icons.Filled.Chat else Icons.Outlined.Chat }),
+                BottomTab("memory", "记忆", { icon: Boolean -> if (icon) Icons.Filled.Psychology else Icons.Outlined.Psychology }),
+                BottomTab("schedule", "日程", { icon: Boolean -> if (icon) Icons.Filled.CalendarMonth else Icons.Outlined.CalendarMonth }),
+                BottomTab("settings", "设置", { icon: Boolean -> if (icon) Icons.Filled.Settings else Icons.Outlined.Settings })
             )
             val backStack by navController.currentBackStackEntryAsState()
             val current = backStack?.destination
@@ -79,7 +94,7 @@ class MainActivity : ComponentActivity() {
                                         popUpTo(navController.graph.startDestinationId) { saveState = true }
                                     }
                                 },
-                                icon = { Text(tab.emoji) },
+                                icon = { Icon(tab.icon(selected), contentDescription = tab.label) },
                                 label = { Text(tab.label) }
                             )
                         }
@@ -92,12 +107,12 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.padding(padding)
                 ) {
                     composable("chat") {
-                        val sessions by chatViewModel.sessions.collectAsStateWithLifecycle(emptyList())
+                        val sessionInfos by chatViewModel.sessionInfos.collectAsStateWithLifecycle(emptyList())
                         val currentConversationId by chatViewModel.currentConversationId.collectAsStateWithLifecycle(null)
                         val messages by chatViewModel.messages.collectAsStateWithLifecycle(emptyList())
                         val isRecording by chatViewModel.isRecording.collectAsStateWithLifecycle(false)
                         ChatScreen(
-                            sessions = sessions,
+                            sessionInfos = sessionInfos,
                             currentConversationId = currentConversationId,
                             messages = messages,
                             onCreateConversation = chatViewModel::createNewConversation,
@@ -168,6 +183,11 @@ class MainActivity : ComponentActivity() {
                             onAddBySubAgent = scheduleViewModel::addScheduleBySubAgent
                         )
                     }
+                    composable("settings") {
+                        SettingsScreen(
+                            onClearChatHistory = settingsViewModel::clearAllChatHistory
+                        )
+                    }
                 }
             }
         }
@@ -180,8 +200,9 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+
 private data class BottomTab(
     val route: String,
     val label: String,
-    val emoji: String
+    val icon: (Boolean) -> ImageVector
 )

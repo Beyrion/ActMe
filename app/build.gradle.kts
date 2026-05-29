@@ -216,6 +216,7 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.navigation:navigation-compose:2.8.3")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
 
@@ -274,6 +275,17 @@ val buildMnn by tasks.registering {
             )
         }
 
+        // Find cmake from SDK first, fall back to system PATH
+        val sdkCmakeDir = file("$sdkDir/cmake")
+        val cmakeBin = if (sdkCmakeDir.isDirectory) {
+            val versions = sdkCmakeDir.listFiles()?.filter { it.isDirectory }?.map { it.name }?.sortedDescending()
+            val best = versions?.firstOrNull()
+            if (best != null) file("$sdkCmakeDir/$best/bin/cmake").absolutePath else "cmake"
+        } else {
+            "cmake"
+        }
+        logger.lifecycle("Using cmake: $cmakeBin")
+
         val toolchainFile = file("$ndkDir/build/cmake/android.toolchain.cmake")
         if (!toolchainFile.exists()) {
             throw GradleException("NDK toolchain not found: ${toolchainFile.absolutePath}")
@@ -283,7 +295,7 @@ val buildMnn by tasks.registering {
         libDir.mkdirs()
 
         val cmakeArgs = listOf(
-            "cmake",
+            cmakeBin,
             mnnRoot.absolutePath,
             "-DCMAKE_TOOLCHAIN_FILE=${toolchainFile.absolutePath}",
             "-DCMAKE_BUILD_TYPE=Release",
@@ -303,6 +315,7 @@ val buildMnn by tasks.registering {
             "-DMNN_BUILD_DIFFUSION=ON",
             "-DMNN_BUILD_OPENCV=ON",
             "-DMNN_IMGCODECS=ON",
+            "-DMNN_KLEIDIAI=OFF",
             "-DNATIVE_LIBRARY_OUTPUT=lib",
             "-DNATIVE_INCLUDE_OUTPUT=."
         )
@@ -321,7 +334,7 @@ val buildMnn by tasks.registering {
 
         exec {
             workingDir = buildDir
-            commandLine("cmake", "--build", ".", "--parallel", numCores.toString())
+            commandLine(cmakeBin, "--build", ".", "--parallel", numCores.toString())
         }
 
         // MNN may put libMNN.so in the build root; copy to expected location
@@ -346,9 +359,15 @@ val buildMnn by tasks.registering {
     }
 }
 
-// Wire MNN native build into the app's CMake pipeline
+// Wire MNN native build into the app's CMake pipeline.
+// Only rebuild MNN when the .so is missing or -PforceMnn is passed.
+val mnnBuiltSo = file("${rootProject.file("MNN")}/project/android/build_64/lib/libMNN.so")
+val forceMnn = project.hasProperty("forceMnn")
+
 tasks.matching { it.name.startsWith("configureCMake") }.configureEach {
-    dependsOn(buildMnn)
+    if (!mnnBuiltSo.exists() || forceMnn) {
+        dependsOn(buildMnn)
+    }
 }
 
 val pushAsrModel by tasks.registering {

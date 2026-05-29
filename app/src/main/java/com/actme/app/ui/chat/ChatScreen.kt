@@ -9,32 +9,48 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.DrawerValue
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.Forum
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.MicOff
+import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
-import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDrawerState
@@ -48,7 +64,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
@@ -56,20 +71,22 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.compose.runtime.collectAsState
-import androidx.compose.foundation.layout.Spacer
 import com.actme.app.audio.AsrManager
 import com.actme.app.audio.AudioRecorderManager
 import com.actme.app.data.local.ChatMessageEntity
 import com.actme.app.data.local.ChatSessionEntity
+import com.actme.app.data.local.ChatSessionInfo
+import com.actme.app.util.formatRelativeTime
 import com.actme.app.mnn.DownloadState
 import com.actme.app.mnn.ModelManager
 import kotlinx.coroutines.launch
 import java.io.ByteArrayOutputStream
 import java.io.File
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ChatScreen(
-    sessions: List<ChatSessionEntity>,
+    sessionInfos: List<ChatSessionInfo>,
     currentConversationId: Long?,
     messages: List<ChatMessageEntity>,
     onCreateConversation: () -> Unit,
@@ -211,36 +228,96 @@ fun ChatScreen(
         drawerState = drawerState,
         drawerContent = {
             ModalDrawerSheet {
-                Text("聊天列表", modifier = Modifier.padding(horizontal = 16.dp, vertical = 16.dp))
-                Button(
-                    onClick = {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "所有会话",
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.weight(1f)
+                    )
+                    IconButton(onClick = {
                         onCreateConversation()
                         scope.launch { drawerState.close() }
-                    },
-                    modifier = Modifier.padding(horizontal = 16.dp)
-                ) {
-                    Text("新聊天")
+                    }) {
+                        Icon(Icons.Filled.Add, contentDescription = "新聊天")
+                    }
                 }
-                LazyColumn(modifier = Modifier.padding(top = 12.dp)) {
-                    items(sessions) { session ->
-                        Column(modifier = Modifier.padding(bottom = 4.dp)) {
-                            NavigationDrawerItem(
-                                label = { Text(session.title) },
-                                selected = session.id == currentConversationId,
-                                onClick = {
-                                    onSwitchConversation(session.id)
-                                    scope.launch { drawerState.close() }
-                                },
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
-                            )
-                            Row(modifier = Modifier.padding(start = 14.dp, end = 14.dp)) {
-                                TextButton(
+                LazyColumn(modifier = Modifier.padding(horizontal = 12.dp)) {
+                    items(sessionInfos, key = { it.session.id }) { info ->
+                        var showMenu by remember { mutableStateOf(false) }
+                        val session = info.session
+                        val selected = session.id == currentConversationId
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp)
+                                .combinedClickable(
                                     onClick = {
+                                        onSwitchConversation(session.id)
+                                        scope.launch { drawerState.close() }
+                                    },
+                                    onLongClick = { showMenu = true }
+                                ),
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (selected)
+                                    MaterialTheme.colorScheme.primaryContainer
+                                else
+                                    MaterialTheme.colorScheme.surface
+                            ),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(12.dp)
+                            ) {
+                                Text(
+                                    session.title,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Medium,
+                                    maxLines = 1
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        "${info.messageCount} 轮对话",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                                    )
+                                    Text(
+                                        formatRelativeTime(session.updatedAt),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                                    )
+                                }
+                            }
+                            DropdownMenu(
+                                expanded = showMenu,
+                                onDismissRequest = { showMenu = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("重命名") },
+                                    onClick = {
+                                        showMenu = false
                                         renameTarget = session
                                         renameInput = session.title
                                     }
-                                ) { Text("重命名") }
-                                TextButton(onClick = { deleteTarget = session }) { Text("删除") }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("删除", color = MaterialTheme.colorScheme.error) },
+                                    onClick = {
+                                        showMenu = false
+                                        deleteTarget = session
+                                    }
+                                )
                             }
                         }
                     }
@@ -254,8 +331,8 @@ fun ChatScreen(
                 .padding(12.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = { scope.launch { drawerState.open() } }) {
-                    Text("会话")
+                IconButton(onClick = { scope.launch { drawerState.open() } }) {
+                    Icon(Icons.Filled.Forum, contentDescription = "会话列表")
                 }
                 Text("ActMe Agent", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
             }
@@ -325,7 +402,7 @@ fun ChatScreen(
                             selectedImageMimeType = null
                             selectedImageBytes = null
                         }) {
-                            Text("✕")
+                            Icon(Icons.Filled.Image, contentDescription = "移除图片")
                         }
                     }
                 }
@@ -341,95 +418,81 @@ fun ChatScreen(
                         Text("正在识别语音...", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
                     }
                 }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                Surface(
+                    shape = RoundedCornerShape(24.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)),
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    OutlinedTextField(
-                        modifier = Modifier.weight(1f),
-                        value = input,
-                        onValueChange = { input = it },
-                        placeholder = { Text("告诉 ActMe 你现在想做什么...") }
-                    )
-                    if (sending) {
-                        CircularProgressIndicator(modifier = Modifier.padding(8.dp))
-                    } else {
-                        Button(onClick = {
-                            val text = input.trim()
-                            if (text.isNotBlank() || selectedImageBase64 != null) {
-                                onSend(text, selectedImageBase64, selectedImageMimeType)
-                                input = ""
-                                selectedImageBase64 = null
-                                selectedImageMimeType = null
-                                selectedImageBytes = null
-                            }
-                        }) {
-                            Text("发送")
-                        }
-                    }
-                }
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 4.dp),
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        IconButton(onClick = {
-                            photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                        }) {
-                            Text("🖼", modifier = Modifier.padding(4.dp))
-                        }
-                        Text("图片", style = MaterialTheme.typography.labelSmall)
-                    }
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier.padding(start = 24.dp)
-                    ) {
-                        if (isVoiceRecording) {
-                            val pulseScale by animateFloatAsState(
-                                targetValue = if (isVoiceRecording) 1.3f else 1.0f,
-                                animationSpec = tween(600),
-                                label = "pulse"
+                    Column {
+                        OutlinedTextField(
+                            modifier = Modifier.fillMaxWidth(),
+                            value = input,
+                            onValueChange = { input = it },
+                            placeholder = { Text("告诉 ActMe 你现在想做什么...") },
+                            minLines = 2,
+                            maxLines = 6,
+                            singleLine = false,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = Color.Transparent,
+                                unfocusedBorderColor = Color.Transparent
                             )
-                            Box(
-                                modifier = Modifier
-                                    .size(48.dp)
-                                    .scale(pulseScale),
-                                contentAlignment = Alignment.Center
-                            ) {
+                        )
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 8.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            IconButton(onClick = {
+                                photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                            }) {
+                                Icon(Icons.Filled.Image, contentDescription = "选择图片")
+                            }
+                            if (isVoiceRecording) {
                                 IconButton(onClick = {
                                     audioRecorder?.stopRecording()
                                     isVoiceRecording = false
                                     onStopRecording?.invoke()
                                 }) {
-                                    Text("🔴", modifier = Modifier.padding(4.dp))
+                                    Icon(Icons.Filled.MicOff, contentDescription = "停止录音", tint = Color.Red)
                                 }
-                            }
-                            Text("停止", style = MaterialTheme.typography.labelSmall, color = Color.Red)
-                        } else {
-                            IconButton(onClick = {
-                                if (!isModelReady) {
-                                    showModelDialog = true
-                                } else {
-                                    val act = activity ?: return@IconButton
-                                    if (ContextCompat.checkSelfPermission(act, Manifest.permission.RECORD_AUDIO)
-                                        == PackageManager.PERMISSION_GRANTED) {
-                                        audioRecorder?.startRecording(context.cacheDir)
-                                        isVoiceRecording = true
-                                        onStartRecording?.invoke()
+                            } else {
+                                IconButton(onClick = {
+                                    if (!isModelReady) {
+                                        showModelDialog = true
                                     } else {
-                                        audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                        val act = activity ?: return@IconButton
+                                        if (ContextCompat.checkSelfPermission(act, Manifest.permission.RECORD_AUDIO)
+                                            == PackageManager.PERMISSION_GRANTED) {
+                                            audioRecorder?.startRecording(context.cacheDir)
+                                            isVoiceRecording = true
+                                            onStartRecording?.invoke()
+                                        } else {
+                                            audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                        }
                                     }
+                                }) {
+                                    Icon(Icons.Filled.Mic, contentDescription = "语音输入")
                                 }
-                            }) {
-                                Text("🎤", modifier = Modifier.padding(4.dp))
                             }
-                            Text("语音", style = MaterialTheme.typography.labelSmall)
+                            Spacer(modifier = Modifier.weight(1f))
+                            if (sending) {
+                                CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                            } else {
+                                IconButton(onClick = {
+                                    val text = input.trim()
+                                    if (text.isNotBlank() || selectedImageBase64 != null) {
+                                        onSend(text, selectedImageBase64, selectedImageMimeType)
+                                        input = ""
+                                        selectedImageBase64 = null
+                                        selectedImageMimeType = null
+                                        selectedImageBytes = null
+                                    }
+                                }) {
+                                    Icon(Icons.Filled.ArrowUpward, contentDescription = "发送")
+                                }
+                            }
                         }
                     }
                 }

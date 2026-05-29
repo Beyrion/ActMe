@@ -3,13 +3,17 @@ package com.actme.app.ui.chat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.actme.app.data.local.ChatMessageEntity
-import com.actme.app.data.local.ChatSessionEntity
+import com.actme.app.data.local.ChatSessionInfo
 import com.actme.app.data.repo.ActMeRepository
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -17,7 +21,22 @@ class ChatViewModel(private val repository: ActMeRepository) : ViewModel() {
     private val currentConversationIdMutable = MutableStateFlow<Long?>(null)
     val currentConversationId: StateFlow<Long?> = currentConversationIdMutable
 
-    val sessions: StateFlow<List<ChatSessionEntity>> = repository.chatSessions
+    val sessionInfos: StateFlow<List<ChatSessionInfo>> = repository.chatSessions
+        .flatMapLatest { sessions ->
+            flow {
+                val infos = coroutineScope {
+                    sessions.map { session ->
+                        async {
+                            ChatSessionInfo(
+                                session = session,
+                                messageCount = repository.getMessageCount(session.id)
+                            )
+                        }
+                    }.awaitAll()
+                }
+                emit(infos)
+            }
+        }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     val messages: StateFlow<List<ChatMessageEntity>> = currentConversationIdMutable

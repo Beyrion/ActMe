@@ -11,6 +11,11 @@ data class ChatSessionEntity(
     val updatedAt: Long = System.currentTimeMillis()
 )
 
+data class ChatSessionInfo(
+    val session: ChatSessionEntity,
+    val messageCount: Int
+)
+
 @Entity(tableName = "chat_messages")
 data class ChatMessageEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,

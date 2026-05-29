@@ -38,6 +38,10 @@ class ActMeRepository(
     private val reminderScheduler: ReminderScheduler
 ) {
     val chatSessions: Flow<List<ChatSessionEntity>> = chatDao.observeSessions()
+
+    suspend fun getMessageCount(conversationId: Long): Int = withContext(Dispatchers.IO) {
+        chatDao.getMessageCount(conversationId)
+    }
     val schedules: Flow<List<ScheduleEntity>> = scheduleDao.observeAll()
     val skills: Flow<List<SkillEntity>> = skillDao.observeAll()
 

@@ -38,6 +38,9 @@ interface ChatDao {
 
     @Update
     suspend fun updateSession(session: ChatSessionEntity)
+
+    @Query("SELECT COUNT(*) FROM chat_messages WHERE conversationId = :conversationId")
+    suspend fun getMessageCount(conversationId: Long): Int
 }
 
 @Dao
