@@ -1,9 +1,14 @@
 package com.actme.app.ui.settings
 
-import androidx.lifecycle.ViewModel
+import android.app.Application
+import android.content.Context
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.actme.app.data.local.ProviderEntity
 import com.actme.app.data.repo.ActMeRepository
+import com.actme.app.mnn.DownloadState
+import com.actme.app.mnn.ModelInfo
+import com.actme.app.mnn.ModelManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -11,14 +16,49 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.io.File
 
-class SettingsViewModel(private val repository: ActMeRepository) : ViewModel() {
+class SettingsViewModel(
+    application: Application,
+    private val repository: ActMeRepository
+) : AndroidViewModel(application) {
+
+    private val prefs = application.getSharedPreferences("actme_voice_settings", Context.MODE_PRIVATE)
+    private val modelManager = ModelManager(application)
 
     val providers: StateFlow<List<ProviderEntity>> = repository.providers
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     private val _activeProviderId = MutableStateFlow(repository.getActiveProviderId())
     val activeProviderId: StateFlow<Long> = _activeProviderId
+
+    private val _asrLanguage = MutableStateFlow(prefs.getString("asr_language", "Chinese") ?: "Chinese")
+    val asrLanguage: StateFlow<String> = _asrLanguage
+
+    private val _isModelReady = MutableStateFlow(modelManager.isModelReady)
+    val isModelReady: StateFlow<Boolean> = _isModelReady
+
+    val downloadState: StateFlow<DownloadState> = modelManager.downloadState
+    val modelInfo: StateFlow<ModelInfo?> = modelManager.modelInfo
+
+    fun setAsrLanguage(lang: String) {
+        _asrLanguage.value = lang
+        prefs.edit().putString("asr_language", lang).apply()
+    }
+
+    fun downloadModel() {
+        viewModelScope.launch {
+            try {
+                modelManager.downloadModel()
+                _isModelReady.value = modelManager.isModelReady
+            } catch (_: Exception) {}
+        }
+    }
+
+    fun deleteModel() {
+        File(modelManager.modelDir).deleteRecursively()
+        _isModelReady.value = false
+    }
 
     fun clearAllChatHistory() {
         viewModelScope.launch(Dispatchers.IO) {

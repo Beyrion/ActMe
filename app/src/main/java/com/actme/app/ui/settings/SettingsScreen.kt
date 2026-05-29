@@ -3,6 +3,7 @@ package com.actme.app.ui.settings
 import android.content.pm.PackageManager
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -17,6 +18,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Info
 import com.actme.app.data.local.ProviderEntity
@@ -24,6 +26,8 @@ import androidx.compose.material.icons.outlined.Api
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
@@ -47,12 +51,19 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.actme.app.mnn.DownloadState
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     providers: List<ProviderEntity>,
     activeProviderId: Long,
+    isModelReady: Boolean,
+    downloadState: DownloadState,
+    asrLanguage: String,
+    onSetAsrLanguage: (String) -> Unit,
+    onDownloadModel: () -> Unit,
+    onDeleteModel: () -> Unit,
     onClearChatHistory: () -> Unit,
     onAddProvider: (String, String, String, String) -> Unit,
     onUpdateProvider: (Long, String, String, String, String) -> Unit,
@@ -74,6 +85,8 @@ fun SettingsScreen(
     var editingProvider by remember { mutableStateOf<ProviderEntity?>(null) }
     var showAddDialog by remember { mutableStateOf(false) }
     var deleteTarget by remember { mutableStateOf<ProviderEntity?>(null) }
+    var showDeleteModelDialog by remember { mutableStateOf(false) }
+    var langExpanded by remember { mutableStateOf(false) }
 
     // Clear history dialog
     if (showClearDialog) {
@@ -107,6 +120,24 @@ fun SettingsScreen(
             },
             dismissButton = {
                 TextButton(onClick = { deleteTarget = null }) { Text("取消") }
+            }
+        )
+    }
+
+    // Delete model confirmation
+    if (showDeleteModelDialog) {
+        AlertDialog(
+            onDismissRequest = { showDeleteModelDialog = false },
+            title = { Text("删除语音模型") },
+            text = { Text("确定要删除本地语音识别模型吗？删除后需重新下载才能使用语音输入。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    onDeleteModel()
+                    showDeleteModelDialog = false
+                }) { Text("删除", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteModelDialog = false }) { Text("取消") }
             }
         )
     }
@@ -219,7 +250,7 @@ fun SettingsScreen(
                                 maxLines = 1
                             )
                         }
-                                    IconButton(onClick = { editingProvider = provider }) {
+                        IconButton(onClick = { editingProvider = provider }) {
                             Icon(
                                 Icons.Outlined.Info,
                                 contentDescription = "编辑",
@@ -240,9 +271,129 @@ fun SettingsScreen(
         }
 
         Spacer(Modifier.height(16.dp))
-
         HorizontalDivider()
+        Spacer(Modifier.height(8.dp))
 
+        // ---- 语音 ----
+        Text(
+            "语音",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp)
+        )
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        ) {
+            ListItem(
+                headlineContent = { Text("本地语音识别模型") },
+                trailingContent = {
+                    when {
+                        isModelReady -> {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Text(
+                                    "已下载",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                IconButton(
+                                    onClick = { showDeleteModelDialog = true },
+                                    modifier = Modifier.size(32.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Outlined.DeleteOutline,
+                                        contentDescription = "删除模型",
+                                        modifier = Modifier.size(18.dp),
+                                        tint = MaterialTheme.colorScheme.error
+                                    )
+                                }
+                            }
+                        }
+                        downloadState is DownloadState.Downloading -> {
+                            val state = downloadState as DownloadState.Downloading
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp
+                                )
+                                Text(
+                                    "${(state.currentFileProgress * 100).toInt()}%",
+                                    style = MaterialTheme.typography.labelSmall
+                                )
+                            }
+                        }
+                        downloadState is DownloadState.Checking -> {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp
+                            )
+                        }
+                        else -> {
+                            TextButton(onClick = onDownloadModel) {
+                                Text("下载")
+                            }
+                        }
+                    }
+                }
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                    Text(
+                        "语音输入语言偏好",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        "选择首要语言，以提升本地语音识别模型的准确性",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    )
+                }
+                Box {
+                    TextButton(onClick = { langExpanded = true }) {
+                        Text(
+                            if (asrLanguage == "Chinese") "中文" else "English",
+                            style = MaterialTheme.typography.labelMedium
+                        )
+                        Icon(
+                            Icons.Filled.ArrowDropDown,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = langExpanded,
+                        onDismissRequest = { langExpanded = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("中文") },
+                            onClick = { onSetAsrLanguage("Chinese"); langExpanded = false }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("English") },
+                            onClick = { onSetAsrLanguage("English"); langExpanded = false }
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
+        HorizontalDivider()
         Spacer(Modifier.height(8.dp))
 
         // ---- 操作 ----
