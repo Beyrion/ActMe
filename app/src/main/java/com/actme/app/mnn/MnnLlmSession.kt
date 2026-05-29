@@ -6,6 +6,12 @@ import org.json.JSONObject
 
 class MnnLlmSession {
 
+    companion object {
+        init {
+            System.loadLibrary("actme_jni")
+        }
+    }
+
     @Volatile
     private var nativePtr: Long = 0
 
@@ -33,7 +39,9 @@ class MnnLlmSession {
     }
 
     suspend fun submit(prompt: String): String = withContext(Dispatchers.IO) {
-        nativeSubmit(nativePtr, prompt)
+        val result = nativeSubmit(nativePtr, prompt)
+        android.util.Log.i("MnnLlmSession", "submit result (${result.length} chars): ${result.take(200)}")
+        result
     }
 
     fun reset() {

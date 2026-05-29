@@ -8,7 +8,6 @@
 #include "mls_log.h"
 #include "utf8_stream_processor.hpp"
 #include "llm_stream_buffer.hpp"
-#include "processor.h"
 
 namespace mls {
 
@@ -58,7 +57,7 @@ LlmSession::~LlmSession() {
 
 bool LlmSession::load() {
     lastLoadError_.clear();
-    llm_ = Llm::createLLM(modelPath_);
+    llm_ = Llm::createLLM(modelPath_ + "/config.json");
     if (llm_ == nullptr) {
         lastLoadError_ = "createLLM failed for config: " + modelPath_;
         MNN_DEBUG("Failed to create LLM: %s", lastLoadError_.c_str());
@@ -103,14 +102,8 @@ const MNN::Transformer::LlmContext* LlmSession::response(
 
     history_.emplace_back("user", prompt);
 
-    std::string fullPromptText;
-    for (auto& it : history_) {
-        fullPromptText += it.second;
-    }
-    MNN_DEBUG("Full prompt length: %zu, max_new_tokens: %d", fullPromptText.size(), maxNewTokens_);
-
-    auto multimodalResult = processMultimodalPrompt(fullPromptText);
-    restoreAndroidSteppingStatusIfNeeded(llm_);
+    MNN_DEBUG("Response: history=%zu, max_new_tokens=%d",
+              history_.size(), maxNewTokens_);
 
     // Stream callback: accumulate response via utf8 processor -> eop detection
     std::string responseStringForDebug;
@@ -140,13 +133,10 @@ const MNN::Transformer::LlmContext* LlmSession::response(
     });
     std::ostream outputStream(&streamBuffer);
 
-    if (multimodalResult.has_multimodal) {
-        MNN_DEBUG("Using multimodal API for audio/image prompt");
-        llm_->response(multimodalResult.multimodal_prompt, &outputStream, "<eop>", 0);
-    } else {
-        MNN_DEBUG("Using text API, history count: %zu", history_.size());
-        llm_->response(history_, &outputStream, "<eop>", 0);
-    }
+    restoreAndroidSteppingStatusIfNeeded(llm_);
+    // Prefill only — tokenizer_encode (virtual in Omni) handles audio/img tags.
+    // Then stepping decode one token at a time for streaming control.
+    llm_->response(history_, &outputStream, "<eop>", 0);
 
     // Stepping decode loop — one token at a time for streaming
     while (!stopRequested_ && !generateTextEnd_ && currentSize < maxNewTokens_) {

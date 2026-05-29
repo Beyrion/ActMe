@@ -152,11 +152,11 @@ fun ChatScreen(
     // Trigger ASR when recording file is ready
     LaunchedEffect(recordingFile) {
         val file = recordingFile ?: return@LaunchedEffect
-        recordingFile = null
 
         val manager = asrManager
         if (manager == null) {
             showModelDialog = true
+            recordingFile = null
             return@LaunchedEffect
         }
 
@@ -170,9 +170,13 @@ fun ChatScreen(
                 }
             }
             val text = manager.transcribe(file)
+            Log.i("ChatScreen", "ASR transcribed: $text")
             if (text.isNotBlank()) {
-                input = if (input.isBlank()) text else "$input $text"
+                input = text
+                // Auto-send the transcribed text to the LLM
+                onSend(text, null, null)
             } else {
+                Log.w("ChatScreen", "ASR returned blank text")
                 Toast.makeText(context, "未识别到语音内容", Toast.LENGTH_SHORT).show()
             }
         } catch (e: Exception) {
@@ -181,6 +185,7 @@ fun ChatScreen(
         } finally {
             isTranscribing = false
             file.delete()
+            recordingFile = null  // clear trigger only after all work is done
         }
     }
 

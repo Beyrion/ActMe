@@ -130,32 +130,26 @@ Java_com_actme_app_mnn_MnnLlmSession_nativeSubmit(JNIEnv* env, jobject thiz,
     MNN_DEBUG("nativeSubmit: prompt length=%zu", promptStr.size());
 
     std::string fullResponse;
-    std::mutex responseMutex;
-    std::condition_variable cv;
-    bool done = false;
 
     {
         std::lock_guard<std::mutex> lock(nativeSession->mutex);
         nativeSession->busy = true;
     }
 
+    // response() is synchronous — it blocks until generation finishes
+    // (eop, max_tokens, or natural end). Accumulate text via callback.
     nativeSession->session->response(promptStr,
         [&](const std::string& chunk, bool isEop) -> bool {
-            std::lock_guard<std::mutex> lock(responseMutex);
             if (!isEop) {
                 fullResponse += chunk;
             }
             if (isEop) {
-                done = true;
-                cv.notify_one();
+                MNN_DEBUG("nativeSubmit: eop received, total response length=%zu", fullResponse.size());
             }
             return false;  // never request stop
         });
 
-    {
-        std::unique_lock<std::mutex> lock(responseMutex);
-        cv.wait(lock, [&] { return done; });
-    }
+    MNN_DEBUG("nativeSubmit: generation complete, response length=%zu", fullResponse.size());
 
     {
         std::lock_guard<std::mutex> lock(nativeSession->mutex);
