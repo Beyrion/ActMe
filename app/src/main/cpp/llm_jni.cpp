@@ -159,6 +159,53 @@ Java_com_actme_app_mnn_MnnLlmSession_nativeSubmit(JNIEnv* env, jobject thiz,
     return env->NewStringUTF(fullResponse.c_str());
 }
 
+JNIEXPORT jstring JNICALL
+Java_com_actme_app_mnn_MnnLlmSession_nativeSubmitRaw(JNIEnv* env, jobject thiz,
+                                                       jlong nativePtr,
+                                                       jstring prompt) {
+    auto* nativeSession = reinterpret_cast<NativeSession*>(nativePtr);
+    if (!nativeSession || !nativeSession->session) {
+        jclass exClass = env->FindClass("java/lang/IllegalStateException");
+        if (exClass) {
+            env->ThrowNew(exClass, "Session not initialized");
+        }
+        return nullptr;
+    }
+
+    const char* promptCstr = env->GetStringUTFChars(prompt, nullptr);
+    std::string promptStr(promptCstr);
+    env->ReleaseStringUTFChars(prompt, promptCstr);
+
+    MNN_DEBUG("nativeSubmitRaw: prompt length=%zu", promptStr.size());
+
+    std::string fullResponse;
+
+    {
+        std::lock_guard<std::mutex> lock(nativeSession->mutex);
+        nativeSession->busy = true;
+    }
+
+    nativeSession->session->responseRaw(promptStr,
+        [&](const std::string& chunk, bool isEop) -> bool {
+            if (!isEop) {
+                fullResponse += chunk;
+            }
+            if (isEop) {
+                MNN_DEBUG("nativeSubmitRaw: eop received, total response length=%zu", fullResponse.size());
+            }
+            return false;
+        });
+
+    MNN_DEBUG("nativeSubmitRaw: generation complete, response length=%zu", fullResponse.size());
+
+    {
+        std::lock_guard<std::mutex> lock(nativeSession->mutex);
+        nativeSession->busy = false;
+    }
+
+    return env->NewStringUTF(fullResponse.c_str());
+}
+
 JNIEXPORT void JNICALL
 Java_com_actme_app_mnn_MnnLlmSession_nativeReset(JNIEnv* /*env*/, jobject /*thiz*/,
                                                    jlong nativePtr) {

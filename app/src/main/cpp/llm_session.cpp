@@ -164,6 +164,63 @@ const MNN::Transformer::LlmContext* LlmSession::response(
     return context;
 }
 
+const MNN::Transformer::LlmContext* LlmSession::responseRaw(
+    const std::string& prompt,
+    const std::function<bool(const std::string&, bool isEop)>& onProgress) {
+    if (llm_ == nullptr) return nullptr;
+
+    int currentSize = 0;
+    stopRequested_ = false;
+    generateTextEnd_ = false;
+    std::stringstream responseBuffer;
+
+    // ASR is a single-turn task. Reset session state so previous chat history or
+    // prompt-cache state cannot contaminate the current transcription.
+    llm_->reset();
+
+    MNN_DEBUG("Raw response: prompt_len=%zu, max_new_tokens=%d",
+              prompt.size(), maxNewTokens_);
+
+    mls::Utf8StreamProcessor utf8Processor([&](const std::string& utf8Char) {
+        bool isEop = utf8Char.find("<eop>") != std::string::npos;
+        if (!isEop) {
+            responseBuffer << utf8Char;
+            if (onProgress) {
+                stopRequested_ = stopRequested_ || onProgress(utf8Char, false);
+            }
+        } else {
+            if (onProgress) {
+                stopRequested_ = stopRequested_ || onProgress("<eop>", true);
+            }
+            generateTextEnd_ = true;
+        }
+    });
+
+    LlmStreamBuffer streamBuffer([&utf8Processor](const char* str, size_t len) {
+        utf8Processor.processStream(str, len);
+    });
+    std::ostream outputStream(&streamBuffer);
+
+    restoreAndroidSteppingStatusIfNeeded(llm_);
+    llm_->response(prompt, &outputStream, "<eop>", 0);
+
+    while (!stopRequested_ && !generateTextEnd_ && currentSize < maxNewTokens_) {
+        llm_->generate(1);
+        currentSize++;
+    }
+
+    auto context = llm_->getContext();
+    float prefillS = context->prefill_us / 1e6f;
+    float decodeS = context->decode_us / 1e6f;
+    float prefillTps = (prefillS > 0) ? context->prompt_len / prefillS : 0;
+    float decodeTps = (decodeS > 0) ? context->gen_seq_len / decodeS : 0;
+    MNN_DEBUG("RAW PERF | prefill: %d tok in %.2fs (%.1f t/s) | decode: %d tok in %.2fs (%.1f t/s)",
+              context->prompt_len, prefillS, prefillTps,
+              context->gen_seq_len, decodeS, decodeTps);
+
+    return context;
+}
+
 void LlmSession::setMaxNewTokens(int maxTokens) {
     maxNewTokens_ = maxTokens;
 }

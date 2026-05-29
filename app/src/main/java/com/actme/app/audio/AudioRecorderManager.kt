@@ -144,20 +144,20 @@ class AudioRecorderManager(
         RandomAccessFile(wavFile, "rw").use { wav ->
             // RIFF header
             wav.writeBytes("RIFF")
-            wav.writeInt((36 + pcmSize).toInt().toLittleEndian())
+            wav.writeIntLE((36 + pcmSize).toInt())
             wav.writeBytes("WAVE")
             // fmt subchunk
             wav.writeBytes("fmt ")
-            wav.writeInt(16.toLittleEndian()) // Subchunk1Size (PCM)
+            wav.writeIntLE(16) // Subchunk1Size (PCM)
             wav.writeShortLE(1) // AudioFormat (PCM = 1)
             wav.writeShortLE(numChannels)
-            wav.writeInt(SAMPLE_RATE.toLittleEndian())
-            wav.writeInt(byteRate.toLittleEndian())
+            wav.writeIntLE(SAMPLE_RATE)
+            wav.writeIntLE(byteRate)
             wav.writeShortLE(blockAlign)
             wav.writeShortLE(bitsPerSample)
             // data subchunk
             wav.writeBytes("data")
-            wav.writeInt(pcmSize.toInt().toLittleEndian())
+            wav.writeIntLE(pcmSize.toInt())
 
             // Copy PCM data to WAV
             pcmFile.inputStream().use { pcm ->
@@ -175,11 +175,10 @@ class AudioRecorderManager(
         writeByte((value shr 8) and 0xFF)
     }
 
-    private fun Int.toLittleEndian(): Int {
-        return ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(this).getInt(0)
-    }
-
-    private fun Short.toLittleEndian(): Short {
-        return ByteBuffer.allocate(2).order(ByteOrder.LITTLE_ENDIAN).putShort(this).getShort(0)
+    private fun RandomAccessFile.writeIntLE(value: Int) {
+        writeByte(value and 0xFF)
+        writeByte((value shr 8) and 0xFF)
+        writeByte((value shr 16) and 0xFF)
+        writeByte((value shr 24) and 0xFF)
     }
 }

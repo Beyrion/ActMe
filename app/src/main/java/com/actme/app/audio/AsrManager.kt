@@ -13,6 +13,7 @@ class AsrManager(
     companion object {
         const val TAG = "AsrManager"
         private const val MODEL_NAME = "Qwen3-ASR-0.6B-INT8-MNN"
+        private const val ASR_LANGUAGE = "Chinese"
 
         fun getDefaultModelPath(context: android.content.Context): String {
             return "${context.filesDir}/models/$MODEL_NAME"
@@ -38,6 +39,11 @@ class AsrManager(
                         json.put(key, llmConfig.get(key))
                     }
                 }
+                // ASR uses a fully-formed prompt template and must not be wrapped again
+                // by the generic chat template/history path.
+                json.put("use_template", false)
+                json.put("prompt_cache", false)
+                json.put("system_prompt", "")
                 json.toString()
             } else {
                 buildDefaultConfig()
@@ -61,12 +67,12 @@ class AsrManager(
     suspend fun transcribe(audioFile: File): String = withContext(Dispatchers.IO) {
         val s = session ?: throw IllegalStateException("ASR not initialized")
 
-        val prompt = "<audio>${audioFile.absolutePath}</audio>"
+        val prompt = buildAsrPrompt(audioFile)
         Log.i(TAG, "Transcribing: ${audioFile.absolutePath} (${audioFile.length()} bytes)")
         Log.i(TAG, "Prompt: $prompt")
 
         try {
-            val result = s.submit(prompt)
+            val result = s.submitRaw(prompt)
             Log.i(TAG, "ASR result: $result")
             result.trim()
         } finally {
@@ -105,6 +111,9 @@ class AsrManager(
             put("audio_start", 151669)
             put("audio_end", 151670)
             put("audio_pad", 151676)
+            put("use_template", false)
+            put("prompt_cache", false)
+            put("system_prompt", "")
             put("mllm", JSONObject().apply {
                 put("backend_type", "cpu")
                 put("thread_num", 4)
@@ -112,5 +121,11 @@ class AsrManager(
                 put("memory", "low")
             })
         }.toString()
+    }
+
+    private fun buildAsrPrompt(audioFile: File): String {
+        return "<|im_start|>system<|im_end|>" +
+            "<|im_start|>user<audio>${audioFile.absolutePath}</audio><|im_end|>" +
+            "<|im_start|>assistantlanguage $ASR_LANGUAGE<asr_text>"
     }
 }
