@@ -26,6 +26,20 @@ class ChatViewModel(private val repository: ActMeRepository) : ViewModel() {
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     val sending = MutableStateFlow(false)
+    val isRecording = MutableStateFlow(false)
+    val transcribedText = MutableStateFlow<String?>(null)
+
+    fun setRecording(recording: Boolean) {
+        isRecording.value = recording
+    }
+
+    fun onVoiceTranscribed(text: String) {
+        transcribedText.value = text
+    }
+
+    fun clearTranscribedText() {
+        transcribedText.value = null
+    }
 
     init {
         viewModelScope.launch {

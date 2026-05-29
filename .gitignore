@@ -19,3 +19,5 @@ model/
 # Secure assets (encrypted keys)
 app/src/main/assets/secure/*.enc
 app/release
+app/.cxx/
+app/src/main/jniLibs/

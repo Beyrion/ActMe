@@ -111,6 +111,11 @@ val importCodexSkills by tasks.registering {
 android {
     namespace = "com.actme.app"
     compileSdk = 34
+    ndkVersion = "27.2.12479018"
+
+    androidResources {
+        noCompress += listOf("mnn", "weight", "bin", "txt", "json")
+    }
 
     defaultConfig {
         applicationId = "com.actme.app"
@@ -120,6 +125,10 @@ android {
         versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        ndk {
+            abiFilters += listOf("arm64-v8a")
+        }
 
         val localProp = rootProject.file("local.properties")
         val localPackKey = if (localProp.exists()) {
@@ -148,6 +157,14 @@ android {
             .replace("\\", "\\\\")
             .replace("\"", "\\\"")
         buildConfigField("String", "BUNDLE_KEY_PASSPHRASE", "\"$escapedPassphrase\"")
+
+        externalNativeBuild {
+            cmake {
+                cppFlags += "-std=c++17"
+                arguments += "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON"
+                arguments += "-DANDROID_STL=c++_shared"
+            }
+        }
     }
 
     buildFeatures {
@@ -169,7 +186,17 @@ android {
 
     sourceSets.getByName("main").assets.srcDir(generatedAssetsDir)
 
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
+
     packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
@@ -212,4 +239,133 @@ dependencies {
 tasks.matching { it.name == "preBuild" }.configureEach {
     dependsOn(bundleCodexAuth)
     dependsOn(importCodexSkills)
+}
+
+val buildMnn by tasks.registering {
+    group = "actme"
+    description = "Build libMNN.so with LLM+omni for Android via CMake+NDK (cross-platform)"
+
+    val mnnRoot = rootProject.file("MNN")
+    val buildDir = file("$mnnRoot/project/android/build_64")
+    val libDir = file("$buildDir/lib")
+    val outputSo = file("$libDir/libMNN.so")
+
+    // Track MNN sources for incremental builds
+    inputs.dir(file("$mnnRoot/include"))
+    inputs.dir(file("$mnnRoot/source"))
+    inputs.dir(file("$mnnRoot/express"))
+    inputs.dir(file("$mnnRoot/transformers"))
+    inputs.dir(file("$mnnRoot/tools"))
+    inputs.dir(file("$mnnRoot/schema"))
+    inputs.file(file("$mnnRoot/CMakeLists.txt"))
+
+    outputs.file(outputSo)
+
+    doLast {
+        val sdkDir = android.sdkDirectory
+        val ndkVersion = android.ndkVersion
+            ?: throw GradleException("ndkVersion not set in app/build.gradle.kts")
+        val ndkDir = file("$sdkDir/ndk/$ndkVersion")
+
+        if (!ndkDir.exists()) {
+            throw GradleException(
+                "NDK $ndkVersion not found at ${ndkDir.absolutePath}. " +
+                "Install it via SDK Manager (Tools > SDK Manager > SDK Tools > NDK)."
+            )
+        }
+
+        val toolchainFile = file("$ndkDir/build/cmake/android.toolchain.cmake")
+        if (!toolchainFile.exists()) {
+            throw GradleException("NDK toolchain not found: ${toolchainFile.absolutePath}")
+        }
+
+        buildDir.mkdirs()
+        libDir.mkdirs()
+
+        val cmakeArgs = listOf(
+            "cmake",
+            mnnRoot.absolutePath,
+            "-DCMAKE_TOOLCHAIN_FILE=${toolchainFile.absolutePath}",
+            "-DCMAKE_BUILD_TYPE=Release",
+            "-DANDROID_ABI=arm64-v8a",
+            "-DANDROID_STL=c++_static",
+            "-DANDROID_NATIVE_API_LEVEL=android-26",
+            "-DMNN_USE_LOGCAT=true",
+            "-DMNN_BUILD_FOR_ANDROID_COMMAND=true",
+            "-DMNN_LOW_MEMORY=ON",
+            "-DMNN_BUILD_LLM=ON",
+            "-DMNN_BUILD_LLM_OMNI=ON",
+            "-DMNN_SUPPORT_TRANSFORMER_FUSE=ON",
+            "-DMNN_SEP_BUILD=OFF",
+            "-DMNN_OPENCL=ON",
+            "-DMNN_BUILD_TEST=OFF",
+            "-DMNN_BUILD_BENCHMARK=OFF",
+            "-DMNN_BUILD_DIFFUSION=ON",
+            "-DMNN_BUILD_OPENCV=ON",
+            "-DMNN_IMGCODECS=ON",
+            "-DNATIVE_LIBRARY_OUTPUT=lib",
+            "-DNATIVE_INCLUDE_OUTPUT=."
+        )
+
+        logger.lifecycle("=== MNN CMake Configure ===")
+        logger.lifecycle("  NDK: ${ndkDir.absolutePath}")
+        logger.lifecycle("  Build dir: ${buildDir.absolutePath}")
+
+        exec {
+            workingDir = buildDir
+            commandLine(cmakeArgs)
+        }
+
+        val numCores = Runtime.getRuntime().availableProcessors()
+        logger.lifecycle("=== MNN CMake Build (parallel=$numCores) ===")
+
+        exec {
+            workingDir = buildDir
+            commandLine("cmake", "--build", ".", "--parallel", numCores.toString())
+        }
+
+        // MNN may put libMNN.so in the build root; copy to expected location
+        val altSo = file("$buildDir/libMNN.so")
+        if (!outputSo.exists() && altSo.exists()) {
+            altSo.copyTo(outputSo, overwrite = true)
+        }
+
+        if (!outputSo.exists()) {
+            throw GradleException(
+                "MNN build completed but libMNN.so not found. " +
+                "Expected: ${outputSo.absolutePath}"
+            )
+        }
+
+        // Copy to jniLibs so AGP packages it into the APK
+        val jniLibsDir = file("src/main/jniLibs/arm64-v8a")
+        jniLibsDir.mkdirs()
+        outputSo.copyTo(file("$jniLibsDir/libMNN.so"), overwrite = true)
+
+        logger.lifecycle("=== MNN build complete: ${outputSo.absolutePath} ===")
+    }
+}
+
+// Wire MNN native build into the app's CMake pipeline
+tasks.matching { it.name.startsWith("configureCMake") }.configureEach {
+    dependsOn(buildMnn)
+}
+
+val pushAsrModel by tasks.registering {
+    group = "actme"
+    description = "Push Qwen3-ASR MNN model to device via adb"
+    doLast {
+        val modelDir = rootProject.file("model/Qwen3-ASR-0.6B-INT8-MNN")
+        if (!modelDir.exists()) {
+            throw GradleException("ASR model not found at ${modelDir.absolutePath}")
+        }
+        val devicePath = "/sdcard/actme/models/Qwen3-ASR-0.6B-INT8-MNN"
+        exec {
+            commandLine("adb", "shell", "mkdir", "-p", devicePath)
+        }
+        exec {
+            commandLine("adb", "push", modelDir.absolutePath, devicePath)
+        }
+        logger.lifecycle("ASR model pushed to $devicePath")
+    }
 }

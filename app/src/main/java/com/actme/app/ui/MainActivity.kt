@@ -32,6 +32,7 @@ import com.actme.app.ui.memory.MemoryListScreen
 import com.actme.app.ui.memory.MemoryViewModel
 import com.actme.app.ui.schedule.ScheduleScreen
 import com.actme.app.ui.schedule.ScheduleViewModel
+import java.io.File
 
 class MainActivity : ComponentActivity() {
     private val viewModelFactory by lazy {
@@ -94,6 +95,7 @@ class MainActivity : ComponentActivity() {
                         val sessions by chatViewModel.sessions.collectAsStateWithLifecycle(emptyList())
                         val currentConversationId by chatViewModel.currentConversationId.collectAsStateWithLifecycle(null)
                         val messages by chatViewModel.messages.collectAsStateWithLifecycle(emptyList())
+                        val isRecording by chatViewModel.isRecording.collectAsStateWithLifecycle(false)
                         ChatScreen(
                             sessions = sessions,
                             currentConversationId = currentConversationId,
@@ -103,7 +105,10 @@ class MainActivity : ComponentActivity() {
                             onRenameConversation = chatViewModel::renameConversation,
                             onDeleteConversation = chatViewModel::deleteConversation,
                             onSend = { text, imgBase64, imgMime -> chatViewModel.sendMessage(text, imgBase64, imgMime) },
-                            sending = chatViewModel.sending.collectAsStateWithLifecycle(false).value
+                            sending = chatViewModel.sending.collectAsStateWithLifecycle(false).value,
+                            isRecording = isRecording,
+                            onStartRecording = { chatViewModel.setRecording(true) },
+                            onStopRecording = { chatViewModel.setRecording(false) }
                         )
                     }
                     composable("memory") {
