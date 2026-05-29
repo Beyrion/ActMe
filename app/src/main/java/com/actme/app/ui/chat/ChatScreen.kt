@@ -111,6 +111,7 @@ fun ChatScreen(
             audioRecorder?.startRecording(context.cacheDir)
             isVoiceRecording = true
             onStartRecording?.invoke()
+            startPreloadingModel()
         } else {
             Toast.makeText(context, "需要麦克风权限才能使用语音输入", Toast.LENGTH_SHORT).show()
         }
@@ -118,6 +119,21 @@ fun ChatScreen(
 
     // Transcribing state
     var isTranscribing by remember { mutableStateOf(false) }
+
+    // Preload ASR model in parallel with recording
+    var preloadJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    var asrLanguage by remember { mutableStateOf("Chinese") }
+
+    fun startPreloadingModel() {
+        val mgr = asrManager
+        if (mgr != null && !mgr.isLoaded && preloadJob?.isActive != true) {
+            preloadJob = scope.launch {
+                Log.i("ChatScreen", "Preloading ASR model in parallel with recording...")
+                mgr.init()
+                Log.i("ChatScreen", "ASR model preload complete, loaded=${mgr.isLoaded}")
+            }
+        }
+    }
 
     // Model manager for download
     val modelManager = remember { ModelManager(context) }
@@ -163,13 +179,17 @@ fun ChatScreen(
         isTranscribing = true
         try {
             if (!manager.isLoaded) {
-                val ok = manager.init()
-                if (!ok) {
-                    Toast.makeText(context, "ASR模型加载失败", Toast.LENGTH_SHORT).show()
-                    return@LaunchedEffect
+                // Wait for parallel preload to complete if still in flight
+                preloadJob?.join()
+                if (!manager.isLoaded) {
+                    val ok = manager.init()
+                    if (!ok) {
+                        Toast.makeText(context, "ASR模型加载失败", Toast.LENGTH_SHORT).show()
+                        return@LaunchedEffect
+                    }
                 }
             }
-            val text = manager.transcribe(file)
+            val text = manager.transcribe(file, asrLanguage)
             Log.i("ChatScreen", "ASR transcribed: $text")
             if (text.isNotBlank()) {
                 input = text
@@ -395,6 +415,19 @@ fun ChatScreen(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         modifier = Modifier.padding(start = 24.dp)
                     ) {
+                        TextButton(onClick = {
+                            asrLanguage = if (asrLanguage == "Chinese") "English" else "Chinese"
+                        }) {
+                            Text(
+                                if (asrLanguage == "Chinese") "中文" else "EN",
+                                style = MaterialTheme.typography.labelMedium
+                            )
+                        }
+                    }
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.padding(start = 24.dp)
+                    ) {
                         if (isVoiceRecording) {
                             val pulseScale by animateFloatAsState(
                                 targetValue = if (isVoiceRecording) 1.3f else 1.0f,
@@ -427,6 +460,7 @@ fun ChatScreen(
                                         audioRecorder?.startRecording(context.cacheDir)
                                         isVoiceRecording = true
                                         onStartRecording?.invoke()
+                                        startPreloadingModel()
                                     } else {
                                         audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                                     }

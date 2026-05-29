@@ -13,7 +13,6 @@ class AsrManager(
     companion object {
         const val TAG = "AsrManager"
         private const val MODEL_NAME = "Qwen3-ASR-0.6B-INT8-MNN"
-        private const val ASR_LANGUAGE = "Chinese"
 
         fun getDefaultModelPath(context: android.content.Context): String {
             return "${context.filesDir}/models/$MODEL_NAME"
@@ -64,10 +63,10 @@ class AsrManager(
         }
     }
 
-    suspend fun transcribe(audioFile: File): String = withContext(Dispatchers.IO) {
+    suspend fun transcribe(audioFile: File, language: String = "Chinese"): String = withContext(Dispatchers.IO) {
         val s = session ?: throw IllegalStateException("ASR not initialized")
 
-        val prompt = buildAsrPrompt(audioFile)
+        val prompt = buildAsrPrompt(audioFile, language)
         Log.i(TAG, "Transcribing: ${audioFile.absolutePath} (${audioFile.length()} bytes)")
         Log.i(TAG, "Prompt: $prompt")
 
@@ -123,9 +122,9 @@ class AsrManager(
         }.toString()
     }
 
-    private fun buildAsrPrompt(audioFile: File): String {
+    private fun buildAsrPrompt(audioFile: File, language: String): String {
         return "<|im_start|>system<|im_end|>" +
             "<|im_start|>user<audio>${audioFile.absolutePath}</audio><|im_end|>" +
-            "<|im_start|>assistantlanguage $ASR_LANGUAGE<asr_text>"
+            "<|im_start|>assistantlanguage $language<asr_text>"
     }
 }
