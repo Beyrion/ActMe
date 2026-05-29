@@ -10,6 +10,7 @@ import com.actme.app.data.remote.OpenAiResponsesClient
 import com.actme.app.data.remote.ProviderConfig
 import android.util.Log
 import java.time.ZoneId
+import kotlinx.coroutines.flow.Flow
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -76,11 +77,51 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
         imageMimeType: String? = null,
         historyMessages: List<ChatMessageEntity> = emptyList()
     ): AgentResult {
+        val raw = openAiClient.run(
+            buildMessages(userInput, memories, schedules, skills, enableWebSearch, imageBase64, imageMimeType, historyMessages),
+            config = config,
+            enableWebSearch = enableWebSearch
+        )
+        return parseRaw(raw)
+    }
+
+    fun runTurnStreaming(
+        userInput: String,
+        memories: List<MemoryItemEntity>,
+        schedules: List<ScheduleEntity>,
+        skills: List<SkillEntity>,
+        config: ProviderConfig,
+        enableWebSearch: Boolean = false,
+        imageBase64: String? = null,
+        imageMimeType: String? = null,
+        historyMessages: List<ChatMessageEntity> = emptyList()
+    ): Flow<String> {
+        return openAiClient.runStreaming(
+            buildMessages(userInput, memories, schedules, skills, enableWebSearch, imageBase64, imageMimeType, historyMessages),
+            config = config,
+            enableWebSearch = enableWebSearch
+        )
+    }
+
+    fun parseRaw(raw: String): AgentResult {
+        val jsonPart = extractJson(raw)
+        return runCatching { json.decodeFromString<AgentResult>(jsonPart) }.getOrNull()
+            ?: AgentResult(reply = raw)
+    }
+
+    private fun buildMessages(
+        userInput: String,
+        memories: List<MemoryItemEntity>,
+        schedules: List<ScheduleEntity>,
+        skills: List<SkillEntity>,
+        enableWebSearch: Boolean,
+        imageBase64: String?,
+        imageMimeType: String?,
+        historyMessages: List<ChatMessageEntity>
+    ): List<MessagePayload> {
         val systemPrompt = buildSystemPrompt(memories, schedules, skills, enableWebSearch)
         val messages = mutableListOf<MessagePayload>()
         messages += MessagePayload("system", systemPrompt)
-
-        // 添加历史消息（按时间顺序）
         historyMessages.forEach { entity ->
             messages += MessagePayload(
                 role = entity.role,
@@ -89,15 +130,8 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
                 imageMimeType = entity.imageMimeType
             )
         }
-
-        // 添加当前用户消息
         messages += MessagePayload("user", userInput, imageBase64 = imageBase64, imageMimeType = imageMimeType)
-
-        val raw = openAiClient.run(messages, config = config, enableWebSearch = enableWebSearch)
-
-        val jsonPart = extractJson(raw)
-        val parsed = runCatching { json.decodeFromString<AgentResult>(jsonPart) }.getOrNull()
-        return parsed ?: AgentResult(reply = raw)
+        return messages
     }
 
     suspend fun generateReminderInsight(title: String, detail: String, config: ProviderConfig): String {
@@ -195,7 +229,7 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
             若用户提出可复用策略，可以写入 skill_updates。
             $webSearchHint
             当前用户本地时区：$localZone。
-            时间字段一律输出 Unix 毫秒时间戳（不是秒），并严格按本地时区理解“今天/明天/每天12点”等表达。
+            时间字段一律输出 Unix 毫秒时间戳（不是秒），并严格按本地时区理解"今天/明天/每天12点"等表达。
             只输出 JSON，不要 Markdown，不要额外解释。格式如下：
             {
               "reply": "给用户的中文回复",
@@ -239,4 +273,72 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
     companion object {
         private const val TAG = "ActMeAgent"
     }
+}
+
+/**
+ * Incrementally extracts the "reply" field value from a streaming JSON response.
+ * Feed SSE text chunks via [consume]; it returns newly displayable characters each call.
+ */
+class ReplyExtractor {
+    private val raw = StringBuilder()
+    private var scanPos = 0
+    private var state = 0  // 0=searching, 1=in_reply, 2=done
+
+    fun consume(chunk: String): String? {
+        raw.append(chunk)
+        if (state == 2) return null
+        val text = raw.toString()
+
+        if (state == 0) {
+            val markerIdx = text.indexOf("\"reply\":", scanPos.coerceAtLeast(0))
+            if (markerIdx == -1) {
+                scanPos = (text.length - "\"reply\":".length).coerceAtLeast(0)
+                return null
+            }
+            var pos = markerIdx + "\"reply\":".length
+            while (pos < text.length && (text[pos] == ' ' || text[pos] == '\t' || text[pos] == '\n' || text[pos] == '\r')) pos++
+            if (pos >= text.length || text[pos] != '"') {
+                scanPos = pos
+                return null
+            }
+            scanPos = pos + 1
+            state = 1
+        }
+
+        val result = StringBuilder()
+        var i = scanPos
+        while (i < text.length) {
+            val c = text[i]
+            if (c == '\\') {
+                if (i + 1 < text.length) {
+                    val unescaped: Char = when (text[i + 1]) {
+                        '"' -> '"'
+                        'n' -> '\n'
+                        't' -> '\t'
+                        'r' -> '\r'
+                        '\\' -> '\\'
+                        'b' -> '\b'
+                        else -> text[i + 1]
+                    }
+                    result.append(unescaped)
+                    i += 2
+                } else {
+                    // Incomplete escape at end of buffer — wait for next chunk
+                    break
+                }
+            } else if (c == '"') {
+                state = 2
+                scanPos = i + 1
+                break
+            } else {
+                result.append(c)
+                i++
+            }
+        }
+        if (state == 1) scanPos = i
+
+        return result.toString().ifEmpty { null }
+    }
+
+    fun getRaw(): String = raw.toString()
 }

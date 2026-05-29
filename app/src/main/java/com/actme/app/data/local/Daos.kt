@@ -31,7 +31,10 @@ interface ChatDao {
     suspend fun deleteSessionById(id: Long)
 
     @Insert
-    suspend fun insert(message: ChatMessageEntity)
+    suspend fun insert(message: ChatMessageEntity): Long
+
+    @Query("UPDATE chat_messages SET content = :content WHERE id = :id")
+    suspend fun updateContent(id: Long, content: String)
 
     @Insert
     suspend fun insertSession(session: ChatSessionEntity): Long

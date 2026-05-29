@@ -2,6 +2,7 @@ package com.actme.app.data.repo
 
 import android.util.Log
 import com.actme.app.data.agent.ActMeAgent
+import com.actme.app.data.agent.ReplyExtractor
 import com.actme.app.data.agent.ScheduleUpdate
 import com.actme.app.data.local.ChatDao
 import com.actme.app.data.local.ProviderEntity
@@ -98,7 +99,7 @@ class ActMeRepository(
         imageMimeType: String? = null
     ) = withContext(Dispatchers.IO) {
         val now = System.currentTimeMillis()
-        Log.i(TAG, "send message begin: conversationId=$conversationId, webSearch=agent_decides, hasImage=${imageBase64 != null}")
+        Log.i(TAG, "send message begin: conversationId=$conversationId, hasImage=${imageBase64 != null}")
         chatDao.insert(
             ChatMessageEntity(
                 conversationId = conversationId,
@@ -115,20 +116,47 @@ class ActMeRepository(
         val allSchedules = scheduleDao.getAllNow()
         val enabledSkills = skillDao.getEnabledNow()
         val historyMessages = chatDao.getByConversation(conversationId)
-            .filter { it.createdAt < now } // 排除刚插入的当前消息
+            .filter { it.createdAt < now }
 
         val config = buildProviderConfig()
-        val result = agent.runTurn(
-            userInput = userInput,
-            memories = memories,
-            schedules = allSchedules,
-            skills = enabledSkills,
-            config = config,
-            enableWebSearch = true,
-            imageBase64 = imageBase64,
-            imageMimeType = imageMimeType,
-            historyMessages = historyMessages
+
+        // Insert placeholder assistant message immediately so the bubble appears during streaming
+        val streamingMsgId = chatDao.insert(
+            ChatMessageEntity(
+                conversationId = conversationId,
+                role = "assistant",
+                content = "",
+                createdAt = System.currentTimeMillis()
+            )
         )
+
+        val extractor = ReplyExtractor()
+        val displayBuilder = StringBuilder()
+
+        try {
+            agent.runTurnStreaming(
+                userInput = userInput,
+                memories = memories,
+                schedules = allSchedules,
+                skills = enabledSkills,
+                config = config,
+                enableWebSearch = true,
+                imageBase64 = imageBase64,
+                imageMimeType = imageMimeType,
+                historyMessages = historyMessages
+            ).collect { chunk ->
+                val display = extractor.consume(chunk)
+                if (display != null) {
+                    displayBuilder.append(display)
+                    chatDao.updateContent(streamingMsgId, displayBuilder.toString())
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "streaming error: ${e.message}")
+        }
+
+        val rawText = extractor.getRaw()
+        val result = agent.parseRaw(rawText)
         Log.i(
             TAG,
             "agent result: memoryUpdates=${result.memoryUpdates.size}, scheduleUpdates=${result.scheduleUpdates.size}, skillUpdates=${result.skillUpdates.size}"
@@ -136,14 +164,7 @@ class ActMeRepository(
 
         val localSkillHints = runLocalSkills(userInput, enabledSkills)
         val finalReply = if (localSkillHints.isBlank()) result.reply else "${result.reply}\n\n$localSkillHints"
-        chatDao.insert(
-            ChatMessageEntity(
-                conversationId = conversationId,
-                role = "assistant",
-                content = finalReply,
-                createdAt = System.currentTimeMillis()
-            )
-        )
+        chatDao.updateContent(streamingMsgId, finalReply)
         touchConversation(conversationId)
 
         result.memoryUpdates.forEach { update ->
@@ -157,22 +178,13 @@ class ActMeRepository(
         }
 
         result.scheduleUpdates.forEach { update ->
-            // 聊天新增日程走子Agent门卫：先二次结构化，再入库。
             val gateRequest = buildScheduleGateRequest(userInput, update)
             val gateResult = addScheduleBySubAgent(gateRequest)
             if (gateResult.isFailure) {
-                Log.i(
-                    TAG,
-                    "chat schedule gate failed, fallback strict-agent-parse: reasonB64=${
-                        LogCodec.utf8Base64(gateResult.exceptionOrNull()?.message)
-                    }"
-                )
+                Log.i(TAG, "chat schedule gate failed, fallback strict-agent-parse")
                 val strictResult = saveScheduleUpdateStrictlyFromAgent(update)
                 if (strictResult.isFailure) {
-                    Log.i(
-                        TAG,
-                        "chat schedule dropped: reasonB64=${LogCodec.utf8Base64(strictResult.exceptionOrNull()?.message)}"
-                    )
+                    Log.i(TAG, "chat schedule dropped")
                 }
             } else {
                 Log.i(TAG, "chat schedule gated by sub-agent: titleB64=${LogCodec.utf8Base64(update.title)}")

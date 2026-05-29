@@ -266,6 +266,15 @@ fun ChatScreen(
                 }
             }
 
+            // Follow streaming content as last assistant message grows
+            val lastMsgContentLen = messages.lastOrNull()?.content?.length ?: 0
+            LaunchedEffect(lastMsgContentLen) {
+                if (sending && isAtBottom) {
+                    val targetIndex = listState.layoutInfo.totalItemsCount - 1
+                    if (targetIndex >= 0) listState.scrollToItem(targetIndex)
+                }
+            }
+
             LazyColumn(
                 state = listState,
                 modifier = Modifier
@@ -276,7 +285,10 @@ fun ChatScreen(
                 items(messages, key = { it.id }) { msg ->
                     MessageBubble(msg)
                 }
-                if (sending) {
+                val showSkeleton = sending && (messages.isEmpty() ||
+                    messages.last().role != "assistant" ||
+                    messages.last().content.isBlank())
+                if (showSkeleton) {
                     item(key = "skeleton") {
                         SkeletonBubble()
                     }

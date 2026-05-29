@@ -11,6 +11,11 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -84,6 +89,41 @@ class OpenAiResponsesClient {
         Log.i(TAG, "run success")
         return parseSseBody(body, config.providerFormat)
     }
+
+    fun runStreaming(
+        messages: List<MessagePayload>,
+        config: ProviderConfig,
+        enableWebSearch: Boolean = false
+    ): Flow<String> = flow {
+        if (config.sk.isBlank()) {
+            emit("当前未配置 API Key，请在设置中添加提供商。")
+            return@flow
+        }
+        val request = when (config.providerFormat) {
+            "anthropic" -> buildAnthropicRequest(messages, config, enableWebSearch)
+            else -> buildOpenAiRequest(messages, config, enableWebSearch)
+        }
+        val call = okHttp.newCall(request)
+        try {
+            val response = call.execute()
+            if (!response.isSuccessful) {
+                val body = response.body?.string().orEmpty()
+                emit("请求失败(${response.code})：$body")
+                return@flow
+            }
+            val source = response.body?.source() ?: return@flow
+            while (!source.exhausted()) {
+                val line = source.readUtf8Line() ?: break
+                val chunk = parseSseLine(line, config.providerFormat)
+                if (!chunk.isNullOrEmpty()) emit(chunk)
+            }
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            Log.e(TAG, "runStreaming error: ${e.message}")
+        } finally {
+            call.cancel()
+        }
+    }.flowOn(Dispatchers.IO)
 
     suspend fun fetchModels(endpoint: String, sk: String, providerFormat: String = "openai"): List<String> {
         if (sk.isBlank() || endpoint.isBlank()) return emptyList()
@@ -217,6 +257,26 @@ class OpenAiResponsesClient {
         return when (format) {
             "anthropic" -> parseAnthropicSseBody(raw)
             else -> parseOpenAiSseBody(raw)
+        }
+    }
+
+    private fun parseSseLine(line: String, format: String): String? {
+        val trimmed = line.trim()
+        if (!trimmed.startsWith("data:")) return null
+        val data = trimmed.removePrefix("data:").trim()
+        if (data.isBlank() || data == "[DONE]") return null
+        val obj = runCatching { json.parseToJsonElement(data).jsonObject }.getOrNull() ?: return null
+        return when (format) {
+            "anthropic" -> {
+                if (obj["type"]?.jsonPrimitive?.contentOrNull == "content_block_delta") {
+                    obj["delta"]?.jsonObject?.get("text")?.jsonPrimitive?.contentOrNull
+                } else null
+            }
+            else -> {
+                obj["choices"]?.jsonArray?.firstOrNull()
+                    ?.jsonObject?.get("delta")?.jsonObject
+                    ?.get("content")?.jsonPrimitive?.contentOrNull
+            }
         }
     }
 
