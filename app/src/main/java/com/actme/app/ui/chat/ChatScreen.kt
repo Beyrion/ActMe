@@ -638,7 +638,7 @@ private fun MessageBubble(msg: ChatMessageEntity) {
                 modifier = Modifier
                     .widthIn(max = 300.dp)
                     .background(
-                        if (isUser) Color(0xFFE8E8E8) else MaterialTheme.colorScheme.primaryContainer,
+                        if (isUser) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.primaryContainer,
                         shape = RoundedCornerShape(
                             topStart = 12.dp,
                             topEnd = 12.dp,
