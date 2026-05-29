@@ -45,7 +45,9 @@ class ChatViewModel(private val repository: ActMeRepository) : ViewModel() {
         .flatMapLatest { repository.observeChatMessages(it) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
-    val sending = MutableStateFlow(false)
+    private val _sendingConversationId = MutableStateFlow<Long?>(null)
+    val sendingConversationId: StateFlow<Long?> = _sendingConversationId
+    val sending: Boolean get() = _sendingConversationId.value != null
     val isRecording = MutableStateFlow(false)
     val transcribedText = MutableStateFlow<String?>(null)
 
@@ -154,11 +156,11 @@ class ChatViewModel(private val repository: ActMeRepository) : ViewModel() {
 
     fun sendMessage(input: String, imageBase64: String? = null, imageMimeType: String? = null) {
         val conversationId = currentConversationIdMutable.value ?: return
-        if (input.isBlank() && imageBase64 == null || sending.value) return
+        if (input.isBlank() && imageBase64 == null || _sendingConversationId.value != null) return
         viewModelScope.launch {
-            sending.value = true
+            _sendingConversationId.value = conversationId
             runCatching { repository.sendMessage(conversationId, input.trim(), imageBase64, imageMimeType) }
-            sending.value = false
+            _sendingConversationId.value = null
         }
     }
 }

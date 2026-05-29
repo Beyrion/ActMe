@@ -113,6 +113,7 @@ class MainActivity : ComponentActivity() {
                         val isRecording by chatViewModel.isRecording.collectAsStateWithLifecycle(false)
                         val availableModels by chatViewModel.availableModels.collectAsStateWithLifecycle(emptyList())
                         val selectedModel by chatViewModel.selectedModel.collectAsStateWithLifecycle("")
+                        val sendingConversationId by chatViewModel.sendingConversationId.collectAsStateWithLifecycle(null)
                         ChatScreen(
                             sessionInfos = sessionInfos,
                             currentConversationId = currentConversationId,
@@ -122,7 +123,7 @@ class MainActivity : ComponentActivity() {
                             onRenameConversation = chatViewModel::renameConversation,
                             onDeleteConversation = chatViewModel::deleteConversation,
                             onSend = { text, imgBase64, imgMime -> chatViewModel.sendMessage(text, imgBase64, imgMime) },
-                            sending = chatViewModel.sending.collectAsStateWithLifecycle(false).value,
+                            sendingConversationId = sendingConversationId,
                             isRecording = isRecording,
                             onStartRecording = { chatViewModel.setRecording(true) },
                             onStopRecording = { chatViewModel.setRecording(false) },

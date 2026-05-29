@@ -11,6 +11,7 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
@@ -25,9 +26,12 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -36,9 +40,13 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Mic
@@ -58,15 +66,19 @@ import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -84,7 +96,7 @@ import kotlinx.coroutines.launch
 import java.io.ByteArrayOutputStream
 import java.io.File
 
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(
     sessionInfos: List<ChatSessionInfo>,
@@ -95,7 +107,7 @@ fun ChatScreen(
     onRenameConversation: (Long, String) -> Unit,
     onDeleteConversation: (Long) -> Unit,
     onSend: (String, String?, String?) -> Unit,
-    sending: Boolean,
+    sendingConversationId: Long? = null,
     isRecording: Boolean = false,
     onStartRecording: (() -> Unit)? = null,
     onStopRecording: (() -> Unit)? = null,
@@ -116,6 +128,7 @@ fun ChatScreen(
     var showModelMenu by remember { mutableStateOf(false) }
 
     val context = LocalContext.current
+    val sending = sendingConversationId != null
 
     // Voice recording state
     var isVoiceRecording by remember { mutableStateOf(false) }
@@ -138,26 +151,18 @@ fun ChatScreen(
         }
     }
 
-    // Transcribing state
     var isTranscribing by remember { mutableStateOf(false) }
 
-    // Model manager for download
     val modelManager = remember { ModelManager(context) }
     val downloadState by modelManager.downloadState.collectAsState()
     val modelInfo by modelManager.modelInfo.collectAsState()
     var isModelReady by remember { mutableStateOf(modelManager.isModelReady) }
     var showModelDialog by remember { mutableStateOf(false) }
 
-    // Lazy ASR manager (re-created when model becomes ready)
     val asrManager = remember(isModelReady) {
-        if (isModelReady) {
-            AsrManager(AsrManager.getDefaultModelPath(context))
-        } else {
-            null
-        }
+        if (isModelReady) AsrManager(AsrManager.getDefaultModelPath(context)) else null
     }
 
-    // Handle recording callbacks
     DisposableEffect(audioRecorder) {
         audioRecorder?.onRecordingStopped = { wavFile ->
             recordingFile = wavFile
@@ -171,17 +176,14 @@ fun ChatScreen(
         onDispose { }
     }
 
-    // Trigger ASR when recording file is ready
     LaunchedEffect(recordingFile) {
         val file = recordingFile ?: return@LaunchedEffect
         recordingFile = null
-
         val manager = asrManager
         if (manager == null) {
             showModelDialog = true
             return@LaunchedEffect
         }
-
         isTranscribing = true
         try {
             if (!manager.isLoaded) {
@@ -257,6 +259,7 @@ fun ChatScreen(
                         var showMenu by remember { mutableStateOf(false) }
                         val session = info.session
                         val selected = session.id == currentConversationId
+                        val isLoading = session.id == sendingConversationId
                         Card(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -281,12 +284,24 @@ fun ChatScreen(
                                     .fillMaxWidth()
                                     .padding(12.dp)
                             ) {
-                                Text(
-                                    session.title,
-                                    style = MaterialTheme.typography.titleSmall,
-                                    fontWeight = FontWeight.Medium,
-                                    maxLines = 1
-                                )
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text(
+                                        session.title,
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Medium,
+                                        maxLines = 1,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    if (isLoading) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(16.dp),
+                                            strokeWidth = 2.dp
+                                        )
+                                    }
+                                }
                                 Spacer(modifier = Modifier.height(4.dp))
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
@@ -335,82 +350,166 @@ fun ChatScreen(
                 .fillMaxSize()
                 .padding(12.dp)
         ) {
+            // ---- Top bar ----
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = { scope.launch { drawerState.open() } }) {
                     Icon(Icons.Filled.Forum, contentDescription = "会话列表")
                 }
                 Text("ActMe Agent", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
             }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.Start
-            ) {
-                Text("在这里和你的行动助手对话，Agent 会自动判断是否联网查询。")
+
+            // ---- Message list ----
+            val listState = rememberLazyListState()
+
+            val isAtBottom by remember {
+                derivedStateOf {
+                    val info = listState.layoutInfo
+                    if (info.totalItemsCount == 0) true
+                    else {
+                        val lastVisible = info.visibleItemsInfo.lastOrNull()?.index ?: -1
+                        lastVisible >= info.totalItemsCount - 1
+                    }
+                }
             }
 
-            LazyColumn(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .padding(top = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                items(messages) { msg ->
-                    val isUser = msg.role == "user"
-                    Column(
+            // Track unseen new messages
+            var lastSeenCount by remember { mutableIntStateOf(messages.size) }
+            val unreadCount = if (!isAtBottom) (messages.size - lastSeenCount).coerceAtLeast(0) else 0
+
+            // Reset counter when reaching bottom
+            LaunchedEffect(isAtBottom) {
+                if (isAtBottom) lastSeenCount = messages.size
+            }
+
+            // Auto-scroll to bottom when sending or already at bottom
+            LaunchedEffect(messages.size, sending) {
+                if (sending || isAtBottom) {
+                    val targetIndex = listState.layoutInfo.totalItemsCount - 1
+                    if (targetIndex >= 0) {
+                        listState.animateScrollToItem(targetIndex)
+                    }
+                }
+            }
+
+            Box(modifier = Modifier.weight(1f)) {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(top = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(messages, key = { it.id }) { msg ->
+                        MessageBubble(msg)
+                    }
+                    if (sending) {
+                        item(key = "skeleton") {
+                            SkeletonBubble()
+                        }
+                    }
+                }
+
+                // Floating button: only when user is scrolled up AND has unread messages
+                if (!isAtBottom && unreadCount > 0) {
+                    FloatingActionButton(
+                        onClick = {
+                            scope.launch {
+                                val targetIndex = listState.layoutInfo.totalItemsCount - 1
+                                if (targetIndex >= 0) {
+                                    listState.animateScrollToItem(targetIndex)
+                                }
+                            }
+                        },
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .background(
-                                if (isUser) Color(0xFFD7F3D8) else Color(0xFFEAEFFB),
-                                shape = MaterialTheme.shapes.medium
-                            )
-                            .padding(10.dp)
+                            .align(Alignment.BottomEnd)
+                            .padding(16.dp),
+                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer
                     ) {
-                        Text(if (isUser) "我" else "ActMe", fontWeight = FontWeight.SemiBold)
-                        if (!msg.imageBase64.isNullOrBlank() && !msg.imageMimeType.isNullOrBlank()) {
-                            val bitmap = android.util.Base64.decode(msg.imageBase64, android.util.Base64.NO_WRAP)
-                                .let { BitmapFactory.decodeByteArray(it, 0, it.size) }
-                            if (bitmap != null) {
-                                Image(
-                                    bitmap = bitmap.asImageBitmap(),
-                                    contentDescription = "发送的图片",
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            modifier = Modifier.padding(horizontal = 12.dp)
+                        ) {
+                            Text(
+                                "$unreadCount 新消息",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Icon(
+                                Icons.Filled.KeyboardArrowDown,
+                                contentDescription = "滚动到底部",
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // ---- Input area ----
+            Column(modifier = Modifier.fillMaxWidth()) {
+                // Selected image preview with X overlay
+                if (selectedImageBase64 != null && selectedImageBytes != null) {
+                    var showPreviewFull by remember { mutableStateOf(false) }
+                    Box(
+                        modifier = Modifier
+                            .padding(bottom = 4.dp)
+                            .size(64.dp)
+                    ) {
+                        val bitmap = BitmapFactory.decodeByteArray(selectedImageBytes!!, 0, selectedImageBytes!!.size)
+                        Image(
+                            bitmap = bitmap.asImageBitmap(),
+                            contentDescription = "选中的图片",
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { showPreviewFull = true },
+                            contentScale = ContentScale.Crop
+                        )
+                        // Small X button
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .padding(2.dp)
+                                .size(18.dp)
+                                .background(Color.Black.copy(alpha = 0.5f), CircleShape)
+                                .clickable {
+                                    selectedImageBase64 = null
+                                    selectedImageMimeType = null
+                                    selectedImageBytes = null
+                                },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                Icons.Filled.Close,
+                                contentDescription = "移除图片",
+                                tint = Color.White,
+                                modifier = Modifier.size(10.dp)
+                            )
+                        }
+
+                        // Full-screen preview
+                        if (showPreviewFull) {
+                            AlertDialog(onDismissRequest = { showPreviewFull = false }) {
+                                Box(
                                     modifier = Modifier
-                                        .height(120.dp)
-                                        .padding(bottom = 4.dp)
-                                )
+                                        .fillMaxWidth()
+                                        .clickable { showPreviewFull = false }
+                                ) {
+                                    Image(
+                                        bitmap = bitmap.asImageBitmap(),
+                                        contentDescription = "查看大图",
+                                        modifier = Modifier.fillMaxWidth(),
+                                        contentScale = ContentScale.FillWidth
+                                    )
+                                }
                             }
                         }
-                        Text(msg.content)
                     }
                 }
-            }
 
-            Column(modifier = Modifier.fillMaxWidth()) {
-                if (selectedImageBase64 != null) {
-                    Row(
-                        modifier = Modifier.padding(bottom = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        selectedImageBytes?.let { bytes ->
-                            val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                            Image(
-                                bitmap = bitmap.asImageBitmap(),
-                                contentDescription = "选中的图片",
-                                modifier = Modifier
-                                    .height(60.dp)
-                                    .padding(end = 8.dp)
-                            )
-                        }
-                        IconButton(onClick = {
-                            selectedImageBase64 = null
-                            selectedImageMimeType = null
-                            selectedImageBytes = null
-                        }) {
-                            Icon(Icons.Filled.Image, contentDescription = "移除图片")
-                        }
-                    }
-                }
                 if (isTranscribing) {
                     Row(
                         modifier = Modifier
@@ -423,6 +522,7 @@ fun ChatScreen(
                         Text("正在识别语音...", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
                     }
                 }
+
                 Surface(
                     shape = RoundedCornerShape(24.dp),
                     color = MaterialTheme.colorScheme.surface,
@@ -570,14 +670,9 @@ fun ChatScreen(
             title = { Text("语音识别模型") },
             text = {
                 Column(modifier = Modifier.fillMaxWidth()) {
-                    // Model info
                     val info = modelInfo
                     if (info != null) {
-                        Text(
-                            "模型: ${info.name}",
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.SemiBold
-                        )
+                        Text("模型: ${info.name}", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
                             "文件数: ${info.fileCount} · 总大小: ${modelManager.formatSize(info.totalSize)}",
@@ -585,133 +680,68 @@ fun ChatScreen(
                             color = Color.Gray
                         )
                     } else {
-                        Text(
-                            "Qwen3-ASR 端侧语音识别模型",
-                            style = MaterialTheme.typography.bodyMedium
-                        )
+                        Text("Qwen3-ASR 端侧语音识别模型", style = MaterialTheme.typography.bodyMedium)
                         Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            "约 1.3 GB，下载后无需联网即可使用语音输入",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = Color.Gray
-                        )
+                        Text("约 1.3 GB，下载后无需联网即可使用语音输入", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
                     }
 
                     Spacer(modifier = Modifier.height(12.dp))
 
-                    // Download progress
                     when (val state = downloadState) {
                         is DownloadState.NotStarted -> {
-                            Button(
-                                onClick = {
-                                    scope.launch {
-                                        try {
-                                            modelManager.downloadModel()
-                                        } catch (_: Exception) {}
-                                    }
-                                },
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
+                            Button(onClick = {
+                                scope.launch { try { modelManager.downloadModel() } catch (_: Exception) {} }
+                            }, modifier = Modifier.fillMaxWidth()) {
                                 Text("下载模型")
                             }
                         }
-
                         is DownloadState.Checking -> {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                                 Text("正在获取模型信息...", style = MaterialTheme.typography.bodySmall)
                             }
                         }
-
                         is DownloadState.Downloading -> {
                             Column {
-                                Text(
-                                    "${state.currentFile} (${state.currentFileIndex}/${state.totalFiles})",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.SemiBold
-                                )
+                                Text("${state.currentFile} (${state.currentFileIndex}/${state.totalFiles})", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold)
                                 Spacer(modifier = Modifier.height(4.dp))
-                                // Per-file progress
-                                LinearProgressIndicator(
-                                    progress = state.currentFileProgress.coerceIn(0f, 1f),
-                                    modifier = Modifier.fillMaxWidth()
-                                )
+                                LinearProgressIndicator(progress = state.currentFileProgress.coerceIn(0f, 1f), modifier = Modifier.fillMaxWidth())
                                 Spacer(modifier = Modifier.height(4.dp))
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Text(
-                                        "${(state.currentFileProgress * 100).toInt()}%",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = Color.Gray
-                                    )
-                                    Text(
-                                        "${modelManager.formatSize(state.totalBytesDownloaded)} / ${modelManager.formatSize(state.totalBytes)}",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = Color.Gray
-                                    )
+                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                    Text("${(state.currentFileProgress * 100).toInt()}%", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                                    Text("${modelManager.formatSize(state.totalBytesDownloaded)} / ${modelManager.formatSize(state.totalBytes)}", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
                                 }
                                 Spacer(modifier = Modifier.height(8.dp))
-                                // Overall progress
                                 LinearProgressIndicator(
-                                    progress = if (state.totalBytes > 0)
-                                        (state.totalBytesDownloaded.toFloat() / state.totalBytes).coerceIn(0f, 1f)
-                                    else 0f,
+                                    progress = if (state.totalBytes > 0) (state.totalBytesDownloaded.toFloat() / state.totalBytes).coerceIn(0f, 1f) else 0f,
                                     modifier = Modifier.fillMaxWidth()
                                 )
                                 Spacer(modifier = Modifier.height(4.dp))
-                                Text(
-                                    "整体进度: ${((state.totalBytesDownloaded.toFloat() / state.totalBytes).coerceIn(0f, 1f) * 100).toInt()}%",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = Color.Gray
-                                )
+                                Text("整体进度: ${((state.totalBytesDownloaded.toFloat() / state.totalBytes).coerceIn(0f, 1f) * 100).toInt()}%", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
                             }
                         }
-
                         is DownloadState.Error -> {
                             Column {
-                                Text(
-                                    "下载失败: ${state.message}",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = Color.Red
-                                )
+                                Text("下载失败: ${state.message}", style = MaterialTheme.typography.bodySmall, color = Color.Red)
                                 Spacer(modifier = Modifier.height(8.dp))
-                                Button(
-                                    onClick = {
-                                        scope.launch {
-                                            try { modelManager.downloadModel() } catch (_: Exception) {}
-                                        }
-                                    },
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
+                                Button(onClick = {
+                                    scope.launch { try { modelManager.downloadModel() } catch (_: Exception) {} }
+                                }, modifier = Modifier.fillMaxWidth()) {
                                     Text("重试")
                                 }
                             }
                         }
-
                         is DownloadState.Completed -> {
-                            Text(
-                                "模型已下载完成",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = Color(0xFF4CAF50)
-                            )
+                            Text("模型已下载完成", style = MaterialTheme.typography.bodySmall, color = Color(0xFF4CAF50))
                         }
                     }
                 }
             },
             confirmButton = {
                 if (downloadState is DownloadState.Completed) {
-                    TextButton(onClick = { showModelDialog = false }) {
-                        Text("确定")
-                    }
+                    TextButton(onClick = { showModelDialog = false }) { Text("确定") }
                 } else if (downloadState !is DownloadState.Downloading) {
-                    TextButton(onClick = { showModelDialog = false }) {
-                        Text("取消")
-                    }
+                    TextButton(onClick = { showModelDialog = false }) { Text("取消") }
                 }
             },
             dismissButton = null
@@ -723,20 +753,14 @@ fun ChatScreen(
             onDismissRequest = { renameTarget = null },
             title = { Text("重命名会话") },
             text = {
-                OutlinedTextField(
-                    value = renameInput,
-                    onValueChange = { renameInput = it },
-                    label = { Text("会话名") }
-                )
+                OutlinedTextField(value = renameInput, onValueChange = { renameInput = it }, label = { Text("会话名") })
             },
             confirmButton = {
-                TextButton(
-                    onClick = {
-                        val target = renameTarget ?: return@TextButton
-                        onRenameConversation(target.id, renameInput)
-                        renameTarget = null
-                    }
-                ) { Text("保存") }
+                TextButton(onClick = {
+                    val target = renameTarget ?: return@TextButton
+                    onRenameConversation(target.id, renameInput)
+                    renameTarget = null
+                }) { Text("保存") }
             },
             dismissButton = {
                 TextButton(onClick = { renameTarget = null }) { Text("取消") }
@@ -750,17 +774,122 @@ fun ChatScreen(
             title = { Text("删除会话") },
             text = { Text("确认删除「${deleteTarget?.title.orEmpty()}」及其全部消息吗？") },
             confirmButton = {
-                TextButton(
-                    onClick = {
-                        val target = deleteTarget ?: return@TextButton
-                        onDeleteConversation(target.id)
-                        deleteTarget = null
-                    }
-                ) { Text("删除") }
+                TextButton(onClick = {
+                    val target = deleteTarget ?: return@TextButton
+                    onDeleteConversation(target.id)
+                    deleteTarget = null
+                }) { Text("删除") }
             },
             dismissButton = {
                 TextButton(onClick = { deleteTarget = null }) { Text("取消") }
             }
         )
+    }
+}
+
+// ---- Message bubble ----
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun MessageBubble(msg: ChatMessageEntity) {
+    val isUser = msg.role == "user"
+    val hasImage = !msg.imageBase64.isNullOrBlank() && !msg.imageMimeType.isNullOrBlank()
+    var showFullImage by remember { mutableStateOf(false) }
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = if (isUser) Alignment.End else Alignment.Start
+    ) {
+        // Image displayed independently outside the bubble
+        if (hasImage) {
+            val bitmap = android.util.Base64.decode(msg.imageBase64, android.util.Base64.NO_WRAP)
+                .let { BitmapFactory.decodeByteArray(it, 0, it.size) }
+            if (bitmap != null) {
+                Image(
+                    bitmap = bitmap.asImageBitmap(),
+                    contentDescription = "图片",
+                    modifier = Modifier
+                        .size(120.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .padding(bottom = 4.dp)
+                        .clickable { showFullImage = true },
+                    contentScale = ContentScale.Crop
+                )
+
+                // Full-screen image viewer
+                if (showFullImage) {
+                    AlertDialog(
+                        onDismissRequest = { showFullImage = false }
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { showFullImage = false }
+                        ) {
+                            Image(
+                                bitmap = bitmap.asImageBitmap(),
+                                contentDescription = "查看大图",
+                                modifier = Modifier.fillMaxWidth(),
+                                contentScale = ContentScale.FillWidth
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // Text bubble (skip if no text content)
+        if (msg.content.isNotBlank()) {
+            Column(
+                modifier = Modifier
+                    .widthIn(max = 300.dp)
+                    .background(
+                        if (isUser) Color(0xFFD7F3D8) else Color(0xFFEAEFFB),
+                        shape = RoundedCornerShape(
+                            topStart = 12.dp,
+                            topEnd = 12.dp,
+                            bottomStart = if (isUser) 12.dp else 4.dp,
+                            bottomEnd = if (isUser) 4.dp else 12.dp
+                        )
+                    )
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
+            ) {
+                if (!isUser) {
+                    Text(
+                        "ActMe",
+                        fontWeight = FontWeight.SemiBold,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+                Text(msg.content, style = MaterialTheme.typography.bodyMedium)
+            }
+        }
+    }
+}
+
+// ---- Skeleton placeholder ----
+
+@Composable
+private fun SkeletonBubble() {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = Alignment.Start
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+            Text("ActMe", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+        }
+        Spacer(modifier = Modifier.height(6.dp))
+        Column(
+            modifier = Modifier
+                .widthIn(max = 280.dp)
+                .background(Color(0xFFEAEFFB), shape = RoundedCornerShape(12.dp, 12.dp, 12.dp, 4.dp))
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Box(modifier = Modifier.fillMaxWidth(0.8f).height(12.dp).background(Color.Gray.copy(alpha = 0.15f), RoundedCornerShape(4.dp)))
+            Box(modifier = Modifier.fillMaxWidth(0.6f).height(12.dp).background(Color.Gray.copy(alpha = 0.15f), RoundedCornerShape(4.dp)))
+        }
     }
 }
