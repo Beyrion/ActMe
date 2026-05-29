@@ -69,6 +69,9 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.mikepenz.markdown.m3.Markdown
+import com.mikepenz.markdown.m3.markdownColor
+import com.mikepenz.markdown.m3.markdownTypography
 import androidx.core.content.ContextCompat
 import androidx.compose.runtime.collectAsState
 import com.actme.app.audio.AsrManager
@@ -613,7 +616,22 @@ private fun MessageBubble(msg: ChatMessageEntity) {
                         color = MaterialTheme.colorScheme.primary
                     )
                 }
-                Text(msg.content, style = MaterialTheme.typography.bodyMedium)
+                if (isUser) {
+                    Text(msg.content, style = MaterialTheme.typography.bodyMedium)
+                } else {
+                    Markdown(
+                        content = msg.content,
+                        colors = markdownColor(),
+                        typography = markdownTypography(
+                            text = MaterialTheme.typography.bodyMedium,
+                            paragraph = MaterialTheme.typography.bodyMedium,
+                            h1 = MaterialTheme.typography.bodyLarge,
+                            h2 = MaterialTheme.typography.bodyLarge,
+                            h3 = MaterialTheme.typography.bodyMedium,
+                            code = MaterialTheme.typography.bodySmall,
+                        )
+                    )
+                }
             }
         }
     }
