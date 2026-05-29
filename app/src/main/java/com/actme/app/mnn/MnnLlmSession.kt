@@ -6,6 +6,12 @@ import org.json.JSONObject
 
 class MnnLlmSession {
 
+    companion object {
+        init {
+            System.loadLibrary("actme_jni")
+        }
+    }
+
     @Volatile
     private var nativePtr: Long = 0
 
@@ -13,6 +19,7 @@ class MnnLlmSession {
 
     external fun nativeInit(modelDir: String, configJson: String): Long
     external fun nativeSubmit(nativePtr: Long, prompt: String): String
+    external fun nativeSubmitRaw(nativePtr: Long, prompt: String): String
     external fun nativeReset(nativePtr: Long)
     external fun nativeRelease(nativePtr: Long)
     external fun nativeSetMaxNewTokens(nativePtr: Long, maxTokens: Int)
@@ -33,7 +40,15 @@ class MnnLlmSession {
     }
 
     suspend fun submit(prompt: String): String = withContext(Dispatchers.IO) {
-        nativeSubmit(nativePtr, prompt)
+        val result = nativeSubmit(nativePtr, prompt)
+        android.util.Log.i("MnnLlmSession", "submit result (${result.length} chars): ${result.take(200)}")
+        result
+    }
+
+    suspend fun submitRaw(prompt: String): String = withContext(Dispatchers.IO) {
+        val result = nativeSubmitRaw(nativePtr, prompt)
+        android.util.Log.i("MnnLlmSession", "submitRaw result (${result.length} chars): ${result.take(200)}")
+        result
     }
 
     fun reset() {

@@ -28,6 +28,9 @@ public:
     const MNN::Transformer::LlmContext* response(
         const std::string& prompt,
         const std::function<bool(const std::string&, bool isEop)>& onProgress);
+    const MNN::Transformer::LlmContext* responseRaw(
+        const std::string& prompt,
+        const std::function<bool(const std::string&, bool isEop)>& onProgress);
 
     void setMaxNewTokens(int maxTokens);
     void setSystemPrompt(const std::string& prompt);
