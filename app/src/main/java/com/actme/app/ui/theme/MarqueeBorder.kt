@@ -18,6 +18,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.lerp as colorLerp
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
@@ -68,7 +69,7 @@ fun MarqueeBorder(
                 val numStrokes = 14
                 val strokeWidth = gw / numStrokes
 
-                // Sweep gradient with shifted stops for rotation
+                // Sweep gradient with shifted stops for chasing-light rotation
                 val stops = listOf(
                     0.00f to LogoBlue200,
                     0.10f to LogoBlue300,
@@ -86,9 +87,21 @@ fun MarqueeBorder(
 
                 val shifted = stops.map { (pos, color) ->
                     ((pos + sweepPhase) % 1f) to color
-                }.sortedBy { it.first }.toTypedArray()
+                }.sortedBy { it.first }
 
-                val sweep = Brush.sweepGradient(colorStops = shifted, center = center)
+                // Blend boundary colors so the sweep gradient wraps seamlessly
+                // without a visible seam at the 0°/360° transition.
+                val firstColor = shifted.first().second
+                val lastColor = shifted.last().second
+                val bridge = colorLerp(firstColor, lastColor, 0.5f)
+
+                val sealed = buildList {
+                    add(0.0f to bridge)
+                    addAll(shifted)
+                    add(1.0f to bridge)
+                }.toTypedArray()
+
+                val sweep = Brush.sweepGradient(colorStops = sealed, center = center)
 
                 // Concentric rounded-rect strokes fading from edge inward
                 for (i in 0 until numStrokes) {
