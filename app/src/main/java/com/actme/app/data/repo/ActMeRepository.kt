@@ -2,8 +2,10 @@ package com.actme.app.data.repo
 
 import android.util.Log
 import com.actme.app.data.agent.ActMeAgent
+import com.actme.app.data.agent.ReplyExtractor
 import com.actme.app.data.agent.ScheduleUpdate
 import com.actme.app.data.local.ChatDao
+import com.actme.app.data.local.ProviderEntity
 import com.actme.app.data.local.ChatMessageEntity
 import com.actme.app.data.local.ChatSessionEntity
 import com.actme.app.data.local.MemoryDao
@@ -14,6 +16,9 @@ import com.actme.app.data.local.ScheduleDao
 import com.actme.app.data.local.ScheduleEntity
 import com.actme.app.data.local.SkillDao
 import com.actme.app.data.local.SkillEntity
+import com.actme.app.data.remote.OpenAiResponsesClient
+import com.actme.app.data.remote.ProviderConfig
+import com.actme.app.data.remote.ProviderManager
 import com.actme.app.notifications.ReminderScheduler
 import com.actme.app.util.LogCodec
 import java.time.Instant
@@ -35,9 +40,15 @@ class ActMeRepository(
     private val scheduleDao: ScheduleDao,
     private val skillDao: SkillDao,
     private val agent: ActMeAgent,
-    private val reminderScheduler: ReminderScheduler
+    private val reminderScheduler: ReminderScheduler,
+    private val providerManager: ProviderManager,
+    private val openAiClient: OpenAiResponsesClient
 ) {
     val chatSessions: Flow<List<ChatSessionEntity>> = chatDao.observeSessions()
+
+    suspend fun getMessageCount(conversationId: Long): Int = withContext(Dispatchers.IO) {
+        chatDao.getMessageCount(conversationId)
+    }
     val schedules: Flow<List<ScheduleEntity>> = scheduleDao.observeAll()
     val skills: Flow<List<SkillEntity>> = skillDao.observeAll()
 
@@ -88,7 +99,7 @@ class ActMeRepository(
         imageMimeType: String? = null
     ) = withContext(Dispatchers.IO) {
         val now = System.currentTimeMillis()
-        Log.i(TAG, "send message begin: conversationId=$conversationId, webSearch=agent_decides, hasImage=${imageBase64 != null}")
+        Log.i(TAG, "send message begin: conversationId=$conversationId, hasImage=${imageBase64 != null}")
         chatDao.insert(
             ChatMessageEntity(
                 conversationId = conversationId,
@@ -105,18 +116,47 @@ class ActMeRepository(
         val allSchedules = scheduleDao.getAllNow()
         val enabledSkills = skillDao.getEnabledNow()
         val historyMessages = chatDao.getByConversation(conversationId)
-            .filter { it.createdAt < now } // 排除刚插入的当前消息
+            .filter { it.createdAt < now }
 
-        val result = agent.runTurn(
-            userInput = userInput,
-            memories = memories,
-            schedules = allSchedules,
-            skills = enabledSkills,
-            enableWebSearch = true,
-            imageBase64 = imageBase64,
-            imageMimeType = imageMimeType,
-            historyMessages = historyMessages
+        val config = buildProviderConfig()
+
+        // Insert placeholder assistant message immediately so the bubble appears during streaming
+        val streamingMsgId = chatDao.insert(
+            ChatMessageEntity(
+                conversationId = conversationId,
+                role = "assistant",
+                content = "",
+                createdAt = System.currentTimeMillis()
+            )
         )
+
+        val extractor = ReplyExtractor()
+        val displayBuilder = StringBuilder()
+
+        try {
+            agent.runTurnStreaming(
+                userInput = userInput,
+                memories = memories,
+                schedules = allSchedules,
+                skills = enabledSkills,
+                config = config,
+                enableWebSearch = true,
+                imageBase64 = imageBase64,
+                imageMimeType = imageMimeType,
+                historyMessages = historyMessages
+            ).collect { chunk ->
+                val display = extractor.consume(chunk)
+                if (display != null) {
+                    displayBuilder.append(display)
+                    chatDao.updateContent(streamingMsgId, displayBuilder.toString())
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "streaming error: ${e.message}")
+        }
+
+        val rawText = extractor.getRaw()
+        val result = agent.parseRaw(rawText)
         Log.i(
             TAG,
             "agent result: memoryUpdates=${result.memoryUpdates.size}, scheduleUpdates=${result.scheduleUpdates.size}, skillUpdates=${result.skillUpdates.size}"
@@ -124,14 +164,7 @@ class ActMeRepository(
 
         val localSkillHints = runLocalSkills(userInput, enabledSkills)
         val finalReply = if (localSkillHints.isBlank()) result.reply else "${result.reply}\n\n$localSkillHints"
-        chatDao.insert(
-            ChatMessageEntity(
-                conversationId = conversationId,
-                role = "assistant",
-                content = finalReply,
-                createdAt = System.currentTimeMillis()
-            )
-        )
+        chatDao.updateContent(streamingMsgId, finalReply)
         touchConversation(conversationId)
 
         result.memoryUpdates.forEach { update ->
@@ -145,22 +178,13 @@ class ActMeRepository(
         }
 
         result.scheduleUpdates.forEach { update ->
-            // 聊天新增日程走子Agent门卫：先二次结构化，再入库。
             val gateRequest = buildScheduleGateRequest(userInput, update)
             val gateResult = addScheduleBySubAgent(gateRequest)
             if (gateResult.isFailure) {
-                Log.i(
-                    TAG,
-                    "chat schedule gate failed, fallback strict-agent-parse: reasonB64=${
-                        LogCodec.utf8Base64(gateResult.exceptionOrNull()?.message)
-                    }"
-                )
+                Log.i(TAG, "chat schedule gate failed, fallback strict-agent-parse")
                 val strictResult = saveScheduleUpdateStrictlyFromAgent(update)
                 if (strictResult.isFailure) {
-                    Log.i(
-                        TAG,
-                        "chat schedule dropped: reasonB64=${LogCodec.utf8Base64(strictResult.exceptionOrNull()?.message)}"
-                    )
+                    Log.i(TAG, "chat schedule dropped")
                 }
             } else {
                 Log.i(TAG, "chat schedule gated by sub-agent: titleB64=${LogCodec.utf8Base64(update.title)}")
@@ -223,7 +247,7 @@ class ActMeRepository(
         }
 
         val insight = runCatching {
-            agent.generateReminderInsight(title, detail)
+            agent.generateReminderInsight(title, detail, buildProviderConfig())
         }.getOrElse { fallbackInsight(title, detail) }
 
         val id = scheduleDao.upsert(
@@ -254,7 +278,7 @@ class ActMeRepository(
             val zoneId = zone.id
             val nowMillis = System.currentTimeMillis()
             val nowLocalIso = Instant.ofEpochMilli(nowMillis).atZone(zone).toString()
-            val plan = agent.runScheduleSubAgent(rawRequest, zoneId, nowLocalIso)
+            val plan = agent.runScheduleSubAgent(rawRequest, zoneId, nowLocalIso, buildProviderConfig())
                 ?: error("子Agent未返回有效日程结构")
 
             require(
@@ -389,7 +413,7 @@ class ActMeRepository(
             }
 
             val insight = runCatching {
-                agent.generateReminderInsight(update.title, update.detail)
+                agent.generateReminderInsight(update.title, update.detail, buildProviderConfig())
             }.getOrElse { fallbackInsight(update.title, update.detail) }
 
             val id = scheduleDao.upsert(
@@ -522,6 +546,62 @@ class ActMeRepository(
             候选 start_at(ms)：$startRaw
             候选 reminder_at(ms)：$reminderRaw
         """.trimIndent()
+    }
+
+    // ---- Provider management ----
+
+    private suspend fun buildProviderConfig(): ProviderConfig {
+        val provider = providerManager.getActiveProvider()
+        if (provider == null) {
+            return ProviderConfig("openai", "", "", "")
+        }
+        val sk = providerManager.getSk(provider.id)
+        val model = providerManager.getLastModel(provider.id).ifBlank { "" }
+        return ProviderConfig(provider.providerFormat, provider.endpoint, sk, model)
+    }
+
+    val providers = providerManager.providers
+
+    suspend fun addProvider(name: String, format: String, endpoint: String, sk: String): Long {
+        return providerManager.addProvider(name, format, endpoint, sk)
+    }
+
+    suspend fun updateProvider(id: Long, name: String, format: String, endpoint: String, sk: String) {
+        providerManager.updateProvider(id, name, format, endpoint, sk)
+    }
+
+    suspend fun deleteProvider(id: Long) {
+        providerManager.deleteProvider(id)
+    }
+
+    fun setActiveProvider(id: Long) {
+        providerManager.setActiveProviderId(id)
+    }
+
+    fun getActiveProviderId(): Long {
+        return providerManager.getActiveProviderId()
+    }
+
+    suspend fun getActiveProvider(): ProviderEntity? {
+        return providerManager.getActiveProvider()
+    }
+
+    fun getProviderSk(id: Long): String {
+        return providerManager.getSk(id)
+    }
+
+    fun getLastModel(providerId: Long): String {
+        return providerManager.getLastModel(providerId)
+    }
+
+    fun setLastModel(providerId: Long, model: String) {
+        providerManager.setLastModel(providerId, model)
+    }
+
+    suspend fun fetchModels(): List<String> {
+        val provider = providerManager.getActiveProvider() ?: return emptyList()
+        val sk = providerManager.getSk(provider.id)
+        return openAiClient.fetchModels(provider.endpoint, sk, provider.providerFormat)
     }
 
     companion object {

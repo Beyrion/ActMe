@@ -31,13 +31,19 @@ interface ChatDao {
     suspend fun deleteSessionById(id: Long)
 
     @Insert
-    suspend fun insert(message: ChatMessageEntity)
+    suspend fun insert(message: ChatMessageEntity): Long
+
+    @Query("UPDATE chat_messages SET content = :content WHERE id = :id")
+    suspend fun updateContent(id: Long, content: String)
 
     @Insert
     suspend fun insertSession(session: ChatSessionEntity): Long
 
     @Update
     suspend fun updateSession(session: ChatSessionEntity)
+
+    @Query("SELECT COUNT(*) FROM chat_messages WHERE conversationId = :conversationId")
+    suspend fun getMessageCount(conversationId: Long): Int
 }
 
 @Dao
@@ -76,6 +82,27 @@ interface ScheduleDao {
     suspend fun upsert(entity: ScheduleEntity): Long
 
     @Query("DELETE FROM schedules WHERE id = :id")
+    suspend fun deleteById(id: Long)
+}
+
+@Dao
+interface ProviderDao {
+    @Query("SELECT * FROM providers ORDER BY createdAt ASC")
+    fun observeAll(): Flow<List<ProviderEntity>>
+
+    @Query("SELECT * FROM providers ORDER BY createdAt ASC")
+    suspend fun getAll(): List<ProviderEntity>
+
+    @Query("SELECT * FROM providers WHERE id = :id")
+    suspend fun getById(id: Long): ProviderEntity?
+
+    @Insert
+    suspend fun insert(provider: ProviderEntity): Long
+
+    @Update
+    suspend fun update(provider: ProviderEntity)
+
+    @Query("DELETE FROM providers WHERE id = :id")
     suspend fun deleteById(id: Long)
 }
 

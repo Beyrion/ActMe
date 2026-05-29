@@ -9,9 +9,14 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -21,6 +26,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -29,6 +35,7 @@ import com.actme.app.data.local.MemoryItemEntity
 @Composable
 fun MemoryCategoryScreen(
     categories: List<String>,
+    onBack: () -> Unit,
     onOpenCategory: (String) -> Unit
 ) {
     Column(
@@ -36,7 +43,12 @@ fun MemoryCategoryScreen(
             .fillMaxSize()
             .padding(12.dp)
     ) {
-        Text("个人记忆", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onBack) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+            }
+            Text("个人记忆", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+        }
         Text("按类别管理记忆；Agent 对话中也会自动整理落库。")
         LazyColumn(
             modifier = Modifier.padding(top = 12.dp),
@@ -46,7 +58,10 @@ fun MemoryCategoryScreen(
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable { onOpenCategory(category) }
+                        .clickable { onOpenCategory(category) },
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surface
+                    )
                 ) {
                     Text(
                         text = category,
@@ -74,8 +89,10 @@ fun MemoryListScreen(
             .fillMaxSize()
             .padding(12.dp)
     ) {
-        Row {
-            TextButton(onClick = onBack) { Text("返回") }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onBack) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+            }
             Text(category, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
         }
         Text("点击条目可进入详情编辑，并可返回。")
@@ -109,7 +126,10 @@ fun MemoryListScreen(
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable { onOpenItem(item.id) }
+                        .clickable { onOpenItem(item.id) },
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surface
+                    )
                 ) {
                     Column(Modifier.padding(12.dp)) {
                         Text(item.content)
@@ -138,8 +158,10 @@ fun MemoryItemScreen(
             .fillMaxSize()
             .padding(12.dp)
     ) {
-        Row {
-            TextButton(onClick = onBack) { Text("返回") }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onBack) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+            }
             Text("条目详情", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
         }
         Text("分类：$category")

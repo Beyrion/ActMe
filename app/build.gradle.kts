@@ -1,12 +1,4 @@
-import groovy.json.JsonSlurper
 import java.io.File
-import java.security.SecureRandom
-import java.security.spec.KeySpec
-import javax.crypto.Cipher
-import javax.crypto.SecretKeyFactory
-import javax.crypto.spec.IvParameterSpec
-import javax.crypto.spec.PBEKeySpec
-import javax.crypto.spec.SecretKeySpec
 
 plugins {
     id("com.android.application")
@@ -16,75 +8,7 @@ plugins {
 }
 
 val generatedAssetsDir = layout.buildDirectory.dir("generated/assets/main")
-val bundledAuthFile = generatedAssetsDir.map { it.file("secure/bundled_auth.enc").asFile }
 val importedSkillsDir = generatedAssetsDir.map { it.dir("skills/codex_import").asFile }
-
-val packSalt = "actme-pack-salt-v1".toByteArray(Charsets.UTF_8)
-
-fun extractApiKey(authFile: File): String {
-    val parsed = JsonSlurper().parse(authFile)
-    if (parsed !is Map<*, *>) return ""
-    val keyCandidates = listOf("OPENAI_API_KEY", "openai_api_key", "api_key", "key")
-    for (candidate in keyCandidates) {
-        val value = parsed[candidate] as? String
-        if (!value.isNullOrBlank()) return value
-    }
-    return ""
-}
-
-fun derivePackKey(passphrase: String): SecretKeySpec {
-    val spec: KeySpec = PBEKeySpec(passphrase.toCharArray(), packSalt, 120_000, 256)
-    val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
-    val keyBytes = factory.generateSecret(spec).encoded
-    return SecretKeySpec(keyBytes, "AES")
-}
-
-fun encryptAesCbc(plainText: String, passphrase: String): ByteArray {
-    val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
-    val iv = ByteArray(16)
-    SecureRandom().nextBytes(iv)
-    cipher.init(Cipher.ENCRYPT_MODE, derivePackKey(passphrase), IvParameterSpec(iv))
-    val encrypted = cipher.doFinal(plainText.toByteArray(Charsets.UTF_8))
-    return iv + encrypted
-}
-
-fun escapeForJson(input: String): String {
-    return input.replace("\\", "\\\\").replace("\"", "\\\"")
-}
-
-val bundleCodexAuth by tasks.registering {
-    outputs.file(bundledAuthFile)
-    doLast {
-        val authFile = File(System.getProperty("user.home"), ".codex/auth.json")
-        val outputFile = bundledAuthFile.get()
-        outputFile.parentFile.mkdirs()
-
-        val localProp = rootProject.file("local.properties")
-        val localPackKey = if (localProp.exists()) {
-            localProp.readLines()
-                .firstOrNull { it.startsWith("actme.packKey=") }
-                ?.substringAfter("=")
-                ?.trim()
-        } else {
-            null
-        }
-        val passphrase = System.getenv("ACTME_PACK_KEY")
-            ?: localPackKey
-            ?: "ACTME_DEV_ONLY_CHANGE_ME"
-
-        if (!authFile.exists()) {
-            logger.warn("未找到 ~/.codex/auth.json，已写入占位加密内容。")
-            outputFile.writeBytes(encryptAesCbc("{\"OPENAI_API_KEY\":\"\"}", passphrase))
-            return@doLast
-        }
-
-        val apiKey = extractApiKey(authFile)
-
-        val plainJson = """{"OPENAI_API_KEY":"${escapeForJson(apiKey)}"}"""
-        outputFile.writeBytes(encryptAesCbc(plainJson, passphrase))
-        logger.lifecycle("已生成加密密钥资源: ${outputFile.absolutePath}")
-    }
-}
 
 val importCodexSkills by tasks.registering {
     outputs.dir(importedSkillsDir)
@@ -130,33 +54,6 @@ android {
             abiFilters += listOf("arm64-v8a")
         }
 
-        val localProp = rootProject.file("local.properties")
-        val localPackKey = if (localProp.exists()) {
-            localProp.readLines()
-                .firstOrNull { it.startsWith("actme.packKey=") }
-                ?.substringAfter("=")
-                ?.trim()
-        } else {
-            null
-        }
-        val passphrase = System.getenv("ACTME_PACK_KEY")
-            ?: localPackKey
-            ?: "ACTME_DEV_ONLY_CHANGE_ME"
-
-        buildConfigField("String", "MODEL_PROVIDER", "\"Model_Studio_Token_Plan\"")
-        buildConfigField("String", "MODEL_NAME", "\"qwen3.6-plus\"")
-        buildConfigField("String", "MODEL_REASONING_EFFORT", "\"medium\"")
-        buildConfigField("boolean", "DISABLE_RESPONSE_STORAGE", "true")
-        buildConfigField("String", "PREFERRED_AUTH_METHOD", "\"apikey\"")
-        buildConfigField("String", "CRS_BASE_URL", "\"https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1\"")
-        buildConfigField("String", "CRS_WIRE_API", "\"chat_completions\"")
-        buildConfigField("boolean", "CRS_REQUIRES_OPENAI_AUTH", "false")
-        buildConfigField("String", "CUSTOM_AUTH_HEADER", "\"\"")
-        buildConfigField("String", "CUSTOM_AUTH_PREFIX", "\"Bearer\"")
-        val escapedPassphrase = passphrase
-            .replace("\\", "\\\\")
-            .replace("\"", "\\\"")
-        buildConfigField("String", "BUNDLE_KEY_PASSPHRASE", "\"$escapedPassphrase\"")
 
         externalNativeBuild {
             cmake {
@@ -216,6 +113,7 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.navigation:navigation-compose:2.8.3")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
 
@@ -237,7 +135,6 @@ dependencies {
 }
 
 tasks.matching { it.name == "preBuild" }.configureEach {
-    dependsOn(bundleCodexAuth)
     dependsOn(importCodexSkills)
 }
 
@@ -274,6 +171,17 @@ val buildMnn by tasks.registering {
             )
         }
 
+        // Find cmake from SDK first, fall back to system PATH
+        val sdkCmakeDir = file("$sdkDir/cmake")
+        val cmakeBin = if (sdkCmakeDir.isDirectory) {
+            val versions = sdkCmakeDir.listFiles()?.filter { it.isDirectory }?.map { it.name }?.sortedDescending()
+            val best = versions?.firstOrNull()
+            if (best != null) file("$sdkCmakeDir/$best/bin/cmake").absolutePath else "cmake"
+        } else {
+            "cmake"
+        }
+        logger.lifecycle("Using cmake: $cmakeBin")
+
         val toolchainFile = file("$ndkDir/build/cmake/android.toolchain.cmake")
         if (!toolchainFile.exists()) {
             throw GradleException("NDK toolchain not found: ${toolchainFile.absolutePath}")
@@ -283,7 +191,7 @@ val buildMnn by tasks.registering {
         libDir.mkdirs()
 
         val cmakeArgs = listOf(
-            "cmake",
+            cmakeBin,
             mnnRoot.absolutePath,
             "-DCMAKE_TOOLCHAIN_FILE=${toolchainFile.absolutePath}",
             "-DCMAKE_BUILD_TYPE=Release",
@@ -303,6 +211,7 @@ val buildMnn by tasks.registering {
             "-DMNN_BUILD_DIFFUSION=ON",
             "-DMNN_BUILD_OPENCV=ON",
             "-DMNN_IMGCODECS=ON",
+            "-DMNN_KLEIDIAI=OFF",
             "-DNATIVE_LIBRARY_OUTPUT=lib",
             "-DNATIVE_INCLUDE_OUTPUT=."
         )
@@ -321,7 +230,7 @@ val buildMnn by tasks.registering {
 
         exec {
             workingDir = buildDir
-            commandLine("cmake", "--build", ".", "--parallel", numCores.toString())
+            commandLine(cmakeBin, "--build", ".", "--parallel", numCores.toString())
         }
 
         // MNN may put libMNN.so in the build root; copy to expected location
@@ -346,9 +255,15 @@ val buildMnn by tasks.registering {
     }
 }
 
-// Wire MNN native build into the app's CMake pipeline
+// Wire MNN native build into the app's CMake pipeline.
+// Only rebuild MNN when the .so is missing or -PforceMnn is passed.
+val mnnBuiltSo = file("${rootProject.file("MNN")}/project/android/build_64/lib/libMNN.so")
+val forceMnn = project.hasProperty("forceMnn")
+
 tasks.matching { it.name.startsWith("configureCMake") }.configureEach {
-    dependsOn(buildMnn)
+    if (!mnnBuiltSo.exists() || forceMnn) {
+        dependsOn(buildMnn)
+    }
 }
 
 val pushAsrModel by tasks.registering {
