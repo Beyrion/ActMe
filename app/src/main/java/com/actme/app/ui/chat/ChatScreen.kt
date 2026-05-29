@@ -31,7 +31,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -46,7 +45,6 @@ import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
@@ -77,8 +75,6 @@ import com.actme.app.audio.AsrManager
 import com.actme.app.ui.theme.MarqueeBorder
 import com.actme.app.audio.AudioRecorderManager
 import com.actme.app.data.local.ChatMessageEntity
-import com.actme.app.mnn.DownloadState
-import com.actme.app.mnn.ModelManager
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import java.io.ByteArrayOutputStream
@@ -96,6 +92,8 @@ fun ChatScreen(
     availableModels: List<String> = emptyList(),
     selectedModel: String = "",
     onSelectModel: (String) -> Unit = {},
+    asrLanguage: String = "Chinese",
+    isModelReady: Boolean = false,
     onNavigateToMenu: () -> Unit = {}
 ) {
     val scope = rememberCoroutineScope()
@@ -120,14 +118,6 @@ fun ChatScreen(
 
     var isTranscribing by remember { mutableStateOf(false) }
     var preloadJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
-    var asrLanguage by remember { mutableStateOf("Chinese") }
-
-    // Model manager for download
-    val modelManager = remember { ModelManager(context) }
-    val downloadState by modelManager.downloadState.collectAsState()
-    val modelInfo by modelManager.modelInfo.collectAsState()
-    var isModelReady by remember { mutableStateOf(modelManager.isModelReady) }
-    var showModelDialog by remember { mutableStateOf(false) }
 
     val asrManager = remember(isModelReady) {
         if (isModelReady) AsrManager(AsrManager.getDefaultModelPath(context)) else null
@@ -177,7 +167,7 @@ fun ChatScreen(
 
         val manager = asrManager
         if (manager == null) {
-            showModelDialog = true
+            Toast.makeText(context, "请先在设置中下载语音识别模型", Toast.LENGTH_SHORT).show()
             recordingFile = null
             return@LaunchedEffect
         }
@@ -466,7 +456,7 @@ fun ChatScreen(
                                 else -> {
                                     IconButton(onClick = {
                                         if (!isModelReady) {
-                                            showModelDialog = true
+                                            Toast.makeText(context, "请先在设置中下载语音识别模型", Toast.LENGTH_SHORT).show()
                                         } else {
                                             val act = activity ?: return@IconButton
                                             if (ContextCompat.checkSelfPermission(act, Manifest.permission.RECORD_AUDIO)
@@ -483,17 +473,6 @@ fun ChatScreen(
                                         Icon(Icons.Filled.Mic, contentDescription = "语音输入")
                                     }
                                 }
-                            }
-                            Spacer(modifier = Modifier.width(4.dp))
-                            // Language toggle
-                            TextButton(onClick = {
-                                asrLanguage = if (asrLanguage == "Chinese") "English" else "Chinese"
-                            }) {
-                                Text(
-                                    if (asrLanguage == "Chinese") "中文" else "EN",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    maxLines = 1
-                                )
                             }
                             Spacer(modifier = Modifier.weight(1f))
 
@@ -556,110 +535,6 @@ fun ChatScreen(
                 }
             }
         }
-    }
-
-    // React to download completion
-    LaunchedEffect(downloadState) {
-        when (val state = downloadState) {
-            is DownloadState.Completed -> {
-                isModelReady = true
-                showModelDialog = false
-                Toast.makeText(context, "ASR模型下载完成，可以使用语音输入了", Toast.LENGTH_SHORT).show()
-            }
-            is DownloadState.Error -> {
-                Toast.makeText(context, "模型下载失败: ${state.message}", Toast.LENGTH_LONG).show()
-            }
-            else -> {}
-        }
-    }
-
-    // Model download dialog
-    if (showModelDialog) {
-        AlertDialog(
-            onDismissRequest = {
-                if (downloadState !is DownloadState.Downloading) {
-                    showModelDialog = false
-                }
-            },
-            title = { Text("语音识别模型") },
-            text = {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    val info = modelInfo
-                    if (info != null) {
-                        Text("模型: ${info.name}", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            "文件数: ${info.fileCount} · 总大小: ${modelManager.formatSize(info.totalSize)}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = Color.Gray
-                        )
-                    } else {
-                        Text("Qwen3-ASR 端侧语音识别模型", style = MaterialTheme.typography.bodyMedium)
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text("约 1.3 GB，下载后无需联网即可使用语音输入", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
-                    }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    when (val state = downloadState) {
-                        is DownloadState.NotStarted -> {
-                            Button(onClick = {
-                                scope.launch { try { modelManager.downloadModel() } catch (_: Exception) {} }
-                            }, modifier = Modifier.fillMaxWidth()) {
-                                Text("下载模型")
-                            }
-                        }
-                        is DownloadState.Checking -> {
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                                Text("正在获取模型信息...", style = MaterialTheme.typography.bodySmall)
-                            }
-                        }
-                        is DownloadState.Downloading -> {
-                            Column {
-                                Text("${state.currentFile} (${state.currentFileIndex}/${state.totalFiles})", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold)
-                                Spacer(modifier = Modifier.height(4.dp))
-                                LinearProgressIndicator(progress = state.currentFileProgress.coerceIn(0f, 1f), modifier = Modifier.fillMaxWidth())
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                    Text("${(state.currentFileProgress * 100).toInt()}%", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
-                                    Text("${modelManager.formatSize(state.totalBytesDownloaded)} / ${modelManager.formatSize(state.totalBytes)}", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
-                                }
-                                Spacer(modifier = Modifier.height(8.dp))
-                                LinearProgressIndicator(
-                                    progress = if (state.totalBytes > 0) (state.totalBytesDownloaded.toFloat() / state.totalBytes).coerceIn(0f, 1f) else 0f,
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text("整体进度: ${((state.totalBytesDownloaded.toFloat() / state.totalBytes).coerceIn(0f, 1f) * 100).toInt()}%", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
-                            }
-                        }
-                        is DownloadState.Error -> {
-                            Column {
-                                Text("下载失败: ${state.message}", style = MaterialTheme.typography.bodySmall, color = Color.Red)
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Button(onClick = {
-                                    scope.launch { try { modelManager.downloadModel() } catch (_: Exception) {} }
-                                }, modifier = Modifier.fillMaxWidth()) {
-                                    Text("重试")
-                                }
-                            }
-                        }
-                        is DownloadState.Completed -> {
-                            Text("模型已下载完成", style = MaterialTheme.typography.bodySmall, color = Color(0xFF4CAF50))
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                if (downloadState is DownloadState.Completed) {
-                    TextButton(onClick = { showModelDialog = false }) { Text("确定") }
-                } else if (downloadState !is DownloadState.Downloading) {
-                    TextButton(onClick = { showModelDialog = false }) { Text("取消") }
-                }
-            },
-            dismissButton = null
-        )
     }
 }
 

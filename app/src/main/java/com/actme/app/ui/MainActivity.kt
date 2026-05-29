@@ -30,13 +30,14 @@ import com.actme.app.ui.memory.MemoryViewModel
 import com.actme.app.ui.schedule.ScheduleScreen
 import com.actme.app.ui.schedule.ScheduleViewModel
 import com.actme.app.ui.settings.SettingsScreen
+import com.actme.app.mnn.DownloadState
 import com.actme.app.ui.settings.SettingsViewModel
 import com.actme.app.ui.theme.AppTheme
 
 class MainActivity : ComponentActivity() {
     private val viewModelFactory by lazy {
         val app = application as ActMeApp
-        AppViewModelFactory(app.container.repository)
+        AppViewModelFactory(app, app.container.repository)
     }
 
     private val chatViewModel: ChatViewModel by viewModels { viewModelFactory }
@@ -70,6 +71,8 @@ class MainActivity : ComponentActivity() {
                             val availableModels by chatViewModel.availableModels.collectAsStateWithLifecycle(emptyList())
                             val selectedModel by chatViewModel.selectedModel.collectAsStateWithLifecycle("")
                             val sendingConversationId by chatViewModel.sendingConversationId.collectAsStateWithLifecycle(null)
+                            val asrLanguage by settingsViewModel.asrLanguage.collectAsStateWithLifecycle("Chinese")
+                            val isModelReady by settingsViewModel.isModelReady.collectAsStateWithLifecycle(false)
                             ChatScreen(
                                 messages = messages,
                                 onSend = { text, imgBase64, imgMime -> chatViewModel.sendMessage(text, imgBase64, imgMime) },
@@ -80,6 +83,8 @@ class MainActivity : ComponentActivity() {
                                 availableModels = availableModels,
                                 selectedModel = selectedModel,
                                 onSelectModel = chatViewModel::selectModel,
+                                asrLanguage = asrLanguage,
+                                isModelReady = isModelReady,
                                 onNavigateToMenu = { navController.navigate("menu") }
                             )
                         }
@@ -168,9 +173,18 @@ class MainActivity : ComponentActivity() {
                         composable("settings") {
                             val providers by settingsViewModel.providers.collectAsStateWithLifecycle(emptyList())
                             val activeProviderId by settingsViewModel.activeProviderId.collectAsStateWithLifecycle(-1L)
+                            val isModelReady by settingsViewModel.isModelReady.collectAsStateWithLifecycle(false)
+                            val downloadState by settingsViewModel.downloadState.collectAsStateWithLifecycle(DownloadState.NotStarted)
+                            val asrLanguage by settingsViewModel.asrLanguage.collectAsStateWithLifecycle("Chinese")
                             SettingsScreen(
                                 providers = providers,
                                 activeProviderId = activeProviderId,
+                                isModelReady = isModelReady,
+                                downloadState = downloadState,
+                                asrLanguage = asrLanguage,
+                                onSetAsrLanguage = settingsViewModel::setAsrLanguage,
+                                onDownloadModel = settingsViewModel::downloadModel,
+                                onDeleteModel = settingsViewModel::deleteModel,
                                 onClearChatHistory = settingsViewModel::clearAllChatHistory,
                                 onAddProvider = settingsViewModel::addProvider,
                                 onUpdateProvider = settingsViewModel::updateProvider,
