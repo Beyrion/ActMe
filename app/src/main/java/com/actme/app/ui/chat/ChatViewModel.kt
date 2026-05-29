@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.actme.app.data.local.ChatMessageEntity
 import com.actme.app.data.local.ChatSessionInfo
 import com.actme.app.data.repo.ActMeRepository
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -48,6 +49,70 @@ class ChatViewModel(private val repository: ActMeRepository) : ViewModel() {
     val isRecording = MutableStateFlow(false)
     val transcribedText = MutableStateFlow<String?>(null)
 
+    // Model selection state
+    private val _availableModels = MutableStateFlow<List<String>>(emptyList())
+    val availableModels: StateFlow<List<String>> = _availableModels
+
+    private val _selectedModel = MutableStateFlow("")
+    val selectedModel: StateFlow<String> = _selectedModel
+
+    private val _currentProviderId = MutableStateFlow(-1L)
+
+    init {
+        viewModelScope.launch {
+            currentConversationIdMutable.value = repository.ensureActiveConversationId()
+        }
+        refreshModelState()
+        // Re-fetch models whenever the provider list changes (e.g. user adds a new one)
+        viewModelScope.launch {
+            repository.providers.collect { providers ->
+                if (providers.isNotEmpty()) {
+                    refreshModelState()
+                }
+            }
+        }
+    }
+
+    private fun refreshModelState() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val provider = repository.getActiveProvider()
+            if (provider != null) {
+                _currentProviderId.value = provider.id
+                val lastModel = repository.getLastModel(provider.id)
+                _selectedModel.value = lastModel
+                // Fetch available models in background
+                try {
+                    val models = repository.fetchModels()
+                    _availableModels.value = models
+                    // If no last model or last model not in list, set default
+                    if (lastModel.isBlank() || (models.isNotEmpty() && lastModel !in models)) {
+                        val default = models.firstOrNull() ?: ""
+                        _selectedModel.value = default
+                        if (default.isNotBlank()) {
+                            repository.setLastModel(provider.id, default)
+                        }
+                    }
+                } catch (_: Exception) {
+                    // Keep empty list, user can type model name
+                }
+            }
+        }
+    }
+
+    fun selectModel(model: String) {
+        _selectedModel.value = model
+        viewModelScope.launch(Dispatchers.IO) {
+            val providerId = _currentProviderId.value
+            if (providerId > 0) {
+                repository.setLastModel(providerId, model)
+            }
+        }
+    }
+
+    fun refreshModels() {
+        refreshModelState()
+    }
+
     fun setRecording(recording: Boolean) {
         isRecording.value = recording
     }
@@ -58,12 +123,6 @@ class ChatViewModel(private val repository: ActMeRepository) : ViewModel() {
 
     fun clearTranscribedText() {
         transcribedText.value = null
-    }
-
-    init {
-        viewModelScope.launch {
-            currentConversationIdMutable.value = repository.ensureActiveConversationId()
-        }
     }
 
     fun createNewConversation() {

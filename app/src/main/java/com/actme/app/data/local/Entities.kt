@@ -54,6 +54,15 @@ data class ScheduleEntity(
     val createdAt: Long = System.currentTimeMillis()
 )
 
+@Entity(tableName = "providers")
+data class ProviderEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val name: String,
+    val providerFormat: String, // "openai" or "anthropic"
+    val endpoint: String,
+    val createdAt: Long = System.currentTimeMillis()
+)
+
 @Entity(tableName = "skills")
 data class SkillEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,

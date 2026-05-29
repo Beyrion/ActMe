@@ -7,6 +7,7 @@ import com.actme.app.data.local.ScheduleEntity
 import com.actme.app.data.local.SkillEntity
 import com.actme.app.data.remote.MessagePayload
 import com.actme.app.data.remote.OpenAiResponsesClient
+import com.actme.app.data.remote.ProviderConfig
 import android.util.Log
 import java.time.ZoneId
 import kotlinx.serialization.SerialName
@@ -69,6 +70,7 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
         memories: List<MemoryItemEntity>,
         schedules: List<ScheduleEntity>,
         skills: List<SkillEntity>,
+        config: ProviderConfig,
         enableWebSearch: Boolean = false,
         imageBase64: String? = null,
         imageMimeType: String? = null,
@@ -91,14 +93,14 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
         // 添加当前用户消息
         messages += MessagePayload("user", userInput, imageBase64 = imageBase64, imageMimeType = imageMimeType)
 
-        val raw = openAiClient.run(messages, enableWebSearch = enableWebSearch)
+        val raw = openAiClient.run(messages, config = config, enableWebSearch = enableWebSearch)
 
         val jsonPart = extractJson(raw)
         val parsed = runCatching { json.decodeFromString<AgentResult>(jsonPart) }.getOrNull()
         return parsed ?: AgentResult(reply = raw)
     }
 
-    suspend fun generateReminderInsight(title: String, detail: String): String {
+    suspend fun generateReminderInsight(title: String, detail: String, config: ProviderConfig): String {
         val prompt = """
             你是 ActMe 的提醒增强助手。
             用户收到如下提醒：
@@ -110,14 +112,16 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
             listOf(
                 MessagePayload("system", "你是一个务实的中文行动教练。"),
                 MessagePayload("user", prompt)
-            )
+            ),
+            config = config
         )
     }
 
     suspend fun runScheduleSubAgent(
         rawRequest: String,
         timezoneId: String,
-        nowLocalIso: String
+        nowLocalIso: String,
+        config: ProviderConfig
     ): ScheduleSubAgentPlan? {
         val prompt = """
             你是 ActMe 的日程子Agent，只负责把用户请求转换为结构化日程配置。
@@ -151,7 +155,8 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
             listOf(
                 MessagePayload("system", "你是严谨的日程结构化助手。"),
                 MessagePayload("user", prompt)
-            )
+            ),
+            config = config
         )
         val jsonPart = extractJson(raw)
         val parsed = runCatching { json.decodeFromString<ScheduleSubAgentPlan>(jsonPart) }.getOrNull()

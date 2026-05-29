@@ -111,6 +111,8 @@ class MainActivity : ComponentActivity() {
                         val currentConversationId by chatViewModel.currentConversationId.collectAsStateWithLifecycle(null)
                         val messages by chatViewModel.messages.collectAsStateWithLifecycle(emptyList())
                         val isRecording by chatViewModel.isRecording.collectAsStateWithLifecycle(false)
+                        val availableModels by chatViewModel.availableModels.collectAsStateWithLifecycle(emptyList())
+                        val selectedModel by chatViewModel.selectedModel.collectAsStateWithLifecycle("")
                         ChatScreen(
                             sessionInfos = sessionInfos,
                             currentConversationId = currentConversationId,
@@ -123,7 +125,10 @@ class MainActivity : ComponentActivity() {
                             sending = chatViewModel.sending.collectAsStateWithLifecycle(false).value,
                             isRecording = isRecording,
                             onStartRecording = { chatViewModel.setRecording(true) },
-                            onStopRecording = { chatViewModel.setRecording(false) }
+                            onStopRecording = { chatViewModel.setRecording(false) },
+                            availableModels = availableModels,
+                            selectedModel = selectedModel,
+                            onSelectModel = chatViewModel::selectModel
                         )
                     }
                     composable("memory") {
@@ -184,8 +189,16 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                     composable("settings") {
+                        val providers by settingsViewModel.providers.collectAsStateWithLifecycle(emptyList())
+                        val activeProviderId by settingsViewModel.activeProviderId.collectAsStateWithLifecycle(-1L)
                         SettingsScreen(
-                            onClearChatHistory = settingsViewModel::clearAllChatHistory
+                            providers = providers,
+                            activeProviderId = activeProviderId,
+                            onClearChatHistory = settingsViewModel::clearAllChatHistory,
+                            onAddProvider = settingsViewModel::addProvider,
+                            onUpdateProvider = settingsViewModel::updateProvider,
+                            onDeleteProvider = settingsViewModel::deleteProvider,
+                            onSetActiveProvider = settingsViewModel::setActiveProvider
                         )
                     }
                 }

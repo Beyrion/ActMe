@@ -15,6 +15,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -97,7 +98,10 @@ fun ChatScreen(
     sending: Boolean,
     isRecording: Boolean = false,
     onStartRecording: (() -> Unit)? = null,
-    onStopRecording: (() -> Unit)? = null
+    onStopRecording: (() -> Unit)? = null,
+    availableModels: List<String> = emptyList(),
+    selectedModel: String = "",
+    onSelectModel: (String) -> Unit = {}
 ) {
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -109,6 +113,7 @@ fun ChatScreen(
     var selectedImageBase64 by remember { mutableStateOf<String?>(null) }
     var selectedImageMimeType by remember { mutableStateOf<String?>(null) }
     var selectedImageBytes by remember { mutableStateOf<ByteArray?>(null) }
+    var showModelMenu by remember { mutableStateOf(false) }
 
     val context = LocalContext.current
 
@@ -477,6 +482,45 @@ fun ChatScreen(
                                 }
                             }
                             Spacer(modifier = Modifier.weight(1f))
+
+                            // Model selector
+                            Box {
+                                TextButton(onClick = { showModelMenu = true }) {
+                                    Text(
+                                        selectedModel.ifBlank { "模型" },
+                                        style = MaterialTheme.typography.labelSmall,
+                                        maxLines = 1,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                                DropdownMenu(
+                                    expanded = showModelMenu,
+                                    onDismissRequest = { showModelMenu = false }
+                                ) {
+                                    if (availableModels.isEmpty()) {
+                                        DropdownMenuItem(
+                                            text = { Text("暂无可用模型") },
+                                            onClick = { showModelMenu = false }
+                                        )
+                                    } else {
+                                        for (model in availableModels) {
+                                            DropdownMenuItem(
+                                                text = {
+                                                    Text(
+                                                        model,
+                                                        fontWeight = if (model == selectedModel) FontWeight.Bold else FontWeight.Normal
+                                                    )
+                                                },
+                                                onClick = {
+                                                    onSelectModel(model)
+                                                    showModelMenu = false
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+
                             if (sending) {
                                 CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
                             } else {

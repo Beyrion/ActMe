@@ -83,6 +83,27 @@ interface ScheduleDao {
 }
 
 @Dao
+interface ProviderDao {
+    @Query("SELECT * FROM providers ORDER BY createdAt ASC")
+    fun observeAll(): Flow<List<ProviderEntity>>
+
+    @Query("SELECT * FROM providers ORDER BY createdAt ASC")
+    suspend fun getAll(): List<ProviderEntity>
+
+    @Query("SELECT * FROM providers WHERE id = :id")
+    suspend fun getById(id: Long): ProviderEntity?
+
+    @Insert
+    suspend fun insert(provider: ProviderEntity): Long
+
+    @Update
+    suspend fun update(provider: ProviderEntity)
+
+    @Query("DELETE FROM providers WHERE id = :id")
+    suspend fun deleteById(id: Long)
+}
+
+@Dao
 interface SkillDao {
     @Query("SELECT * FROM skills ORDER BY createdAt DESC")
     fun observeAll(): Flow<List<SkillEntity>>
