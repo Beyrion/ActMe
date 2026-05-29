@@ -13,9 +13,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ChatMessageEntity::class,
         MemoryItemEntity::class,
         ScheduleEntity::class,
-        SkillEntity::class
+        SkillEntity::class,
+        ProviderEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class ActMeDatabase : RoomDatabase() {
@@ -23,6 +24,7 @@ abstract class ActMeDatabase : RoomDatabase() {
     abstract fun memoryDao(): MemoryDao
     abstract fun scheduleDao(): ScheduleDao
     abstract fun skillDao(): SkillDao
+    abstract fun providerDao(): ProviderDao
 
     companion object {
         @Volatile
@@ -35,7 +37,7 @@ abstract class ActMeDatabase : RoomDatabase() {
                     ActMeDatabase::class.java,
                     "actme.db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                     .build()
                     .also { INSTANCE = it }
             }
@@ -72,6 +74,22 @@ abstract class ActMeDatabase : RoomDatabase() {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE chat_messages ADD COLUMN imageBase64 TEXT")
                 db.execSQL("ALTER TABLE chat_messages ADD COLUMN imageMimeType TEXT")
+            }
+        }
+
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `providers` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `name` TEXT NOT NULL,
+                        `providerFormat` TEXT NOT NULL,
+                        `endpoint` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
             }
         }
     }

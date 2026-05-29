@@ -3,8 +3,8 @@ package com.actme.app.di
 import android.content.Context
 import com.actme.app.data.agent.ActMeAgent
 import com.actme.app.data.local.ActMeDatabase
-import com.actme.app.data.remote.BundledAuthManager
 import com.actme.app.data.remote.OpenAiResponsesClient
+import com.actme.app.data.remote.ProviderManager
 import com.actme.app.data.repo.ActMeRepository
 import com.actme.app.notifications.ReminderScheduler
 
@@ -12,8 +12,8 @@ class AppContainer(context: Context) {
     private val appContext = context.applicationContext
 
     val database: ActMeDatabase = ActMeDatabase.getInstance(appContext)
-    private val authManager = BundledAuthManager(appContext)
-    private val openAiClient = OpenAiResponsesClient(authManager)
+    val providerManager = ProviderManager(appContext, database.providerDao())
+    private val openAiClient = OpenAiResponsesClient()
     private val agent = ActMeAgent(openAiClient)
     private val reminderScheduler = ReminderScheduler(appContext)
 
@@ -23,6 +23,8 @@ class AppContainer(context: Context) {
         scheduleDao = database.scheduleDao(),
         skillDao = database.skillDao(),
         agent = agent,
-        reminderScheduler = reminderScheduler
+        reminderScheduler = reminderScheduler,
+        providerManager = providerManager,
+        openAiClient = openAiClient
     )
 }

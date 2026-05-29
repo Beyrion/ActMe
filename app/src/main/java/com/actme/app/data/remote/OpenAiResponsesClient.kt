@@ -1,7 +1,6 @@
 package com.actme.app.data.remote
 
 import android.util.Log
-import com.actme.app.BuildConfig
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -12,10 +11,23 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.net.URI
+
+data class ProviderConfig(
+    val providerFormat: String, // "openai" or "anthropic"
+    val endpoint: String,
+    val sk: String,
+    val model: String
+)
 
 data class MessagePayload(
     val role: String,
@@ -24,54 +36,133 @@ data class MessagePayload(
     val imageMimeType: String? = null
 )
 
-class OpenAiResponsesClient(private val authManager: BundledAuthManager) {
+class OpenAiResponsesClient {
     private val json = Json { ignoreUnknownKeys = true }
     private val okHttp = OkHttpClient.Builder().build()
 
-    private val useChatCompletions = BuildConfig.CRS_WIRE_API == "chat_completions"
+    /**
+     * Build a full URL from a user-supplied endpoint and an API path.
+     * If the endpoint doesn't contain /v1 or /v2, we insert /v1 automatically.
+     * e.g. endpoint="https://api.openai.com", path="chat/completions"
+     *      -> "https://api.openai.com/v1/chat/completions"
+     */
+    private fun apiUrl(endpoint: String, path: String): String {
+        val base = endpoint.trimEnd('/')
+        val uri = URI.create(base).path.orEmpty()
+        val hasVersion = uri.contains("/v1") || uri.contains("/v2")
+        return if (hasVersion) {
+            "$base/$path"
+        } else {
+            "$base/v1/$path"
+        }
+    }
 
-    suspend fun run(messages: List<MessagePayload>, enableWebSearch: Boolean = false): String {
-        val apiKey = authManager.getApiKey()
-        if (apiKey.isBlank()) {
-            Log.i(TAG, "openai run aborted: api key is blank")
-            return "当前未配置 API Key，请在构建时检查 ~/.codex/auth.json 与 actme.packKey。"
+    suspend fun run(
+        messages: List<MessagePayload>,
+        config: ProviderConfig,
+        enableWebSearch: Boolean = false
+    ): String {
+        if (config.sk.isBlank()) {
+            Log.i(TAG, "run aborted: api key is blank")
+            return "当前未配置 API Key，请在设置中添加提供商。"
+        }
+        val url = when (config.providerFormat) {
+            "anthropic" -> apiUrl(config.endpoint, "messages")
+            else -> apiUrl(config.endpoint, "chat/completions")
         }
         Log.i(
             TAG,
-            "openai run request: messageCount=${messages.size}, model=${BuildConfig.MODEL_NAME}, webSearch=$enableWebSearch, api=${BuildConfig.CRS_WIRE_API}"
+            "run request: url=$url, model=${config.model}, messages=${messages.size}"
         )
 
-        val request = if (useChatCompletions) {
-            buildChatRequest(messages, enableWebSearch, apiKey)
-        } else {
-            buildResponsesRequest(messages, enableWebSearch, apiKey)
+        val request = when (config.providerFormat) {
+            "anthropic" -> buildAnthropicRequest(messages, config, enableWebSearch)
+            else -> buildOpenAiRequest(messages, config, enableWebSearch)
         }
 
         val response = okHttp.newCall(request).execute()
         val body = response.body?.string().orEmpty()
         if (!response.isSuccessful) {
-            Log.i(TAG, "openai run failed: code=${response.code}")
+            Log.i(TAG, "run failed: code=${response.code}")
             return "请求失败(${response.code})：$body"
         }
-        Log.i(TAG, "openai run success")
-        return if (useChatCompletions) {
-            parseChatSseBody(body)
-        } else {
-            parseOutputText(parseSseBodyIfNeeded(body))
+        Log.i(TAG, "run success")
+        return parseSseBody(body, config.providerFormat)
+    }
+
+    fun runStreaming(
+        messages: List<MessagePayload>,
+        config: ProviderConfig,
+        enableWebSearch: Boolean = false
+    ): Flow<String> = flow {
+        if (config.sk.isBlank()) {
+            emit("当前未配置 API Key，请在设置中添加提供商。")
+            return@flow
+        }
+        val request = when (config.providerFormat) {
+            "anthropic" -> buildAnthropicRequest(messages, config, enableWebSearch)
+            else -> buildOpenAiRequest(messages, config, enableWebSearch)
+        }
+        val call = okHttp.newCall(request)
+        try {
+            val response = call.execute()
+            if (!response.isSuccessful) {
+                val body = response.body?.string().orEmpty()
+                emit("请求失败(${response.code})：$body")
+                return@flow
+            }
+            val source = response.body?.source() ?: return@flow
+            while (!source.exhausted()) {
+                val line = source.readUtf8Line() ?: break
+                val chunk = parseSseLine(line, config.providerFormat)
+                if (!chunk.isNullOrEmpty()) emit(chunk)
+            }
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            Log.e(TAG, "runStreaming error: ${e.message}")
+        } finally {
+            call.cancel()
+        }
+    }.flowOn(Dispatchers.IO)
+
+    suspend fun fetchModels(endpoint: String, sk: String, providerFormat: String = "openai"): List<String> {
+        if (sk.isBlank() || endpoint.isBlank()) return emptyList()
+        return try {
+            val url = apiUrl(endpoint, "models")
+            val authHeader = if (providerFormat == "anthropic") "x-api-key" else "Authorization"
+            val authValue = if (providerFormat == "anthropic") sk else "Bearer $sk"
+            Log.i(TAG, "fetchModels: GET $url")
+            val request = Request.Builder()
+                .url(url)
+                .header(authHeader, authValue)
+                .header("Content-Type", "application/json")
+                .get()
+                .build()
+            val response = okHttp.newCall(request).execute()
+            if (!response.isSuccessful) {
+                Log.i(TAG, "fetchModels failed: code=${response.code}, body=${response.body?.string()}")
+                return emptyList()
+            }
+            val body = response.body?.string().orEmpty()
+            val root = json.parseToJsonElement(body).jsonObject
+            root["data"]?.jsonArray?.mapNotNull { elem ->
+                elem.jsonObject["id"]?.jsonPrimitive?.contentOrNull
+            }?.sorted() ?: emptyList()
+        } catch (_: Exception) {
+            emptyList()
         }
     }
 
-    private fun buildChatRequest(
+    // ---- OpenAI-compatible chat/completions ----
+
+    private fun buildOpenAiRequest(
         messages: List<MessagePayload>,
-        enableWebSearch: Boolean,
-        apiKey: String
+        config: ProviderConfig,
+        enableWebSearch: Boolean
     ): Request {
         val payload = buildJsonObject {
-            put("model", BuildConfig.MODEL_NAME)
+            put("model", config.model)
             put("stream", true)
-            if (!BuildConfig.CUSTOM_AUTH_HEADER.isNullOrBlank()) {
-                put(BuildConfig.CUSTOM_AUTH_HEADER, apiKey)
-            }
             putJsonArray("messages") {
                 messages.forEach { msg ->
                     add(
@@ -103,34 +194,44 @@ class OpenAiResponsesClient(private val authManager: BundledAuthManager) {
             }
         }
 
-        val authHeader = if (BuildConfig.CUSTOM_AUTH_HEADER.isNullOrBlank()) {
-            "${BuildConfig.CUSTOM_AUTH_PREFIX} $apiKey"
-        } else {
-            "Bearer dummy"
-        }
-
         return Request.Builder()
-            .url("${BuildConfig.CRS_BASE_URL.trimEnd('/')}/chat/completions")
-            .header("Authorization", authHeader)
+            .url(apiUrl(config.endpoint, "chat/completions"))
+            .header("Authorization", "Bearer ${config.sk}")
             .header("Content-Type", "application/json")
             .post(payload.toString().toRequestBody("application/json".toMediaType()))
             .build()
     }
 
-    private fun buildResponsesRequest(
+    // ---- Anthropic Messages API ----
+
+    private fun buildAnthropicRequest(
         messages: List<MessagePayload>,
-        enableWebSearch: Boolean,
-        apiKey: String
+        config: ProviderConfig,
+        enableWebSearch: Boolean
     ): Request {
-        val payload = buildJsonObject {
-            put("model", BuildConfig.MODEL_NAME)
-            put("store", !BuildConfig.DISABLE_RESPONSE_STORAGE)
-            put("stream", true)
-            putJsonObject("reasoning") {
-                put("effort", BuildConfig.MODEL_REASONING_EFFORT)
+        // Separate system message from conversation
+        val systemMessages = mutableListOf<String>()
+        val conversationMessages = mutableListOf<MessagePayload>()
+
+        for (msg in messages) {
+            if (msg.role == "system") {
+                systemMessages.add(msg.content)
+            } else {
+                conversationMessages.add(msg)
             }
-            putJsonArray("input") {
-                messages.forEach { msg ->
+        }
+
+        val systemPrompt = systemMessages.joinToString("\n")
+
+        val payload = buildJsonObject {
+            put("model", config.model)
+            put("max_tokens", 4096)
+            put("stream", true)
+            if (systemPrompt.isNotBlank()) {
+                put("system", systemPrompt)
+            }
+            putJsonArray("messages") {
+                conversationMessages.forEach { msg ->
                     add(
                         buildJsonObject {
                             put("role", msg.role)
@@ -139,26 +240,47 @@ class OpenAiResponsesClient(private val authManager: BundledAuthManager) {
                     )
                 }
             }
-            if (enableWebSearch) {
-                putJsonArray("tools") {
-                    add(
-                        buildJsonObject {
-                            put("type", "web_search_preview")
-                        }
-                    )
-                }
-            }
         }
 
         return Request.Builder()
-            .url("${BuildConfig.CRS_BASE_URL.trimEnd('/')}/responses")
-            .header("Authorization", "Bearer $apiKey")
+            .url(apiUrl(config.endpoint, "messages"))
+            .header("x-api-key", config.sk)
+            .header("anthropic-version", "2023-06-01")
             .header("Content-Type", "application/json")
             .post(payload.toString().toRequestBody("application/json".toMediaType()))
             .build()
     }
 
-    private fun parseChatSseBody(raw: String): String {
+    // ---- SSE Parsing ----
+
+    private fun parseSseBody(raw: String, format: String): String {
+        return when (format) {
+            "anthropic" -> parseAnthropicSseBody(raw)
+            else -> parseOpenAiSseBody(raw)
+        }
+    }
+
+    private fun parseSseLine(line: String, format: String): String? {
+        val trimmed = line.trim()
+        if (!trimmed.startsWith("data:")) return null
+        val data = trimmed.removePrefix("data:").trim()
+        if (data.isBlank() || data == "[DONE]") return null
+        val obj = runCatching { json.parseToJsonElement(data).jsonObject }.getOrNull() ?: return null
+        return when (format) {
+            "anthropic" -> {
+                if (obj["type"]?.jsonPrimitive?.contentOrNull == "content_block_delta") {
+                    obj["delta"]?.jsonObject?.get("text")?.jsonPrimitive?.contentOrNull
+                } else null
+            }
+            else -> {
+                obj["choices"]?.jsonArray?.firstOrNull()
+                    ?.jsonObject?.get("delta")?.jsonObject
+                    ?.get("content")?.jsonPrimitive?.contentOrNull
+            }
+        }
+    }
+
+    private fun parseOpenAiSseBody(raw: String): String {
         if (!raw.contains("data:")) return raw
 
         val deltaBuilder = StringBuilder()
@@ -182,66 +304,31 @@ class OpenAiResponsesClient(private val authManager: BundledAuthManager) {
         return deltaBuilder.toString().ifBlank { raw }
     }
 
-    private fun parseOutputText(raw: String): String {
-        val root = runCatching { json.parseToJsonElement(raw).jsonObject }.getOrNull() ?: return raw
-
-        root["output_text"]?.jsonPrimitive?.contentOrNull?.let { output ->
-            if (output.isNotBlank()) return output
-        }
-
-        val outputArray = root["output"]?.jsonArray ?: JsonArray(emptyList())
-        val textParts = mutableListOf<String>()
-        for (item in outputArray) {
-            val itemObj = item.jsonObject
-            val contentArray = itemObj["content"]?.jsonArray ?: continue
-            for (content in contentArray) {
-                val contentObj = content.jsonObject
-                val directText = contentObj["text"]?.jsonPrimitive?.contentOrNull
-                if (!directText.isNullOrBlank()) {
-                    textParts += directText
-                    continue
-                }
-                val nested = contentObj["output_text"]?.jsonPrimitive?.contentOrNull
-                if (!nested.isNullOrBlank()) {
-                    textParts += nested
-                }
-            }
-        }
-        return textParts.joinToString("\n").ifBlank { raw }
-    }
-
-    private fun parseSseBodyIfNeeded(raw: String): String {
+    private fun parseAnthropicSseBody(raw: String): String {
         if (!raw.contains("data:")) return raw
 
         val deltaBuilder = StringBuilder()
-        var completedResponseJson: String? = null
-
         raw.lineSequence().forEach { line ->
             val trimmed = line.trim()
             if (!trimmed.startsWith("data:")) return@forEach
             val data = trimmed.removePrefix("data:").trim()
-            if (data.isBlank() || data == "[DONE]") return@forEach
+            if (data.isBlank()) return@forEach
 
             val eventObj = runCatching { json.parseToJsonElement(data).jsonObject }.getOrNull() ?: return@forEach
             val type = eventObj["type"]?.jsonPrimitive?.contentOrNull.orEmpty()
             when (type) {
-                "response.output_text.delta" -> {
-                    val delta = eventObj["delta"]?.jsonPrimitive?.contentOrNull.orEmpty()
-                    if (delta.isNotEmpty()) deltaBuilder.append(delta)
+                "content_block_delta" -> {
+                    val delta = eventObj["delta"]?.jsonObject
+                    val text = delta?.get("text")?.jsonPrimitive?.contentOrNull.orEmpty()
+                    if (text.isNotEmpty()) deltaBuilder.append(text)
                 }
-                "response.completed" -> {
-                    val responseObj = eventObj["response"]?.jsonObject
-                    if (responseObj != null) completedResponseJson = responseObj.toString()
-                }
+                "message_stop" -> { /* stream end */ }
             }
         }
-
-        if (deltaBuilder.isNotEmpty()) return deltaBuilder.toString()
-        if (!completedResponseJson.isNullOrBlank()) return completedResponseJson!!
-        return raw
+        return deltaBuilder.toString().ifBlank { raw }
     }
 
     companion object {
-        private const val TAG = "ActMeOpenAIClient"
+        private const val TAG = "ActMeLlmClient"
     }
 }

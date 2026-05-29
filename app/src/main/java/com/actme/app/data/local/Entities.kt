@@ -11,6 +11,11 @@ data class ChatSessionEntity(
     val updatedAt: Long = System.currentTimeMillis()
 )
 
+data class ChatSessionInfo(
+    val session: ChatSessionEntity,
+    val messageCount: Int
+)
+
 @Entity(tableName = "chat_messages")
 data class ChatMessageEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -46,6 +51,15 @@ data class ScheduleEntity(
     val timezoneId: String = "Asia/Shanghai",
     val insight: String = "",
     val source: String = "manual",
+    val createdAt: Long = System.currentTimeMillis()
+)
+
+@Entity(tableName = "providers")
+data class ProviderEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val name: String,
+    val providerFormat: String, // "openai" or "anthropic"
+    val endpoint: String,
     val createdAt: Long = System.currentTimeMillis()
 )
 
