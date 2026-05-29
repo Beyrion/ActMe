@@ -118,25 +118,22 @@ fun ChatScreen(
         activity?.let { AudioRecorderManager(it) }
     }
 
-    val audioPermissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (granted) {
-            audioRecorder?.startRecording(context.cacheDir)
-            isVoiceRecording = true
-            onStartRecording?.invoke()
-            startPreloadingModel()
-        } else {
-            Toast.makeText(context, "需要麦克风权限才能使用语音输入", Toast.LENGTH_SHORT).show()
-        }
-    }
-
     var isTranscribing by remember { mutableStateOf(false) }
-
-    // Preload ASR model in parallel with recording
     var preloadJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
     var asrLanguage by remember { mutableStateOf("Chinese") }
 
+    // Model manager for download
+    val modelManager = remember { ModelManager(context) }
+    val downloadState by modelManager.downloadState.collectAsState()
+    val modelInfo by modelManager.modelInfo.collectAsState()
+    var isModelReady by remember { mutableStateOf(modelManager.isModelReady) }
+    var showModelDialog by remember { mutableStateOf(false) }
+
+    val asrManager = remember(isModelReady) {
+        if (isModelReady) AsrManager(AsrManager.getDefaultModelPath(context)) else null
+    }
+
+    // Preload ASR model in parallel with recording
     fun startPreloadingModel() {
         val mgr = asrManager
         if (mgr != null && !mgr.isLoaded && preloadJob?.isActive != true) {
@@ -148,15 +145,17 @@ fun ChatScreen(
         }
     }
 
-    // Model manager for download
-    val modelManager = remember { ModelManager(context) }
-    val downloadState by modelManager.downloadState.collectAsState()
-    val modelInfo by modelManager.modelInfo.collectAsState()
-    var isModelReady by remember { mutableStateOf(modelManager.isModelReady) }
-    var showModelDialog by remember { mutableStateOf(false) }
-
-    val asrManager = remember(isModelReady) {
-        if (isModelReady) AsrManager(AsrManager.getDefaultModelPath(context)) else null
+    val audioPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            audioRecorder?.startRecording(context.cacheDir)
+            isVoiceRecording = true
+            onStartRecording?.invoke()
+            startPreloadingModel()
+        } else {
+            Toast.makeText(context, "需要麦克风权限才能使用语音输入", Toast.LENGTH_SHORT).show()
+        }
     }
 
     DisposableEffect(audioRecorder) {
