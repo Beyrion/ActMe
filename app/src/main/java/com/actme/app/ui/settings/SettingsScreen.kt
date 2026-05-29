@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Info
@@ -22,6 +23,7 @@ import com.actme.app.data.local.ProviderEntity
 import androidx.compose.material.icons.outlined.Api
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
@@ -55,7 +57,8 @@ fun SettingsScreen(
     onAddProvider: (String, String, String, String) -> Unit,
     onUpdateProvider: (Long, String, String, String, String) -> Unit,
     onDeleteProvider: (Long) -> Unit,
-    onSetActiveProvider: (Long) -> Unit
+    onSetActiveProvider: (Long) -> Unit,
+    onBack: () -> Unit
 ) {
     val context = LocalContext.current
     val versionName = remember {
@@ -139,11 +142,16 @@ fun SettingsScreen(
             .padding(12.dp)
             .verticalScroll(rememberScrollState())
     ) {
-        Text(
-            "设置",
-            style = MaterialTheme.typography.headlineSmall,
-            fontWeight = FontWeight.Bold
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onBack) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+            }
+            Text(
+                "设置",
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold
+            )
+        }
 
         Spacer(Modifier.height(16.dp))
 
@@ -165,7 +173,10 @@ fun SettingsScreen(
         }
 
         if (providers.isEmpty()) {
-            Card(modifier = Modifier.fillMaxWidth()) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+            ) {
                 ListItem(
                     headlineContent = { Text("尚未添加提供商") },
                     supportingContent = { Text("点击 + 添加 OpenAI 或 Anthropic 兼容的 API 提供商") },
@@ -181,7 +192,8 @@ fun SettingsScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(vertical = 4.dp)
-                        .clickable { onSetActiveProvider(provider.id) }
+                        .clickable { onSetActiveProvider(provider.id) },
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
                 ) {
                     Row(
                         modifier = Modifier
@@ -240,7 +252,10 @@ fun SettingsScreen(
             color = MaterialTheme.colorScheme.primary,
             modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp)
         )
-        Card(modifier = Modifier.fillMaxWidth()) {
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        ) {
             ListItem(
                 headlineContent = { Text("清空聊天记录") },
                 supportingContent = { Text("删除所有聊天会话和消息") },
@@ -260,7 +275,10 @@ fun SettingsScreen(
             color = MaterialTheme.colorScheme.primary,
             modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp)
         )
-        Card(modifier = Modifier.fillMaxWidth()) {
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        ) {
             ListItem(
                 headlineContent = { Text("ActMe") },
                 supportingContent = { Text("AI 生活助手") },

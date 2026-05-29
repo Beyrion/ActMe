@@ -10,11 +10,9 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -34,42 +32,33 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.Forum
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalDrawerSheet
-import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -85,27 +74,20 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.compose.runtime.collectAsState
 import com.actme.app.audio.AsrManager
+import com.actme.app.ui.theme.MarqueeBorder
 import com.actme.app.audio.AudioRecorderManager
 import com.actme.app.data.local.ChatMessageEntity
-import com.actme.app.data.local.ChatSessionEntity
-import com.actme.app.data.local.ChatSessionInfo
-import com.actme.app.util.formatRelativeTime
 import com.actme.app.mnn.DownloadState
 import com.actme.app.mnn.ModelManager
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import java.io.ByteArrayOutputStream
 import java.io.File
 
-@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(
-    sessionInfos: List<ChatSessionInfo>,
-    currentConversationId: Long?,
     messages: List<ChatMessageEntity>,
-    onCreateConversation: () -> Unit,
-    onSwitchConversation: (Long) -> Unit,
-    onRenameConversation: (Long, String) -> Unit,
-    onDeleteConversation: (Long) -> Unit,
     onSend: (String, String?, String?) -> Unit,
     sendingConversationId: Long? = null,
     isRecording: Boolean = false,
@@ -113,14 +95,11 @@ fun ChatScreen(
     onStopRecording: (() -> Unit)? = null,
     availableModels: List<String> = emptyList(),
     selectedModel: String = "",
-    onSelectModel: (String) -> Unit = {}
+    onSelectModel: (String) -> Unit = {},
+    onNavigateToMenu: () -> Unit = {}
 ) {
-    val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     var input by remember { mutableStateOf("") }
-    var renameTarget by remember { mutableStateOf<ChatSessionEntity?>(null) }
-    var renameInput by remember { mutableStateOf("") }
-    var deleteTarget by remember { mutableStateOf<ChatSessionEntity?>(null) }
 
     var selectedImageBase64 by remember { mutableStateOf<String?>(null) }
     var selectedImageMimeType by remember { mutableStateOf<String?>(null) }
@@ -231,119 +210,9 @@ fun ChatScreen(
         }
     }
 
-    ModalNavigationDrawer(
-        drawerState = drawerState,
-        drawerContent = {
-            ModalDrawerSheet {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        "所有会话",
-                        style = MaterialTheme.typography.headlineSmall,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.weight(1f)
-                    )
-                    IconButton(onClick = {
-                        onCreateConversation()
-                        scope.launch { drawerState.close() }
-                    }) {
-                        Icon(Icons.Filled.Add, contentDescription = "新聊天")
-                    }
-                }
-                LazyColumn(modifier = Modifier.padding(horizontal = 12.dp)) {
-                    items(sessionInfos, key = { it.session.id }) { info ->
-                        var showMenu by remember { mutableStateOf(false) }
-                        val session = info.session
-                        val selected = session.id == currentConversationId
-                        val isLoading = session.id == sendingConversationId
-                        Card(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 4.dp)
-                                .combinedClickable(
-                                    onClick = {
-                                        onSwitchConversation(session.id)
-                                        scope.launch { drawerState.close() }
-                                    },
-                                    onLongClick = { showMenu = true }
-                                ),
-                            colors = CardDefaults.cardColors(
-                                containerColor = if (selected)
-                                    MaterialTheme.colorScheme.primaryContainer
-                                else
-                                    MaterialTheme.colorScheme.surface
-                            ),
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(12.dp)
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Text(
-                                        session.title,
-                                        style = MaterialTheme.typography.titleSmall,
-                                        fontWeight = FontWeight.Medium,
-                                        maxLines = 1,
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                    if (isLoading) {
-                                        CircularProgressIndicator(
-                                            modifier = Modifier.size(16.dp),
-                                            strokeWidth = 2.dp
-                                        )
-                                    }
-                                }
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Text(
-                                        "${info.messageCount} 轮对话",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                                    )
-                                    Text(
-                                        formatRelativeTime(session.updatedAt),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                                    )
-                                }
-                            }
-                            DropdownMenu(
-                                expanded = showMenu,
-                                onDismissRequest = { showMenu = false }
-                            ) {
-                                DropdownMenuItem(
-                                    text = { Text("重命名") },
-                                    onClick = {
-                                        showMenu = false
-                                        renameTarget = session
-                                        renameInput = session.title
-                                    }
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("删除", color = MaterialTheme.colorScheme.error) },
-                                    onClick = {
-                                        showMenu = false
-                                        deleteTarget = session
-                                    }
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
+    MarqueeBorder(
+        isActive = sending,
+        modifier = Modifier.fillMaxSize()
     ) {
         Column(
             modifier = Modifier
@@ -352,9 +221,9 @@ fun ChatScreen(
         ) {
             // ---- Top bar ----
             Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = { scope.launch { drawerState.open() } }) {
-                    Icon(Icons.Filled.Forum, contentDescription = "会话列表")
-                }
+            IconButton(onClick = onNavigateToMenu) {
+                Icon(Icons.Filled.Menu, contentDescription = "菜单")
+            }
                 Text("ActMe Agent", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
             }
 
@@ -372,13 +241,14 @@ fun ChatScreen(
                 }
             }
 
-            // Track unseen new messages
-            var lastSeenCount by remember { mutableIntStateOf(messages.size) }
-            val unreadCount = if (!isAtBottom) (messages.size - lastSeenCount).coerceAtLeast(0) else 0
-
-            // Reset counter when reaching bottom
-            LaunchedEffect(isAtBottom) {
-                if (isAtBottom) lastSeenCount = messages.size
+            // Auto-scroll to bottom on initial load
+            LaunchedEffect(Unit) {
+                snapshotFlow { listState.layoutInfo.totalItemsCount }
+                    .first { it > 0 }
+                val targetIndex = listState.layoutInfo.totalItemsCount - 1
+                if (targetIndex >= 0) {
+                    listState.scrollToItem(targetIndex)
+                }
             }
 
             // Auto-scroll to bottom when sending or already at bottom
@@ -391,57 +261,19 @@ fun ChatScreen(
                 }
             }
 
-            Box(modifier = Modifier.weight(1f)) {
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(top = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    items(messages, key = { it.id }) { msg ->
-                        MessageBubble(msg)
-                    }
-                    if (sending) {
-                        item(key = "skeleton") {
-                            SkeletonBubble()
-                        }
-                    }
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(top = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(messages, key = { it.id }) { msg ->
+                    MessageBubble(msg)
                 }
-
-                // Floating button: only when user is scrolled up AND has unread messages
-                if (!isAtBottom && unreadCount > 0) {
-                    FloatingActionButton(
-                        onClick = {
-                            scope.launch {
-                                val targetIndex = listState.layoutInfo.totalItemsCount - 1
-                                if (targetIndex >= 0) {
-                                    listState.animateScrollToItem(targetIndex)
-                                }
-                            }
-                        },
-                        modifier = Modifier
-                            .align(Alignment.BottomEnd)
-                            .padding(16.dp),
-                        containerColor = MaterialTheme.colorScheme.primaryContainer,
-                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp),
-                            modifier = Modifier.padding(horizontal = 12.dp)
-                        ) {
-                            Text(
-                                "$unreadCount 新消息",
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.Medium
-                            )
-                            Icon(
-                                Icons.Filled.KeyboardArrowDown,
-                                contentDescription = "滚动到底部",
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
+                if (sending) {
+                    item(key = "skeleton") {
+                        SkeletonBubble()
                     }
                 }
             }
@@ -747,44 +579,6 @@ fun ChatScreen(
             dismissButton = null
         )
     }
-
-    if (renameTarget != null) {
-        AlertDialog(
-            onDismissRequest = { renameTarget = null },
-            title = { Text("重命名会话") },
-            text = {
-                OutlinedTextField(value = renameInput, onValueChange = { renameInput = it }, label = { Text("会话名") })
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    val target = renameTarget ?: return@TextButton
-                    onRenameConversation(target.id, renameInput)
-                    renameTarget = null
-                }) { Text("保存") }
-            },
-            dismissButton = {
-                TextButton(onClick = { renameTarget = null }) { Text("取消") }
-            }
-        )
-    }
-
-    if (deleteTarget != null) {
-        AlertDialog(
-            onDismissRequest = { deleteTarget = null },
-            title = { Text("删除会话") },
-            text = { Text("确认删除「${deleteTarget?.title.orEmpty()}」及其全部消息吗？") },
-            confirmButton = {
-                TextButton(onClick = {
-                    val target = deleteTarget ?: return@TextButton
-                    onDeleteConversation(target.id)
-                    deleteTarget = null
-                }) { Text("删除") }
-            },
-            dismissButton = {
-                TextButton(onClick = { deleteTarget = null }) { Text("取消") }
-            }
-        )
-    }
 }
 
 // ---- Message bubble ----
@@ -844,7 +638,7 @@ private fun MessageBubble(msg: ChatMessageEntity) {
                 modifier = Modifier
                     .widthIn(max = 300.dp)
                     .background(
-                        if (isUser) Color(0xFFD7F3D8) else Color(0xFFEAEFFB),
+                        if (isUser) Color(0xFFE8E8E8) else MaterialTheme.colorScheme.primaryContainer,
                         shape = RoundedCornerShape(
                             topStart = 12.dp,
                             topEnd = 12.dp,
@@ -884,7 +678,7 @@ private fun SkeletonBubble() {
         Column(
             modifier = Modifier
                 .widthIn(max = 280.dp)
-                .background(Color(0xFFEAEFFB), shape = RoundedCornerShape(12.dp, 12.dp, 12.dp, 4.dp))
+                .background(MaterialTheme.colorScheme.primaryContainer, shape = RoundedCornerShape(12.dp, 12.dp, 12.dp, 4.dp))
                 .padding(horizontal = 12.dp, vertical = 10.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {

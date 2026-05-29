@@ -8,35 +8,17 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
-import androidx.compose.foundation.layout.padding
-import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CalendarMonth
-import androidx.compose.material.icons.filled.Chat
-import androidx.compose.material.icons.filled.Psychology
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.outlined.CalendarMonth
-import androidx.compose.material.icons.outlined.Chat
-import androidx.compose.material.icons.outlined.Psychology
-import androidx.compose.material.icons.outlined.Settings
-import androidx.compose.material3.Icon
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
-import androidx.compose.runtime.getValue
-import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
-import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import androidx.compose.runtime.getValue
 import com.actme.app.ActMeApp
 import com.actme.app.ui.chat.ChatScreen
 import com.actme.app.ui.chat.ChatViewModel
+import com.actme.app.ui.chat.MenuScreen
 import com.actme.app.ui.memory.MemoryCategoryScreen
 import com.actme.app.ui.memory.MemoryItemScreen
 import com.actme.app.ui.memory.MemoryListScreen
@@ -45,7 +27,7 @@ import com.actme.app.ui.schedule.ScheduleScreen
 import com.actme.app.ui.schedule.ScheduleViewModel
 import com.actme.app.ui.settings.SettingsScreen
 import com.actme.app.ui.settings.SettingsViewModel
-import java.io.File
+import com.actme.app.ui.theme.AppTheme
 
 class MainActivity : ComponentActivity() {
     private val viewModelFactory by lazy {
@@ -67,61 +49,21 @@ class MainActivity : ComponentActivity() {
         requestNotificationPermissionIfNeeded()
 
         setContent {
-            val navController = rememberNavController()
-            val tabs = listOf(
-                BottomTab("chat", "聊天", { icon: Boolean -> if (icon) Icons.Filled.Chat else Icons.Outlined.Chat }),
-                BottomTab("memory", "记忆", { icon: Boolean -> if (icon) Icons.Filled.Psychology else Icons.Outlined.Psychology }),
-                BottomTab("schedule", "日程", { icon: Boolean -> if (icon) Icons.Filled.CalendarMonth else Icons.Outlined.CalendarMonth }),
-                BottomTab("settings", "设置", { icon: Boolean -> if (icon) Icons.Filled.Settings else Icons.Outlined.Settings })
-            )
-            val backStack by navController.currentBackStackEntryAsState()
-            val current = backStack?.destination
+            AppTheme {
+                val navController = rememberNavController()
 
-            Scaffold(
-                bottomBar = {
-                    NavigationBar {
-                        tabs.forEach { tab ->
-                            val selected = when (tab.route) {
-                                "memory" -> current?.route?.startsWith("memory") == true
-                                else -> current?.hierarchy?.any { it.route == tab.route } == true
-                            }
-                            NavigationBarItem(
-                                selected = selected,
-                                onClick = {
-                                    navController.navigate(tab.route) {
-                                        launchSingleTop = true
-                                        restoreState = true
-                                        popUpTo(navController.graph.startDestinationId) { saveState = true }
-                                    }
-                                },
-                                icon = { Icon(tab.icon(selected), contentDescription = tab.label) },
-                                label = { Text(tab.label) }
-                            )
-                        }
-                    }
-                }
-            ) { padding ->
                 NavHost(
                     navController = navController,
-                    startDestination = "chat",
-                    modifier = Modifier.padding(padding)
+                    startDestination = "chat"
                 ) {
                     composable("chat") {
-                        val sessionInfos by chatViewModel.sessionInfos.collectAsStateWithLifecycle(emptyList())
-                        val currentConversationId by chatViewModel.currentConversationId.collectAsStateWithLifecycle(null)
                         val messages by chatViewModel.messages.collectAsStateWithLifecycle(emptyList())
                         val isRecording by chatViewModel.isRecording.collectAsStateWithLifecycle(false)
                         val availableModels by chatViewModel.availableModels.collectAsStateWithLifecycle(emptyList())
                         val selectedModel by chatViewModel.selectedModel.collectAsStateWithLifecycle("")
                         val sendingConversationId by chatViewModel.sendingConversationId.collectAsStateWithLifecycle(null)
                         ChatScreen(
-                            sessionInfos = sessionInfos,
-                            currentConversationId = currentConversationId,
                             messages = messages,
-                            onCreateConversation = chatViewModel::createNewConversation,
-                            onSwitchConversation = chatViewModel::switchConversation,
-                            onRenameConversation = chatViewModel::renameConversation,
-                            onDeleteConversation = chatViewModel::deleteConversation,
                             onSend = { text, imgBase64, imgMime -> chatViewModel.sendMessage(text, imgBase64, imgMime) },
                             sendingConversationId = sendingConversationId,
                             isRecording = isRecording,
@@ -129,12 +71,37 @@ class MainActivity : ComponentActivity() {
                             onStopRecording = { chatViewModel.setRecording(false) },
                             availableModels = availableModels,
                             selectedModel = selectedModel,
-                            onSelectModel = chatViewModel::selectModel
+                            onSelectModel = chatViewModel::selectModel,
+                            onNavigateToMenu = { navController.navigate("menu") }
+                        )
+                    }
+                    composable("menu") {
+                        val sessionInfos by chatViewModel.sessionInfos.collectAsStateWithLifecycle(emptyList())
+                        val currentConversationId by chatViewModel.currentConversationId.collectAsStateWithLifecycle(null)
+                        val sendingConversationId by chatViewModel.sendingConversationId.collectAsStateWithLifecycle(null)
+                        MenuScreen(
+                            sessionInfos = sessionInfos,
+                            currentConversationId = currentConversationId,
+                            sendingConversationId = sendingConversationId,
+                            onCreateConversation = {
+                                chatViewModel.createNewConversation()
+                                navController.popBackStack("chat", false)
+                            },
+                            onSwitchConversation = { id ->
+                                chatViewModel.switchConversation(id)
+                                navController.popBackStack("chat", false)
+                            },
+                            onRenameConversation = chatViewModel::renameConversation,
+                            onDeleteConversation = chatViewModel::deleteConversation,
+                            onNavigateToMemory = { navController.navigate("memory") },
+                            onNavigateToSchedule = { navController.navigate("schedule") },
+                            onNavigateToSettings = { navController.navigate("settings") }
                         )
                     }
                     composable("memory") {
                         MemoryCategoryScreen(
                             categories = memoryViewModel.categories,
+                            onBack = { navController.popBackStack() },
                             onOpenCategory = { category ->
                                 navController.navigate("memory/${Uri.encode(category)}")
                             }
@@ -186,7 +153,8 @@ class MainActivity : ComponentActivity() {
                             schedules = schedules,
                             onAddManual = scheduleViewModel::addManualSchedule,
                             onDeleteSchedule = scheduleViewModel::deleteSchedule,
-                            onAddBySubAgent = scheduleViewModel::addScheduleBySubAgent
+                            onAddBySubAgent = scheduleViewModel::addScheduleBySubAgent,
+                            onBack = { navController.popBackStack() }
                         )
                     }
                     composable("settings") {
@@ -199,7 +167,8 @@ class MainActivity : ComponentActivity() {
                             onAddProvider = settingsViewModel::addProvider,
                             onUpdateProvider = settingsViewModel::updateProvider,
                             onDeleteProvider = settingsViewModel::deleteProvider,
-                            onSetActiveProvider = settingsViewModel::setActiveProvider
+                            onSetActiveProvider = settingsViewModel::setActiveProvider,
+                            onBack = { navController.popBackStack() }
                         )
                     }
                 }
@@ -213,10 +182,3 @@ class MainActivity : ComponentActivity() {
         }
     }
 }
-
-
-private data class BottomTab(
-    val route: String,
-    val label: String,
-    val icon: (Boolean) -> ImageVector
-)
