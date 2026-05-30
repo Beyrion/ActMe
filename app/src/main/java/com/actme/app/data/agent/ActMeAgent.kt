@@ -8,19 +8,24 @@ import com.actme.app.data.local.SkillEntity
 import com.actme.app.data.remote.MessagePayload
 import com.actme.app.data.remote.OpenAiResponsesClient
 import com.actme.app.data.remote.ProviderConfig
+import com.actme.app.plugins.PluginRegistry
+import com.actme.app.plugins.SystemToolRegistry
 import com.actme.app.util.AppLogger
 import java.time.ZoneId
 import kotlinx.coroutines.flow.Flow
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+import org.json.JSONObject
 
 @Serializable
 data class AgentResult(
     val reply: String,
     @SerialName("memory_updates") val memoryUpdates: List<MemoryUpdate> = emptyList(),
-    @SerialName("schedule_updates") val scheduleUpdates: List<ScheduleUpdate> = emptyList(),
-    @SerialName("skill_updates") val skillUpdates: List<SkillUpdate> = emptyList()
+    @SerialName("skill_updates") val skillUpdates: List<SkillUpdate> = emptyList(),
+    @SerialName("plugin_queries") val pluginQueries: List<String> = emptyList(),
+    @SerialName("tool_calls") val toolCalls: List<ToolCall> = emptyList()
 )
 
 @Serializable
@@ -30,23 +35,18 @@ data class MemoryUpdate(
 )
 
 @Serializable
-data class ScheduleUpdate(
-    val title: String,
-    val detail: String = "",
-    @SerialName("start_at") val startAt: Long? = null,
-    @SerialName("reminder_at") val reminderAt: Long? = null,
-    @SerialName("repeat_type") val repeatType: String? = null,
-    @SerialName("repeat_days_of_week") val repeatDaysOfWeek: List<Int> = emptyList(),
-    @SerialName("repeat_day_of_month") val repeatDayOfMonth: Int? = null,
-    @SerialName("reminder_time") val reminderTime: String? = null
-)
-
-@Serializable
 data class SkillUpdate(
     val name: String,
     val description: String,
     @SerialName("trigger_keywords") val triggerKeywords: List<String>,
     @SerialName("action_template") val actionTemplate: String
+)
+
+@Serializable
+data class ToolCall(
+    val plugin: String,
+    val tool: String,
+    val arguments: Map<String, JsonElement> = emptyMap()
 )
 
 @Serializable
@@ -66,23 +66,85 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
         isLenient = true
     }
 
+    /**
+     * Multi-step agent loop:
+     * 1. First pass: agent sees plugin summaries + may output plugin_queries or tool_calls directly.
+     * 2. If plugin_queries: inject full tool defs and re-run.
+     * 3. If tool_calls: execute via registry, inject results, re-run for final reply.
+     * 4. Return when agent outputs a plain reply (no pending queries/calls).
+     */
     suspend fun runTurn(
         userInput: String,
         memories: List<MemoryItemEntity>,
         schedules: List<ScheduleEntity>,
         skills: List<SkillEntity>,
+        pluginRegistry: PluginRegistry,
+        systemToolRegistry: SystemToolRegistry,
         config: ProviderConfig,
         enableWebSearch: Boolean = false,
         imageBase64: String? = null,
         imageMimeType: String? = null,
-        historyMessages: List<ChatMessageEntity> = emptyList()
+        historyMessages: List<ChatMessageEntity> = emptyList(),
+        /** Called just before a tool is executed. Return the DB message ID of the placeholder. */
+        onToolCallStarted: (suspend (pluginId: String, toolName: String) -> Long)? = null,
+        /** Called after a tool finishes. Update the placeholder identified by [msgId]. */
+        onToolCallFinished: (suspend (msgId: Long, pluginId: String, toolName: String, result: com.actme.app.plugins.ToolCallResult) -> Unit)? = null,
     ): AgentResult {
-        val raw = openAiClient.run(
-            buildMessages(userInput, memories, schedules, skills, enableWebSearch, imageBase64, imageMimeType, historyMessages),
-            config = config,
-            enableWebSearch = enableWebSearch
-        )
-        return parseRaw(raw)
+        val messages = buildMessages(
+            userInput, memories, schedules, skills, pluginRegistry, systemToolRegistry,
+            enableWebSearch, imageBase64, imageMimeType, historyMessages
+        ).toMutableList()
+
+        var lastResult = AgentResult(reply = "")
+        repeat(MAX_LOOPS) { loop ->
+            val raw = openAiClient.run(messages, config = config, enableWebSearch = enableWebSearch)
+            lastResult = parseRaw(raw)
+            AppLogger.i(TAG, "agent loop $loop: pluginQueries=${lastResult.pluginQueries.size}, toolCalls=${lastResult.toolCalls.size}, hasReply=${lastResult.reply.isNotBlank()}")
+
+            when {
+                lastResult.pluginQueries.isNotEmpty() -> {
+                    // Inject full tool definitions for requested plugins
+                    val toolDefs = lastResult.pluginQueries.joinToString("\n\n") {
+                        pluginRegistry.buildToolsPrompt(it)
+                    }
+                    messages += MessagePayload("assistant", raw)
+                    messages += MessagePayload(
+                        "user",
+                        "[工具定义]\n$toolDefs\n\n请根据以上工具定义完成用户的请求，输出 tool_calls。"
+                    )
+                }
+                lastResult.toolCalls.isNotEmpty() -> {
+                    // Execute tools and inject results
+                    val resultLines = mutableListOf<String>()
+                    for (call in lastResult.toolCalls) {
+                        val argsJson = call.arguments.entries
+                            .joinToString(",", "{", "}") { (k, v) -> "\"$k\":$v" }
+                        AppLogger.d(TAG, "agent loop $loop executing: ${call.plugin}.${call.tool} args=$argsJson")
+                        val msgId = onToolCallStarted?.invoke(call.plugin, call.tool)
+                        val result = if (call.plugin == "system") {
+                            systemToolRegistry.execute(call.tool, JSONObject(argsJson))
+                        } else {
+                            pluginRegistry.execute(call.plugin, call.tool, JSONObject(argsJson))
+                        }
+                        onToolCallFinished?.invoke(msgId ?: -1L, call.plugin, call.tool, result)
+                        if (result.success) {
+                            AppLogger.i(TAG, "agent loop $loop tool OK: ${call.plugin}.${call.tool} msg=${result.message}")
+                        } else {
+                            AppLogger.e(TAG, "agent loop $loop tool FAILED: ${call.plugin}.${call.tool} msg=${result.message} data=${result.data}")
+                        }
+                        resultLines += "[${call.plugin}.${call.tool}] ${if (result.success) "成功" else "失败"}: ${result.message}"
+                    }
+                    val results = resultLines.joinToString("\n")
+                    messages += MessagePayload("assistant", raw)
+                    messages += MessagePayload(
+                        "user",
+                        "[工具执行结果]\n$results\n\n请根据以上结果用中文回复用户。只输出 JSON，格式：{\"reply\":\"...\",\"memory_updates\":[...]}"
+                    )
+                }
+                else -> return lastResult
+            }
+        }
+        return lastResult
     }
 
     fun runTurnStreaming(
@@ -90,6 +152,8 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
         memories: List<MemoryItemEntity>,
         schedules: List<ScheduleEntity>,
         skills: List<SkillEntity>,
+        pluginRegistry: PluginRegistry,
+        systemToolRegistry: SystemToolRegistry,
         config: ProviderConfig,
         enableWebSearch: Boolean = false,
         imageBase64: String? = null,
@@ -97,7 +161,8 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
         historyMessages: List<ChatMessageEntity> = emptyList()
     ): Flow<String> {
         return openAiClient.runStreaming(
-            buildMessages(userInput, memories, schedules, skills, enableWebSearch, imageBase64, imageMimeType, historyMessages),
+            buildMessages(userInput, memories, schedules, skills, pluginRegistry,
+                systemToolRegistry, enableWebSearch, imageBase64, imageMimeType, historyMessages),
             config = config,
             enableWebSearch = enableWebSearch
         )
@@ -114,12 +179,14 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
         memories: List<MemoryItemEntity>,
         schedules: List<ScheduleEntity>,
         skills: List<SkillEntity>,
+        pluginRegistry: PluginRegistry,
+        systemToolRegistry: SystemToolRegistry,
         enableWebSearch: Boolean,
         imageBase64: String?,
         imageMimeType: String?,
         historyMessages: List<ChatMessageEntity>
     ): List<MessagePayload> {
-        val systemPrompt = buildSystemPrompt(memories, schedules, skills, enableWebSearch)
+        val systemPrompt = buildSystemPrompt(memories, schedules, skills, pluginRegistry, systemToolRegistry, enableWebSearch)
         val messages = mutableListOf<MessagePayload>()
         messages += MessagePayload("system", systemPrompt)
         historyMessages.forEach { entity ->
@@ -192,8 +259,16 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
             ),
             config = config
         )
+        AppLogger.d(TAG, "schedule sub-agent raw response (${raw.length} chars): ${raw.take(600)}")
         val jsonPart = extractJson(raw)
         val parsed = runCatching { json.decodeFromString<ScheduleSubAgentPlan>(jsonPart) }.getOrNull()
+        if (parsed != null) {
+            AppLogger.i(TAG, "schedule sub-agent parsed: title=${parsed.title} repeatType=${parsed.repeatType} " +
+                "reminderTime=${parsed.reminderTime} oneTimeDate=${parsed.oneTimeDate} " +
+                "weeklyDays=${parsed.weeklyDays} monthlyDay=${parsed.monthlyDay}")
+        } else {
+            AppLogger.e(TAG, "schedule sub-agent parse failed, jsonPart: ${jsonPart.take(300)}")
+        }
         AppLogger.i(TAG, "schedule sub-agent parsed=${parsed != null}")
         return parsed
     }
@@ -202,15 +277,21 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
         memories: List<MemoryItemEntity>,
         schedules: List<ScheduleEntity>,
         skills: List<SkillEntity>,
+        pluginRegistry: PluginRegistry,
+        systemToolRegistry: SystemToolRegistry,
         enableWebSearch: Boolean
     ): String {
         val localZone = ZoneId.systemDefault().id
+        val now = java.time.Instant.now()
+        val nowEpochMs = now.toEpochMilli()
+        val nowLocal = now.atZone(java.time.ZoneId.of(localZone))
+        val nowLocalStr = nowLocal.format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))
         val memoryText = if (memories.isEmpty()) "暂无" else memories
             .take(40)
             .joinToString("\n") { "- [${it.category}] ${it.content}" }
         val scheduleText = if (schedules.isEmpty()) "暂无" else schedules
             .take(20)
-            .joinToString("\n") { "- ${it.title} @${it.reminderAt} (${it.repeatType})" }
+            .joinToString("\n") { "- [${it.id}] ${it.title} @${it.reminderAt} (${it.repeatType})" }
         val skillText = if (skills.isEmpty()) "暂无" else skills
             .take(20)
             .joinToString("\n") { "- ${it.name}: ${it.triggerKeywords}" }
@@ -221,36 +302,38 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
             "当前轮未开启联网查询，请仅基于已有信息回复。"
         }
 
+        val systemToolsPrompt = systemToolRegistry.buildPrompt()
+        val pluginToolsPrompt = pluginRegistry.buildAllToolsPrompt()
+
         return """
             你是 App 内置的 ActMe Agent，必须用中文回复。
             目标：帮助用户行动、整理记忆、安排日程、维护技能。
             记忆分类只能使用：${MemoryCategories.all.joinToString("、")}。
-            你可以在每次对话中判断是否需要写入 memory_updates 或 schedule_updates。
-            若用户提出可复用策略，可以写入 skill_updates。
             $webSearchHint
-            当前用户本地时区：$localZone。
-            时间字段一律输出 Unix 毫秒时间戳（不是秒），并严格按本地时区理解"今天/明天/每天12点"等表达。
+            当前时间：$nowLocalStr（$localZone 时区）
+            当前 Unix 毫秒时间戳：$nowEpochMs（timestamp_now）
+            时间字段一律输出 Unix 毫秒时间戳（不是秒）。计算 reminder_at 时，以 timestamp_now 为基准：今天 = timestamp_now 所在日期的指定时间，明天 = 加 86400000 ms，依此类推。
+
+            $systemToolsPrompt
+
+            $pluginToolsPrompt
+
             只输出 JSON，不要 Markdown，不要额外解释。格式如下：
             {
               "reply": "给用户的中文回复",
               "memory_updates": [{"category":"短期目标","content":"..."}],
-              "schedule_updates": [{
-                "title":"...",
-                "detail":"...",
-                "start_at":0,
-                "reminder_at":0,
-                "repeat_type":"NONE|DAILY|WEEKLY|MONTHLY",
-                "repeat_days_of_week":[1,3,5],
-                "repeat_day_of_month":15,
-                "reminder_time":"12:00"
-              }],
-              "skill_updates": [{"name":"...","description":"...","trigger_keywords":["..."],"action_template":"..."}]
+              "skill_updates": [{"name":"...","description":"...","trigger_keywords":["..."],"action_template":"..."}],
+              "plugin_queries": ["builtin.schedule"],
+              "tool_calls": [{"plugin":"builtin.schedule","tool":"create_schedule","arguments":{...}}]
             }
+
             说明：
-            - 一次性提醒：repeat_type 用 NONE，并给出 reminder_at。
-            - 每天提醒：repeat_type 用 DAILY，并给出 reminder_time(如 12:00)。
-            - 每周提醒：repeat_type 用 WEEKLY，并给出 repeat_days_of_week(1=周一...7=周日) 与 reminder_time。
-            - 每月提醒：repeat_type 用 MONTHLY，并给出 repeat_day_of_month 与 reminder_time。
+            - 系统工具（plugin="system"）参数格式已在 [系统工具] 中完整列出，可直接调用无需 plugin_queries。
+            - 如果需要调用插件工具但不清楚具体参数格式，先输出 plugin_queries，系统会注入工具定义后再次调用你。
+            - 如果已知工具参数格式，直接输出 tool_calls，不用先查询。
+            - 纯对话、记忆更新等不需要工具的请求，直接输出 reply 即可，无需 plugin_queries 或 tool_calls。
+            - 创建日程时，repeat_type=NONE 需给出 reminder_at（Unix ms），重复类型需给 reminder_time（HH:mm）。
+            - 日程 id 参见下方 [当前日程] 列表中的 [id]。
 
             当前记忆：
             $memoryText
@@ -272,6 +355,7 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
 
     companion object {
         private const val TAG = "ActMeAgent"
+        private const val MAX_LOOPS = 5
     }
 }
 
@@ -323,7 +407,6 @@ class ReplyExtractor {
                     result.append(unescaped)
                     i += 2
                 } else {
-                    // Incomplete escape at end of buffer — wait for next chunk
                     break
                 }
             } else if (c == '"') {

@@ -161,6 +161,10 @@ class ChatViewModel(private val repository: ActMeRepository) : ViewModel() {
         }
     }
 
+    fun saveCardHeight(msgId: Long, heightDp: Float) {
+        viewModelScope.launch(Dispatchers.IO) { repository.updateCardHeight(msgId, heightDp) }
+    }
+
     fun sendMessage(input: String, imageBase64: String? = null, imageMimeType: String? = null) {
         val conversationId = currentConversationIdMutable.value ?: return
         if (input.isBlank() && imageBase64 == null || _sendingConversationId.value != null) return

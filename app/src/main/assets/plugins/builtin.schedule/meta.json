@@ -1,0 +1,42 @@
+{
+  "id": "builtin.schedule",
+  "name": "日程管理",
+  "description": "创建、查看、删除日程与重复提醒",
+  "execute_mode": "local",
+  "tools": [
+    {
+      "name": "create_schedule",
+      "description": "创建日程或重复提醒",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "title":               { "type": "string",  "description": "日程标题" },
+          "detail":              { "type": "string",  "description": "补充说明" },
+          "repeat_type":         { "type": "string",  "enum": ["NONE","DAILY","WEEKLY","MONTHLY"], "description": "重复类型" },
+          "reminder_at":         { "type": "integer", "description": "Unix ms 时间戳，repeat_type=NONE 时必填" },
+          "reminder_time":       { "type": "string",  "description": "HH:mm，重复类型必填" },
+          "repeat_days_of_week": { "type": "array",   "items": { "type": "integer" }, "description": "1=周一…7=周日，WEEKLY 时必填" },
+          "repeat_day_of_month": { "type": "integer", "description": "1-31，MONTHLY 时必填" }
+        },
+        "required": ["title", "repeat_type"]
+      }
+    },
+    {
+      "name": "list_schedules",
+      "description": "列出所有已有日程",
+      "parameters": {}
+    },
+    {
+      "name": "delete_schedule",
+      "description": "删除指定 id 的日程",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer", "description": "日程 id" }
+        },
+        "required": ["id"]
+      }
+    }
+  ],
+  "permissions": []
+}

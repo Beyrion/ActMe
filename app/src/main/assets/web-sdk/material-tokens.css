@@ -1,0 +1,31 @@
+/*
+ * material-tokens.css — reference only.
+ *
+ * These values are NO LONGER injected by CardRenderer.
+ * CardRenderer generates :root { } inline from the live Compose ColorScheme
+ * so plugin WebViews always match the app's active theme exactly.
+ *
+ * This file is kept as a human-readable reference for the token names used by
+ * plugin HTML (management.html, card fragments, etc.).
+ */
+
+/*
+:root {
+  --md-sys-color-primary
+  --md-sys-color-primary-container
+  --md-sys-color-on-primary
+  --md-sys-color-on-primary-container
+  --md-sys-color-secondary
+  --md-sys-color-secondary-container
+  --md-sys-color-on-secondary
+  --md-sys-color-surface
+  --md-sys-color-surface-variant
+  --md-sys-color-on-surface
+  --md-sys-color-on-surface-variant
+  --md-sys-color-background
+  --md-sys-color-outline
+  --md-sys-color-outline-variant
+  --md-sys-color-error
+  --md-sys-color-on-error
+}
+*/

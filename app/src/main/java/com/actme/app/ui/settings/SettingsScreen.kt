@@ -21,6 +21,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.Terminal
 import com.actme.app.data.local.ProviderEntity
 import androidx.compose.material.icons.outlined.Api
 import androidx.compose.material3.AlertDialog
@@ -65,6 +66,7 @@ fun SettingsScreen(
     onDownloadModel: () -> Unit,
     onDeleteModel: () -> Unit,
     onClearChatHistory: () -> Unit,
+    onNavigateToLogs: () -> Unit,
     onAddProvider: (String, String, String, String) -> Unit,
     onUpdateProvider: (Long, String, String, String, String) -> Unit,
     onDeleteProvider: (Long) -> Unit,
@@ -414,6 +416,15 @@ fun SettingsScreen(
                     Icon(Icons.Outlined.DeleteOutline, null, Modifier.size(24.dp))
                 },
                 modifier = Modifier.clickable { showClearDialog = true }
+            )
+            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+            ListItem(
+                headlineContent = { Text("运行日志") },
+                supportingContent = { Text("查看本次启动的调试日志") },
+                leadingContent = {
+                    Icon(Icons.Outlined.Terminal, null, Modifier.size(24.dp))
+                },
+                modifier = Modifier.clickable { onNavigateToLogs() }
             )
         }
 

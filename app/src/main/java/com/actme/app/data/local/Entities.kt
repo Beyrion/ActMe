@@ -24,7 +24,9 @@ data class ChatMessageEntity(
     val content: String,
     val imageBase64: String? = null,
     val imageMimeType: String? = null,
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+    /** JSON: {"cardHtml":"<fragment>","cardData":{...},"navRoute":"plugin/builtin.schedule"} */
+    val metadata: String? = null
 )
 
 @Entity(tableName = "memory_items")
@@ -87,6 +89,46 @@ enum class RepeatType {
         }
     }
 }
+
+@Entity(tableName = "plugin_bundles")
+data class PluginBundleEntity(
+    @PrimaryKey val pluginId: String,
+    val name: String,
+    val description: String,
+    val bundleJson: String,       // full JSON bundle
+    val enabled: Boolean = true,
+    val isBuiltin: Boolean = false,
+    val createdAt: Long = System.currentTimeMillis()
+)
+
+@Entity(tableName = "plugin_items", primaryKeys = ["pluginId", "itemKey"])
+data class PluginItemEntity(
+    val pluginId: String,
+    val itemKey: String,
+    val dataJson: String,
+    val createdAt: Long = System.currentTimeMillis(),
+    val updatedAt: Long = System.currentTimeMillis()
+)
+
+@Entity(tableName = "plugin_permissions", primaryKeys = ["pluginId", "permissionId"])
+data class PluginPermissionEntity(
+    val pluginId: String,
+    val permissionId: String,
+    val granted: Boolean,
+    val updatedAt: Long = System.currentTimeMillis()
+)
+
+/** One-shot or recurring alarm scheduled by a plugin via ActMe.alarm.set(). */
+@Entity(tableName = "plugin_alarms", primaryKeys = ["pluginId", "alarmKey"])
+data class PluginAlarmEntity(
+    val pluginId: String,
+    val alarmKey: String,
+    val triggerMs: Long,
+    val title: String,
+    val body: String,
+    /** JSON: {"type":"NONE"|"DAILY"|"WEEKLY"|"MONTHLY","time":"HH:mm","days":[1,3],"day":15} */
+    val repeatJson: String = """{"type":"NONE"}"""
+)
 
 object MemoryCategories {
     val all = listOf(

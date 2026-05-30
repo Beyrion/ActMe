@@ -7,6 +7,10 @@ import com.actme.app.data.remote.OpenAiResponsesClient
 import com.actme.app.data.remote.ProviderManager
 import com.actme.app.data.repo.ActMeRepository
 import com.actme.app.notifications.ReminderScheduler
+import com.actme.app.plugins.PluginAlarmManager
+import com.actme.app.plugins.PluginRegistry
+import com.actme.app.plugins.PluginRuntimeManager
+import com.actme.app.plugins.SystemToolRegistry
 
 class AppContainer(context: Context) {
     private val appContext = context.applicationContext
@@ -15,7 +19,20 @@ class AppContainer(context: Context) {
     val providerManager = ProviderManager(appContext, database.providerDao())
     private val openAiClient = OpenAiResponsesClient()
     private val agent = ActMeAgent(openAiClient)
-    private val reminderScheduler = ReminderScheduler(appContext)
+    val reminderScheduler = ReminderScheduler(appContext)
+
+    val pluginAlarmManager = PluginAlarmManager(appContext, database.pluginAlarmDao())
+
+    val pluginRegistry = PluginRegistry()
+
+    val systemToolRegistry = SystemToolRegistry()
+
+    val pluginRuntimeManager = PluginRuntimeManager(
+        context = appContext,
+        pluginDao = database.pluginDao(),
+        pluginAlarmManager = pluginAlarmManager,
+        pluginRegistry = pluginRegistry
+    )
 
     val repository: ActMeRepository = ActMeRepository(
         chatDao = database.chatDao(),
@@ -25,6 +42,16 @@ class AppContainer(context: Context) {
         agent = agent,
         reminderScheduler = reminderScheduler,
         providerManager = providerManager,
-        openAiClient = openAiClient
+        openAiClient = openAiClient,
+        pluginRegistry = pluginRegistry,
+        systemToolRegistry = systemToolRegistry
     )
+
+    suspend fun initPlugins(context: Context) {
+        com.actme.app.plugins.PluginSeeder.seedBuiltins(context, database.pluginDao())
+        pluginRegistry.loadFromDb(
+            pluginDao = database.pluginDao(),
+            runtimeManager = pluginRuntimeManager
+        )
+    }
 }

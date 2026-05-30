@@ -37,6 +37,10 @@
             android:exported="false" />
 
         <receiver
+            android:name=".notifications.PluginAlarmReceiver"
+            android:exported="false" />
+
+        <receiver
             android:name=".notifications.BootReceiver"
             android:enabled="true"
             android:exported="false">

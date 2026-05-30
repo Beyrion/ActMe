@@ -18,6 +18,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Modifier
 import com.actme.app.ActMeApp
 import com.actme.app.ui.chat.ChatScreen
@@ -27,8 +32,10 @@ import com.actme.app.ui.memory.MemoryCategoryScreen
 import com.actme.app.ui.memory.MemoryItemScreen
 import com.actme.app.ui.memory.MemoryListScreen
 import com.actme.app.ui.memory.MemoryViewModel
-import com.actme.app.ui.schedule.ScheduleScreen
-import com.actme.app.ui.schedule.ScheduleViewModel
+import com.actme.app.ui.plugins.PluginListScreen
+import com.actme.app.ui.plugins.PluginManagementScreen
+import com.actme.app.ui.plugins.PluginSheet
+import com.actme.app.ui.settings.LogViewerScreen
 import com.actme.app.ui.settings.SettingsScreen
 import com.actme.app.mnn.DownloadState
 import com.actme.app.ui.settings.SettingsViewModel
@@ -40,9 +47,10 @@ class MainActivity : ComponentActivity() {
         AppViewModelFactory(app, app.container.repository)
     }
 
+    private val app by lazy { application as ActMeApp }
+
     private val chatViewModel: ChatViewModel by viewModels { viewModelFactory }
     private val memoryViewModel: MemoryViewModel by viewModels { viewModelFactory }
-    private val scheduleViewModel: ScheduleViewModel by viewModels { viewModelFactory }
     private val settingsViewModel: SettingsViewModel by viewModels { viewModelFactory }
 
     private val notificationPermissionLauncher = registerForActivityResult(
@@ -60,11 +68,9 @@ class MainActivity : ComponentActivity() {
                     color = MaterialTheme.colorScheme.background
                 ) {
                     val navController = rememberNavController()
+                    var pluginSheetId by remember { mutableStateOf<String?>(null) }
 
-                    NavHost(
-                        navController = navController,
-                        startDestination = "chat"
-                    ) {
+                    NavHost(navController = navController, startDestination = "chat") {
                         composable("chat") {
                             val messages by chatViewModel.messages.collectAsStateWithLifecycle(emptyList())
                             val isRecording by chatViewModel.isRecording.collectAsStateWithLifecycle(false)
@@ -85,7 +91,16 @@ class MainActivity : ComponentActivity() {
                                 onSelectModel = chatViewModel::selectModel,
                                 asrLanguage = asrLanguage,
                                 isModelReady = isModelReady,
-                                onNavigateToMenu = { navController.navigate("menu") }
+                                onNavigateToMenu = { navController.navigate("menu") },
+                                onNavigateToPlugin = { route ->
+                                    pluginSheetId = route.removePrefix("plugin/").ifBlank { null }
+                                },
+                                onSaveCardHeight = { msgId, heightDp ->
+                                    chatViewModel.saveCardHeight(msgId, heightDp)
+                                },
+                                isPluginAvailable = { pluginId ->
+                                    app.container.pluginRegistry.get(pluginId) != null
+                                }
                             )
                         }
                         composable("menu") {
@@ -107,7 +122,7 @@ class MainActivity : ComponentActivity() {
                                 onRenameConversation = chatViewModel::renameConversation,
                                 onDeleteConversation = chatViewModel::deleteConversation,
                                 onNavigateToMemory = { navController.navigate("memory") },
-                                onNavigateToSchedule = { navController.navigate("schedule") },
+                                onNavigateToPlugins = { navController.navigate("plugins") },
                                 onNavigateToSettings = { navController.navigate("settings") }
                             )
                         }
@@ -160,15 +175,38 @@ class MainActivity : ComponentActivity() {
                                 }
                             )
                         }
-                        composable("schedule") {
-                            val schedules by scheduleViewModel.schedules.collectAsStateWithLifecycle(emptyList())
-                            ScheduleScreen(
-                                schedules = schedules,
-                                onAddManual = scheduleViewModel::addManualSchedule,
-                                onDeleteSchedule = scheduleViewModel::deleteSchedule,
-                                onAddBySubAgent = scheduleViewModel::addScheduleBySubAgent,
-                                onBack = { navController.popBackStack() }
+                        composable("plugins") {
+                            val scope = rememberCoroutineScope()
+                            PluginListScreen(
+                                plugins = app.container.pluginRegistry.getAll(),
+                                pluginDao = app.container.database.pluginDao(),
+                                pluginAlarmManager = app.container.pluginAlarmManager,
+                                onBack = { navController.popBackStack() },
+                                onReloadPlugin = { pluginId ->
+                                    scope.launch {
+                                        app.container.pluginRegistry.reloadPlugin(
+                                            pluginId,
+                                            app.container.database.pluginDao(),
+                                            app.container.pluginRuntimeManager
+                                        )
+                                    }
+                                }
                             )
+                        }
+                        composable(
+                            route = "plugin/{pluginId}",
+                            arguments = listOf(navArgument("pluginId") { type = NavType.StringType })
+                        ) { backEntry ->
+                            val pluginId = Uri.decode(backEntry.arguments?.getString("pluginId").orEmpty())
+                            val plugin = app.container.pluginRegistry.get(pluginId)
+                            if (plugin != null) {
+                                PluginManagementScreen(
+                                    plugin = plugin,
+                                    pluginDao = app.container.database.pluginDao(),
+                                    pluginAlarmManager = app.container.pluginAlarmManager,
+                                    onBack = { navController.popBackStack() }
+                                )
+                            }
                         }
                         composable("settings") {
                             val providers by settingsViewModel.providers.collectAsStateWithLifecycle(emptyList())
@@ -186,12 +224,31 @@ class MainActivity : ComponentActivity() {
                                 onDownloadModel = settingsViewModel::downloadModel,
                                 onDeleteModel = settingsViewModel::deleteModel,
                                 onClearChatHistory = settingsViewModel::clearAllChatHistory,
+                                onNavigateToLogs = { navController.navigate("logs") },
                                 onAddProvider = settingsViewModel::addProvider,
                                 onUpdateProvider = settingsViewModel::updateProvider,
                                 onDeleteProvider = settingsViewModel::deleteProvider,
                                 onSetActiveProvider = settingsViewModel::setActiveProvider,
                                 onBack = { navController.popBackStack() }
                             )
+                        }
+                        composable("logs") {
+                            LogViewerScreen(onBack = { navController.popBackStack() })
+                        }
+                    }
+
+                    // Plugin bottom sheet — triggered by tapping a plugin card in chat
+                    if (pluginSheetId != null) {
+                        val plugin = app.container.pluginRegistry.get(pluginSheetId!!)
+                        if (plugin != null) {
+                            PluginSheet(
+                                plugin = plugin,
+                                pluginDao = app.container.database.pluginDao(),
+                                pluginAlarmManager = app.container.pluginAlarmManager,
+                                onDismiss = { pluginSheetId = null }
+                            )
+                        } else {
+                            pluginSheetId = null
                         }
                     }
                 }

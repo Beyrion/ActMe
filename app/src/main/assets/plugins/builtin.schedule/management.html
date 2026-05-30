@@ -1,0 +1,330 @@
+<!--
+  management.html — 日程管理页
+  由 CardRenderer 注入到 WebView body 中，head 已包含：
+    - material-tokens.css（CSS token 变量）
+    - actme-bridge.js（ActMe.* Bridge 命名空间）
+  @material/web 组件通过 CDN 加载（需联网，CSP 已放开 script-src https:）。
+-->
+
+<script type="module" src="https://esm.run/@material/web/all.js"></script>
+
+<style>
+  body {
+    font-family: Roboto, system-ui, sans-serif;
+    background: var(--md-sys-color-background, #fafcff);
+    color: var(--md-sys-color-on-surface, #1a1c1e);
+    margin: 0;
+    padding: 0 0 96px;
+  }
+
+  .toolbar {
+    padding: 16px 20px 12px;
+    position: sticky;
+    top: 0;
+    background: var(--md-sys-color-background, #fafcff);
+    z-index: 10;
+  }
+  .toolbar h1 {
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: -0.3px;
+    margin: 0;
+  }
+
+  .list-wrap { padding: 0 12px; }
+
+  .empty {
+    text-align: center;
+    padding: 72px 0;
+    opacity: 0.38;
+    font-size: 15px;
+  }
+
+  .schedule-card {
+    background: var(--md-sys-color-surface-variant, #e1e2ec);
+    border-radius: 16px;
+    padding: 16px;
+    margin: 8px 0;
+    position: relative;
+  }
+  .schedule-card md-icon-button {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    --md-icon-button-icon-color: var(--md-sys-color-error, #ba1a1a);
+  }
+  .card-title {
+    font-size: 16px;
+    font-weight: 600;
+    padding-right: 40px;
+    margin-bottom: 4px;
+  }
+  .card-detail {
+    font-size: 13px;
+    opacity: 0.6;
+    margin-bottom: 10px;
+  }
+  .card-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+
+  md-fab { position: fixed; bottom: 24px; right: 20px; }
+
+  md-dialog { --md-dialog-container-shape: 24px; }
+  md-dialog [slot="content"] {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding-top: 4px;
+  }
+  md-outlined-text-field,
+  md-outlined-select { width: 100%; }
+
+  .field-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--md-sys-color-on-surface-variant, #44474f);
+    letter-spacing: 0.3px;
+    display: block;
+    margin-bottom: 6px;
+  }
+
+  /* Native inputs for time/date (not yet in @material/web) */
+  .native-field { display: flex; flex-direction: column; gap: 6px; }
+  .native-field input {
+    padding: 14px;
+    border: 1.5px solid var(--md-sys-color-outline-variant, #c4c6d0);
+    border-radius: 12px;
+    font-size: 15px;
+    background: none;
+    color: inherit;
+    outline: none;
+  }
+  .native-field input:focus {
+    border-color: var(--md-sys-color-primary, #2178e6);
+  }
+
+  .toast {
+    position: fixed;
+    bottom: 88px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--md-sys-color-on-surface, #1a1c1e);
+    color: var(--md-sys-color-background, #fafcff);
+    padding: 10px 20px;
+    border-radius: 100px;
+    font-size: 13px;
+    opacity: 0;
+    transition: opacity 0.2s;
+    pointer-events: none;
+    white-space: nowrap;
+    z-index: 200;
+  }
+  .toast.show { opacity: 1; }
+</style>
+
+<div class="toolbar">
+  <h1>日程管理</h1>
+</div>
+
+<div class="list-wrap" id="list"></div>
+
+<md-fab label="新建" onclick="openDialog()">
+  <svg slot="icon" xmlns="http://www.w3.org/2000/svg" height="24" width="24"
+       viewBox="0 0 24 24" fill="currentColor">
+    <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
+  </svg>
+</md-fab>
+
+<md-dialog id="create-dialog">
+  <div slot="headline">新建日程</div>
+  <div slot="content">
+    <md-outlined-text-field id="f-title" label="标题 *" required></md-outlined-text-field>
+    <md-outlined-text-field id="f-detail" label="详情（可选）"></md-outlined-text-field>
+
+    <md-outlined-select id="f-repeat" label="重复类型">
+      <md-select-option value="NONE" selected><div slot="headline">单次</div></md-select-option>
+      <md-select-option value="DAILY"><div slot="headline">每天</div></md-select-option>
+      <md-select-option value="WEEKLY"><div slot="headline">每周</div></md-select-option>
+      <md-select-option value="MONTHLY"><div slot="headline">每月</div></md-select-option>
+    </md-outlined-select>
+
+    <div class="native-field" id="f-date-wrap">
+      <label class="field-label">日期</label>
+      <input id="f-date" type="date">
+    </div>
+
+    <div class="native-field">
+      <label class="field-label">提醒时间</label>
+      <input id="f-time" type="time" value="09:00">
+    </div>
+
+    <div id="f-days-wrap" style="display: none">
+      <span class="field-label" style="margin-bottom: 8px; display: block">星期几</span>
+      <md-chip-set>
+        <md-filter-chip label="一" data-d="1"></md-filter-chip>
+        <md-filter-chip label="二" data-d="2"></md-filter-chip>
+        <md-filter-chip label="三" data-d="3"></md-filter-chip>
+        <md-filter-chip label="四" data-d="4"></md-filter-chip>
+        <md-filter-chip label="五" data-d="5"></md-filter-chip>
+        <md-filter-chip label="六" data-d="6"></md-filter-chip>
+        <md-filter-chip label="日" data-d="7"></md-filter-chip>
+      </md-chip-set>
+    </div>
+
+    <div id="f-monthly-wrap" style="display: none">
+      <md-outlined-text-field
+        id="f-mday"
+        label="每月几号（1-31）"
+        type="number" min="1" max="31">
+      </md-outlined-text-field>
+    </div>
+  </div>
+
+  <div slot="actions">
+    <md-text-button onclick="closeDialog()">取消</md-text-button>
+    <md-filled-button onclick="save()">保存</md-filled-button>
+  </div>
+</md-dialog>
+
+<div class="toast" id="toast"></div>
+
+<script>
+  const REPEAT_LABELS = { NONE: '单次', DAILY: '每天', WEEKLY: '每周', MONTHLY: '每月' };
+  const DAY_NAMES = ['', '一', '二', '三', '四', '五', '六', '日'];
+
+  function fmtTime(minutes) {
+    if (minutes == null) return '–';
+    if (typeof minutes === 'string') {
+      var parts = minutes.split(':');
+      minutes = parseInt(parts[0], 10) * 60 + parseInt(parts[1], 10);
+      if (isNaN(minutes)) return '–';
+    }
+    if (minutes < 0) return '–';
+    return String(Math.floor(minutes / 60)).padStart(2, '0')
+      + ':' + String(minutes % 60).padStart(2, '0');
+  }
+
+  function fmtRepeat(s) {
+    if (s.repeat_type === 'WEEKLY' && s.repeat_days_of_week) {
+      const days = Array.isArray(s.repeat_days_of_week)
+        ? s.repeat_days_of_week
+        : s.repeat_days_of_week.split(',').map(Number).filter(Boolean);
+      return '每周 ' + days.map(d => DAY_NAMES[d]).join('、');
+    }
+    if (s.repeat_type === 'MONTHLY' && s.repeat_day_of_month) {
+      return '每月 ' + s.repeat_day_of_month + ' 号';
+    }
+    return REPEAT_LABELS[s.repeat_type] || s.repeat_type;
+  }
+
+  function toast(msg) {
+    const el = document.getElementById('toast');
+    el.textContent = msg;
+    el.classList.add('show');
+    setTimeout(() => el.classList.remove('show'), 2200);
+  }
+
+  async function load() {
+    try {
+      const items = await ActMe.storage.getAll();
+      const el = document.getElementById('list');
+      const schedules = items
+        .filter(function(i) { return i.key.indexOf('schedule_') === 0; })
+        .map(function(i) { return i.data; })
+        .sort(function(a, b) { return (a.id || 0) - (b.id || 0); });
+      if (!schedules.length) {
+        el.innerHTML = '<p class="empty">点击 + 新建第一个日程</p>';
+        return;
+      }
+      el.innerHTML = schedules.map(s => `
+      <div class="schedule-card">
+        <md-icon-button onclick="deleteSchedule(${s.id})" title="删除">
+          <svg xmlns="http://www.w3.org/2000/svg" height="20" width="20"
+               viewBox="0 0 24 24" fill="currentColor">
+            <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>
+          </svg>
+        </md-icon-button>
+        <div class="card-title">${s.title}</div>
+        ${s.detail ? `<div class="card-detail">${s.detail}</div>` : ''}
+        <div class="card-chips">
+          <md-assist-chip label="${fmtTime(s.reminder_time_minutes)}"></md-assist-chip>
+          ${s.repeat_type !== 'NONE'
+            ? `<md-assist-chip label="${fmtRepeat(s)}"></md-assist-chip>`
+            : ''}
+        </div>
+      </div>
+    `).join('');
+    } catch(e) {
+      document.getElementById('list').innerHTML = '<p class="empty">加载失败：' + (e.message || '') + '</p>';
+    }
+  }
+
+  async function deleteSchedule(id) {
+    var key = 'schedule_' + id;
+    try {
+      await ActMe.storage.delete(key);
+      await ActMe.alarm.cancel(key);
+      toast('已删除');
+      load();
+    } catch(e) {
+      toast('删除失败：' + (e.message || ''));
+    }
+  }
+
+  function openDialog() {
+    document.getElementById('f-date').value = new Date().toISOString().slice(0, 10);
+    document.getElementById('create-dialog').show();
+  }
+
+  function closeDialog() {
+    document.getElementById('create-dialog').close();
+  }
+
+  document.getElementById('f-repeat').addEventListener('change', function () {
+    const v = this.value;
+    document.getElementById('f-date-wrap').style.display   = v === 'NONE'    ? '' : 'none';
+    document.getElementById('f-days-wrap').style.display   = v === 'WEEKLY'  ? '' : 'none';
+    document.getElementById('f-monthly-wrap').style.display = v === 'MONTHLY' ? '' : 'none';
+  });
+
+  async function save() {
+    const title = document.getElementById('f-title').value.trim();
+    if (!title) { toast('请填写标题'); return; }
+
+    const repeat = document.getElementById('f-repeat').value;
+    const time   = document.getElementById('f-time').value;
+    const args   = {
+      title,
+      detail: document.getElementById('f-detail').value.trim(),
+      repeat_type: repeat,
+      reminder_time: time
+    };
+
+    if (repeat === 'NONE') {
+      const d = document.getElementById('f-date').value;
+      if (!d) { toast('请选择日期'); return; }
+      args.reminder_at = new Date(d + 'T' + time).getTime();
+    } else if (repeat === 'WEEKLY') {
+      const days = [...document.querySelectorAll('md-filter-chip[selected]')]
+        .map(c => +c.dataset.d);
+      if (!days.length) { toast('请选择星期几'); return; }
+      args.repeat_days_of_week = days;
+    } else if (repeat === 'MONTHLY') {
+      const day = +document.getElementById('f-mday').value;
+      if (!day || day < 1 || day > 31) { toast('请填写 1-31 之间的日期'); return; }
+      args.repeat_day_of_month = day;
+    }
+
+    const r = await ActMe.execute('create_schedule', args);
+    if (r.success) {
+      toast('已创建');
+      closeDialog();
+      document.getElementById('f-title').value  = '';
+      document.getElementById('f-detail').value = '';
+      load();
+    } else {
+      toast('失败：' + r.message);
+    }
+  }
+
+  load();
+</script>

@@ -11,16 +11,15 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.Psychology
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
@@ -61,7 +60,7 @@ fun MenuScreen(
     onRenameConversation: (Long, String) -> Unit,
     onDeleteConversation: (Long) -> Unit,
     onNavigateToMemory: () -> Unit,
-    onNavigateToSchedule: () -> Unit,
+    onNavigateToPlugins: () -> Unit,
     onNavigateToSettings: () -> Unit
 ) {
     var renameTarget by remember { mutableStateOf<ChatSessionEntity?>(null) }
@@ -203,7 +202,7 @@ fun MenuScreen(
             }
         }
 
-        // ---- 1x3 grid: Memory, Schedule, Settings ----
+        // ---- 1x3 grid: Memory, Plugins, Settings ----
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -218,9 +217,9 @@ fun MenuScreen(
             )
             GridCard(
                 modifier = Modifier.weight(1f),
-                icon = Icons.Filled.CalendarMonth,
-                label = "日程",
-                onClick = onNavigateToSchedule
+                icon = Icons.Filled.Extension,
+                label = "插件",
+                onClick = onNavigateToPlugins
             )
             GridCard(
                 modifier = Modifier.weight(1f),

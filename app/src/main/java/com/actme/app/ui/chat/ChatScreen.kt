@@ -67,6 +67,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.mikepenz.markdown.m3.Markdown
@@ -74,6 +75,11 @@ import com.mikepenz.markdown.m3.markdownColor
 import com.mikepenz.markdown.m3.markdownTypography
 import androidx.core.content.ContextCompat
 import androidx.compose.runtime.collectAsState
+import android.annotation.SuppressLint
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import androidx.compose.ui.viewinterop.AndroidView
+import com.actme.app.plugins.CardRenderer
 import com.actme.app.audio.AsrManager
 import com.actme.app.ui.theme.MarqueeBorder
 import com.actme.app.audio.AudioRecorderManager
@@ -97,7 +103,10 @@ fun ChatScreen(
     onSelectModel: (String) -> Unit = {},
     asrLanguage: String = "Chinese",
     isModelReady: Boolean = false,
-    onNavigateToMenu: () -> Unit = {}
+    onNavigateToMenu: () -> Unit = {},
+    onNavigateToPlugin: (route: String) -> Unit = {},
+    onSaveCardHeight: (msgId: Long, heightDp: Float) -> Unit = { _, _ -> },
+    isPluginAvailable: (pluginId: String) -> Boolean = { true }
 ) {
     val scope = rememberCoroutineScope()
     var input by remember { mutableStateOf("") }
@@ -296,11 +305,19 @@ fun ChatScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(messages, key = { it.id }) { msg ->
-                    MessageBubble(msg)
+                    MessageBubble(
+                        msg = msg,
+                        onNavigateToPlugin = onNavigateToPlugin,
+                        onSaveCardHeight = onSaveCardHeight,
+                        isPluginAvailable = isPluginAvailable
+                    )
                 }
-                val showSkeleton = sending && (messages.isEmpty() ||
-                    messages.last().role != "assistant" ||
-                    messages.last().content.isBlank())
+                val lastMsg = messages.lastOrNull()
+                val showSkeleton = sending && (
+                    lastMsg == null ||
+                    (lastMsg.role != "assistant" && lastMsg.role != "tool_call") ||
+                    (lastMsg.role == "assistant" && lastMsg.content.isBlank())
+                )
                 if (showSkeleton) {
                     item(key = "skeleton") {
                         SkeletonBubble()
@@ -541,11 +558,243 @@ fun ChatScreen(
     }
 }
 
+// ---- Tool call progress card ----
+
+@SuppressLint("SetJavaScriptEnabled")
+@Composable
+private fun ToolCallCard(
+    msgId: Long,
+    content: String,
+    metadata: String?,
+    onNavigateToPlugin: (route: String) -> Unit,
+    onSaveCardHeight: (msgId: Long, heightDp: Float) -> Unit,
+    isPluginAvailable: (pluginId: String) -> Boolean
+) {
+    val isLoading = content.startsWith("⏳")
+    val isSuccess = content.startsWith("✓")
+    val bg = when {
+        isLoading -> MaterialTheme.colorScheme.surfaceVariant
+        isSuccess -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)
+        else      -> MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.6f)
+    }
+    val fg = when {
+        isLoading -> MaterialTheme.colorScheme.onSurfaceVariant
+        isSuccess -> MaterialTheme.colorScheme.primary
+        else      -> MaterialTheme.colorScheme.error
+    }
+
+    // Parse metadata once
+    data class CardInfo(
+        val cardHtml: String,
+        val cardData: Map<String, String>,
+        val navRoute: String?,
+        val pluginName: String?,
+        val pluginId: String?,
+        val storedHeightDp: Float?
+    )
+    val cardInfo = remember(metadata) {
+        if (metadata == null) return@remember null
+        runCatching {
+            val obj = org.json.JSONObject(metadata)
+            val html = obj.optString("cardHtml").takeIf { it.isNotBlank() } ?: return@runCatching null
+            val dataObj = obj.optJSONObject("cardData")
+            val dataMap = mutableMapOf<String, String>()
+            dataObj?.keys()?.forEach { k -> dataMap[k] = dataObj.optString(k) }
+            val navRoute = obj.optString("navRoute").takeIf { it.isNotBlank() }
+            val pluginId = navRoute?.removePrefix("plugin/")
+            CardInfo(
+                cardHtml = html,
+                cardData = dataMap,
+                navRoute = navRoute,
+                pluginName = obj.optString("pluginName").takeIf { it.isNotBlank() },
+                pluginId = pluginId,
+                storedHeightDp = obj.optDouble("cardHeightDp", 0.0).takeIf { it > 0.0 }?.toFloat()
+            )
+        }.getOrNull()
+    }
+
+    val context = LocalContext.current
+    val colorScheme = MaterialTheme.colorScheme
+
+    Column(modifier = Modifier.widthIn(max = 300.dp), horizontalAlignment = Alignment.Start) {
+        // Status chip
+        Row(
+            modifier = Modifier
+                .background(bg, RoundedCornerShape(20.dp))
+                .padding(horizontal = 12.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            if (isLoading) {
+                CircularProgressIndicator(modifier = Modifier.size(11.dp), strokeWidth = 1.5.dp, color = fg)
+            }
+            Text(content, style = MaterialTheme.typography.labelSmall, color = fg)
+        }
+
+        // Rich card (success only, when plugin provided a card template)
+        if (cardInfo != null) {
+            @Suppress("UNCHECKED_CAST")
+            val renderedHtml = remember(cardInfo.cardHtml, cardInfo.cardData, colorScheme) {
+                CardRenderer.renderCard(context, cardInfo.cardHtml, cardInfo.cardData, colorScheme)
+            }
+
+            val pluginUnavailable = cardInfo.pluginId != null && !isPluginAvailable(cardInfo.pluginId)
+            // Use stored height as initial value so LazyColumn layout is stable on reload
+            val initialHeightDp = cardInfo.storedHeightDp?.dp ?: 120.dp
+            val heightDp = remember { mutableStateOf(initialHeightDp) }
+            val isLoaded = remember { mutableStateOf(cardInfo.storedHeightDp != null) }
+            val density = LocalDensity.current
+
+            val wv = remember {
+                WebView(context).apply {
+                    settings.javaScriptEnabled = true
+                    settings.allowFileAccess = false
+                    settings.allowContentAccess = false
+                    setBackgroundColor(android.graphics.Color.TRANSPARENT)
+                    isVerticalScrollBarEnabled = false
+                    isHorizontalScrollBarEnabled = false
+                    webViewClient = object : WebViewClient() {
+                        override fun onPageFinished(view: WebView, url: String) {
+                            view.evaluateJavascript("document.body.scrollHeight") { result ->
+                                val px = result?.trim()?.toIntOrNull() ?: return@evaluateJavascript
+                                if (px > 0) {
+                                    val measured = with(density) { px.dp + 4.dp }
+                                    heightDp.value = measured
+                                    isLoaded.value = true
+                                    // Persist so next load uses correct height immediately
+                                    if (measured.value != cardInfo.storedHeightDp) {
+                                        onSaveCardHeight(msgId, measured.value)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            var contentLoaded by remember { mutableStateOf(false) }
+            DisposableEffect(Unit) { onDispose { wv.destroy() } }
+
+            Spacer(modifier = Modifier.height(6.dp))
+            Column(modifier = Modifier.widthIn(max = 300.dp)) {
+                Box(modifier = Modifier.fillMaxWidth().height(heightDp.value)) {
+                    // Show skeleton until WebView reports its height
+                    if (!isLoaded.value) {
+                        CardSkeleton(modifier = Modifier.matchParentSize())
+                    }
+                    if (!pluginUnavailable) {
+                        AndroidView(
+                            factory = { wv },
+                            update = { view ->
+                                if (!contentLoaded) {
+                                    view.loadDataWithBaseURL(null, renderedHtml, "text/html", "UTF-8", null)
+                                    contentLoaded = true
+                                }
+                            },
+                            modifier = Modifier.matchParentSize()
+                        )
+                    } else {
+                        // Plugin unregistered — static tombstone instead of live WebView
+                        PluginTombstone(modifier = Modifier.matchParentSize())
+                    }
+                    // Transparent click overlay above WebView — reliable touch handling
+                    if (!pluginUnavailable && cardInfo.navRoute != null) {
+                        Box(
+                            modifier = Modifier
+                                .matchParentSize()
+                                .clickable { onNavigateToPlugin(cardInfo.navRoute) }
+                        )
+                    }
+                }
+                if (cardInfo.pluginName != null) {
+                    Surface(
+                        shape = RoundedCornerShape(4.dp),
+                        color = if (pluginUnavailable)
+                            MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.5f)
+                        else
+                            MaterialTheme.colorScheme.surfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp)
+                    ) {
+                        Text(
+                            if (pluginUnavailable) "${cardInfo.pluginName} · 插件已失效"
+                            else cardInfo.pluginName,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (pluginUnavailable)
+                                MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.7f)
+                            else
+                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CardSkeleton(modifier: Modifier = Modifier) {
+    val shimmer = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
+    Column(
+        modifier = modifier
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f), RoundedCornerShape(12.dp))
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Box(modifier = Modifier.fillMaxWidth(0.4f).height(10.dp).background(shimmer, RoundedCornerShape(4.dp)))
+        Box(modifier = Modifier.fillMaxWidth(0.75f).height(14.dp).background(shimmer, RoundedCornerShape(4.dp)))
+        Box(modifier = Modifier.fillMaxWidth(0.55f).height(10.dp).background(shimmer, RoundedCornerShape(4.dp)))
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Box(modifier = Modifier.width(48.dp).height(20.dp).background(shimmer, RoundedCornerShape(20.dp)))
+            Box(modifier = Modifier.width(72.dp).height(20.dp).background(shimmer, RoundedCornerShape(20.dp)))
+        }
+    }
+}
+
+@Composable
+private fun PluginTombstone(modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .background(
+                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                RoundedCornerShape(12.dp)
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            "插件已失效",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+        )
+    }
+}
+
 // ---- Message bubble ----
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun MessageBubble(msg: ChatMessageEntity) {
+private fun MessageBubble(
+    msg: ChatMessageEntity,
+    onNavigateToPlugin: (route: String) -> Unit = {},
+    onSaveCardHeight: (msgId: Long, heightDp: Float) -> Unit = { _, _ -> },
+    isPluginAvailable: (pluginId: String) -> Boolean = { true }
+) {
+    if (msg.role == "tool_call") {
+        Box(
+            modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+            contentAlignment = Alignment.TopStart
+        ) {
+            ToolCallCard(
+                msgId = msg.id,
+                content = msg.content,
+                metadata = msg.metadata,
+                onNavigateToPlugin = onNavigateToPlugin,
+                onSaveCardHeight = onSaveCardHeight,
+                isPluginAvailable = isPluginAvailable
+            )
+        }
+        return
+    }
+
     val isUser = msg.role == "user"
     val hasImage = !msg.imageBase64.isNullOrBlank() && !msg.imageMimeType.isNullOrBlank()
     var showFullImage by remember { mutableStateOf(false) }

@@ -30,11 +30,17 @@ interface ChatDao {
     @Query("DELETE FROM chat_sessions WHERE id = :id")
     suspend fun deleteSessionById(id: Long)
 
+    @Query("SELECT * FROM chat_messages WHERE id = :id LIMIT 1")
+    suspend fun getMessageById(id: Long): ChatMessageEntity?
+
     @Insert
     suspend fun insert(message: ChatMessageEntity): Long
 
     @Query("UPDATE chat_messages SET content = :content WHERE id = :id")
     suspend fun updateContent(id: Long, content: String)
+
+    @Query("UPDATE chat_messages SET metadata = :metadata WHERE id = :id")
+    suspend fun updateMetadata(id: Long, metadata: String)
 
     @Insert
     suspend fun insertSession(session: ChatSessionEntity): Long
@@ -119,4 +125,66 @@ interface SkillDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(entity: SkillEntity): Long
+}
+
+@Dao
+interface PluginDao {
+    @Query("SELECT * FROM plugin_bundles ORDER BY createdAt ASC")
+    fun observeAll(): Flow<List<PluginBundleEntity>>
+
+    @Query("SELECT * FROM plugin_bundles WHERE enabled = 1 ORDER BY createdAt ASC")
+    suspend fun getEnabledNow(): List<PluginBundleEntity>
+
+    @Query("SELECT * FROM plugin_bundles WHERE pluginId = :pluginId LIMIT 1")
+    suspend fun getById(pluginId: String): PluginBundleEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertBundle(entity: PluginBundleEntity)
+
+    @Query("UPDATE plugin_bundles SET enabled = :enabled WHERE pluginId = :pluginId")
+    suspend fun setEnabled(pluginId: String, enabled: Boolean)
+
+    @Query("DELETE FROM plugin_bundles WHERE pluginId = :pluginId")
+    suspend fun deleteBundle(pluginId: String)
+
+    // plugin_items
+    @Query("SELECT * FROM plugin_items WHERE pluginId = :pluginId")
+    suspend fun getItemsForPlugin(pluginId: String): List<PluginItemEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertItem(entity: PluginItemEntity)
+
+    @Query("DELETE FROM plugin_items WHERE pluginId = :pluginId AND itemKey = :itemKey")
+    suspend fun deleteItem(pluginId: String, itemKey: String)
+
+    @Query("DELETE FROM plugin_items WHERE pluginId = :pluginId")
+    suspend fun deleteAllItemsForPlugin(pluginId: String)
+
+    // plugin_permissions
+    @Query("SELECT * FROM plugin_permissions WHERE pluginId = :pluginId AND permissionId = :permissionId LIMIT 1")
+    suspend fun getPermission(pluginId: String, permissionId: String): PluginPermissionEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertPermission(entity: PluginPermissionEntity)
+}
+
+@Dao
+interface PluginAlarmDao {
+    @Query("SELECT * FROM plugin_alarms")
+    suspend fun getAll(): List<PluginAlarmEntity>
+
+    @Query("SELECT * FROM plugin_alarms WHERE pluginId = :pluginId AND alarmKey = :alarmKey LIMIT 1")
+    suspend fun get(pluginId: String, alarmKey: String): PluginAlarmEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(entity: PluginAlarmEntity)
+
+    @Query("DELETE FROM plugin_alarms WHERE pluginId = :pluginId AND alarmKey = :alarmKey")
+    suspend fun delete(pluginId: String, alarmKey: String)
+
+    @Query("SELECT * FROM plugin_alarms WHERE pluginId = :pluginId")
+    suspend fun getByPlugin(pluginId: String): List<PluginAlarmEntity>
+
+    @Query("DELETE FROM plugin_alarms WHERE pluginId = :pluginId")
+    suspend fun deleteByPlugin(pluginId: String)
 }

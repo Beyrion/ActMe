@@ -16,6 +16,7 @@ class BootReceiver : BroadcastReceiver() {
         val app = context.applicationContext as? ActMeApp ?: return
         CoroutineScope(Dispatchers.IO).launch {
             app.container.repository.rescheduleAllReminders()
+            app.container.pluginAlarmManager.rescheduleAll()
             AppLogger.i(TAG, "reschedule finished")
         }
     }

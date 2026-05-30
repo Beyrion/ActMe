@@ -7,6 +7,9 @@ import android.os.Build
 import com.actme.app.util.AppLogger
 import com.actme.app.di.AppContainer
 import com.actme.app.skills.SkillSeeder
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 class ActMeApp : Application() {
     lateinit var container: AppContainer
@@ -19,6 +22,9 @@ class ActMeApp : Application() {
         container = AppContainer(this)
         createNotificationChannel()
         SkillSeeder.seedIfNeeded(this, container.database.skillDao())
+        CoroutineScope(Dispatchers.IO).launch {
+            container.initPlugins(this@ActMeApp)
+        }
         AppLogger.i(TAG, "application initialized")
     }
 

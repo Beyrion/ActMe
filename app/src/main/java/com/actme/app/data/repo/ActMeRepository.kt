@@ -1,9 +1,6 @@
 package com.actme.app.data.repo
 
-import com.actme.app.util.AppLogger
 import com.actme.app.data.agent.ActMeAgent
-import com.actme.app.data.agent.ReplyExtractor
-import com.actme.app.data.agent.ScheduleUpdate
 import com.actme.app.data.local.ChatDao
 import com.actme.app.data.local.ProviderEntity
 import com.actme.app.data.local.ChatMessageEntity
@@ -20,6 +17,9 @@ import com.actme.app.data.remote.OpenAiResponsesClient
 import com.actme.app.data.remote.ProviderConfig
 import com.actme.app.data.remote.ProviderManager
 import com.actme.app.notifications.ReminderScheduler
+import com.actme.app.plugins.PluginRegistry
+import com.actme.app.plugins.SystemToolRegistry
+import com.actme.app.util.AppLogger
 import com.actme.app.util.LogCodec
 import java.time.Instant
 import java.time.LocalDate
@@ -33,6 +33,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
+import org.json.JSONObject
 
 class ActMeRepository(
     private val chatDao: ChatDao,
@@ -42,7 +43,9 @@ class ActMeRepository(
     private val agent: ActMeAgent,
     private val reminderScheduler: ReminderScheduler,
     private val providerManager: ProviderManager,
-    private val openAiClient: OpenAiResponsesClient
+    private val openAiClient: OpenAiResponsesClient,
+    val pluginRegistry: PluginRegistry = PluginRegistry(),
+    val systemToolRegistry: SystemToolRegistry = SystemToolRegistry()
 ) {
     val chatSessions: Flow<List<ChatSessionEntity>> = chatDao.observeSessions()
 
@@ -99,7 +102,7 @@ class ActMeRepository(
         imageMimeType: String? = null
     ) = withContext(Dispatchers.IO) {
         val now = System.currentTimeMillis()
-        AppLogger.i(TAG, "send message begin: conversationId=$conversationId, hasImage=${imageBase64 != null}")
+        AppLogger.i(TAG, "sendMessage: conv=$conversationId hasImage=${imageBase64 != null} input=${userInput.take(80)}")
         chatDao.insert(
             ChatMessageEntity(
                 conversationId = conversationId,
@@ -115,56 +118,75 @@ class ActMeRepository(
         val memories = memoryDao.getAllNow()
         val allSchedules = scheduleDao.getAllNow()
         val enabledSkills = skillDao.getEnabledNow()
+        // Exclude tool_call placeholder messages from LLM history — they're UI-only.
         val historyMessages = chatDao.getByConversation(conversationId)
-            .filter { it.createdAt < now }
+            .filter { it.createdAt < now && it.role != "tool_call" }
+        AppLogger.d(TAG, "context: memories=${memories.size} schedules=${allSchedules.size} skills=${enabledSkills.size} history=${historyMessages.size}")
 
         val config = buildProviderConfig()
 
-        // Insert placeholder assistant message immediately so the bubble appears during streaming
-        val streamingMsgId = chatDao.insert(
-            ChatMessageEntity(
-                conversationId = conversationId,
-                role = "assistant",
-                content = "",
-                createdAt = System.currentTimeMillis()
-            )
-        )
-
-        val extractor = ReplyExtractor()
-        val displayBuilder = StringBuilder()
-
-        try {
-            agent.runTurnStreaming(
+        val result = try {
+            agent.runTurn(
                 userInput = userInput,
                 memories = memories,
                 schedules = allSchedules,
                 skills = enabledSkills,
+                pluginRegistry = pluginRegistry,
+                systemToolRegistry = systemToolRegistry,
                 config = config,
                 enableWebSearch = true,
                 imageBase64 = imageBase64,
                 imageMimeType = imageMimeType,
-                historyMessages = historyMessages
-            ).collect { chunk ->
-                val display = extractor.consume(chunk)
-                if (display != null) {
-                    displayBuilder.append(display)
-                    chatDao.updateContent(streamingMsgId, displayBuilder.toString())
+                historyMessages = historyMessages,
+                onToolCallStarted = { pluginId, toolName ->
+                    val displayName = if (pluginId == "system") {
+                        systemToolRegistry.getDisplayName()
+                    } else {
+                        pluginRegistry.get(pluginId)?.name ?: pluginId
+                    }
+                    chatDao.insert(ChatMessageEntity(
+                        conversationId = conversationId,
+                        role = "tool_call",
+                        content = "⏳ $displayName · $toolName",
+                        createdAt = System.currentTimeMillis()
+                    ))
+                },
+                onToolCallFinished = { msgId, pluginId, toolName, result ->
+                    if (msgId > 0) {
+                        chatDao.updateContent(msgId, if (result.success) "✓ ${result.message}" else "✗ ${result.message}")
+                        if (result.success && pluginId != "system") {
+                            val plugin = pluginRegistry.get(pluginId)
+                            val cardHtml = plugin?.getCardHtml(toolName, result.data)
+                            if (cardHtml != null) {
+                                val navRoute = plugin.composeRoute ?: "plugin/$pluginId"
+                                val meta = org.json.JSONObject()
+                                    .put("cardHtml", cardHtml)
+                                    .put("cardData", org.json.JSONObject(result.data as Map<*, *>))
+                                    .put("navRoute", navRoute)
+                                    .put("pluginName", plugin.name)
+                                    .toString()
+                                chatDao.updateMetadata(msgId, meta)
+                            }
+                        }
+                    }
                 }
-            }
+            )
         } catch (e: Exception) {
-            AppLogger.e(TAG, "streaming error: ${e.message}")
+            AppLogger.e(TAG, "agent.runTurn failed: ${e.message}", e)
+            com.actme.app.data.agent.AgentResult(reply = "出错了，请稍后再试。")
         }
 
-        val rawText = extractor.getRaw()
-        val result = agent.parseRaw(rawText)
-        AppLogger.i(
-            TAG,
-            "agent result: memoryUpdates=${result.memoryUpdates.size}, scheduleUpdates=${result.scheduleUpdates.size}, skillUpdates=${result.skillUpdates.size}"
-        )
+        AppLogger.i(TAG, "agent result: memoryUpdates=${result.memoryUpdates.size} toolCalls=${result.toolCalls.size} pluginQueries=${result.pluginQueries.size} replyLen=${result.reply.length}")
 
         val localSkillHints = runLocalSkills(userInput, enabledSkills)
         val finalReply = if (localSkillHints.isBlank()) result.reply else "${result.reply}\n\n$localSkillHints"
-        chatDao.updateContent(streamingMsgId, finalReply)
+        // Insert reply AFTER any tool_call cards so ordering in the chat is correct.
+        chatDao.insert(ChatMessageEntity(
+            conversationId = conversationId,
+            role = "assistant",
+            content = finalReply,
+            createdAt = System.currentTimeMillis()
+        ))
         touchConversation(conversationId)
 
         result.memoryUpdates.forEach { update ->
@@ -175,20 +197,6 @@ class ActMeRepository(
                     source = "agent"
                 )
             )
-        }
-
-        result.scheduleUpdates.forEach { update ->
-            val gateRequest = buildScheduleGateRequest(userInput, update)
-            val gateResult = addScheduleBySubAgent(gateRequest)
-            if (gateResult.isFailure) {
-                AppLogger.i(TAG, "chat schedule gate failed, fallback strict-agent-parse")
-                val strictResult = saveScheduleUpdateStrictlyFromAgent(update)
-                if (strictResult.isFailure) {
-                    AppLogger.i(TAG, "chat schedule dropped")
-                }
-            } else {
-                AppLogger.i(TAG, "chat schedule gated by sub-agent: titleB64=${LogCodec.utf8Base64(update.title)}")
-            }
         }
 
         result.skillUpdates.forEach { update ->
@@ -202,7 +210,17 @@ class ActMeRepository(
                 )
             )
         }
-        AppLogger.i(TAG, "send message complete: conversationId=$conversationId")
+        AppLogger.i(TAG, "sendMessage complete: conv=$conversationId")
+    }
+
+    suspend fun updateCardHeight(msgId: Long, heightDp: Float) = withContext(Dispatchers.IO) {
+        val msg = chatDao.getMessageById(msgId) ?: return@withContext
+        val meta = runCatching {
+            val obj = org.json.JSONObject(msg.metadata ?: return@withContext)
+            obj.put("cardHeightDp", heightDp)
+            obj.toString()
+        }.getOrNull() ?: return@withContext
+        chatDao.updateMetadata(msgId, meta)
     }
 
     suspend fun addOrUpdateMemory(item: MemoryItemEntity) = withContext(Dispatchers.IO) {
@@ -278,8 +296,17 @@ class ActMeRepository(
             val zoneId = zone.id
             val nowMillis = System.currentTimeMillis()
             val nowLocalIso = Instant.ofEpochMilli(nowMillis).atZone(zone).toString()
+            AppLogger.d(TAG, "sub-agent schedule: rawRequest=${rawRequest.take(200)} zone=$zoneId now=$nowLocalIso")
+
             val plan = agent.runScheduleSubAgent(rawRequest, zoneId, nowLocalIso, buildProviderConfig())
-                ?: error("子Agent未返回有效日程结构")
+            if (plan == null) {
+                AppLogger.e(TAG, "sub-agent returned null plan — giving up")
+                error("子Agent未返回有效日程结构")
+            }
+            AppLogger.d(TAG, "sub-agent plan received: repeatType=${plan.repeatType} " +
+                "reminderTime=${plan.reminderTime} oneTimeDate=${plan.oneTimeDate} " +
+                "weeklyDays=${plan.weeklyDays} monthlyDay=${plan.monthlyDay} " +
+                "title=${plan.title}")
 
             require(
                 plan.repeatType == "NONE" ||
@@ -288,8 +315,14 @@ class ActMeRepository(
                     plan.repeatType == "MONTHLY"
             ) { "子Agent返回的 repeat_type 非法：${plan.repeatType}" }
             val repeatType = RepeatType.fromRaw(plan.repeatType)
+            AppLogger.d(TAG, "sub-agent repeatType parsed: $repeatType")
+
             val reminderTimeMinutes = parseTimeTextToMinutes(plan.reminderTime)
-                ?: error("子Agent返回的 reminder_time 无效")
+            if (reminderTimeMinutes == null) {
+                AppLogger.e(TAG, "sub-agent reminderTime parse failed: raw=${plan.reminderTime}")
+                error("子Agent返回的 reminder_time 无效")
+            }
+            AppLogger.d(TAG, "sub-agent reminderTimeMinutes=$reminderTimeMinutes (${reminderTimeMinutes/60}:${String.format("%02d", reminderTimeMinutes%60)})")
             val localTime = LocalTime.of(reminderTimeMinutes / 60, reminderTimeMinutes % 60)
 
             val normalizedTitle = plan.title.trim().ifBlank {
@@ -305,16 +338,22 @@ class ActMeRepository(
             when (repeatType) {
                 RepeatType.NONE -> {
                     val dateText = plan.oneTimeDate?.trim().orEmpty()
-                    require(dateText.matches(Regex("^\\d{4}-\\d{2}-\\d{2}$"))) { "子Agent返回的 one_time_date 无效" }
+                    AppLogger.d(TAG, "sub-agent NONE: oneTimeDate=${plan.oneTimeDate}")
+                    require(dateText.matches(Regex("^\\d{4}-\\d{2}-\\d{2}$"))) {
+                        AppLogger.e(TAG, "sub-agent NONE: invalid date format: '$dateText'")
+                        "子Agent返回的 one_time_date 无效"
+                    }
                     val date = LocalDate.parse(dateText, DATE_FORMATTER)
                     val dateTime = date.atTime(localTime)
                     val millis = dateTime.atZone(zone).toInstant().toEpochMilli()
+                    AppLogger.d(TAG, "sub-agent NONE: resolved millis=$millis ($dateTime)")
                     startAt = millis
                     reminderAt = millis
                     repeatDays = emptyList()
                     repeatDayOfMonth = null
                 }
                 RepeatType.DAILY -> {
+                    AppLogger.d(TAG, "sub-agent DAILY: reminderTime=$localTime")
                     startAt = nowMillis
                     reminderAt = nowMillis
                     repeatDays = emptyList()
@@ -322,7 +361,11 @@ class ActMeRepository(
                 }
                 RepeatType.WEEKLY -> {
                     val days = plan.weeklyDays.orEmpty().filter { it in 1..7 }.distinct().sorted()
-                    require(days.isNotEmpty()) { "子Agent返回的 weekly_days 为空" }
+                    AppLogger.d(TAG, "sub-agent WEEKLY: rawDays=${plan.weeklyDays} parsedDays=$days reminderTime=$localTime")
+                    require(days.isNotEmpty()) {
+                        AppLogger.e(TAG, "sub-agent WEEKLY: weekly_days empty after filter")
+                        "子Agent返回的 weekly_days 为空"
+                    }
                     startAt = nowMillis
                     reminderAt = nowMillis
                     repeatDays = days
@@ -330,7 +373,11 @@ class ActMeRepository(
                 }
                 RepeatType.MONTHLY -> {
                     val monthDay = plan.monthlyDay?.coerceIn(1, 31)
-                        ?: error("子Agent返回的 monthly_day 无效")
+                    AppLogger.d(TAG, "sub-agent MONTHLY: rawMonthlyDay=${plan.monthlyDay} clamped=$monthDay reminderTime=$localTime")
+                    if (monthDay == null) {
+                        AppLogger.e(TAG, "sub-agent MONTHLY: monthly_day is null")
+                        error("子Agent返回的 monthly_day 无效")
+                    }
                     startAt = nowMillis
                     reminderAt = nowMillis
                     repeatDays = emptyList()
@@ -350,89 +397,44 @@ class ActMeRepository(
             )
             AppLogger.i(
                 TAG,
+                "sub-agent schedule SUCCESS: title=${normalizedTitle} repeatType=${repeatType.name} " +
+                    "reminderTimeMinutes=$reminderTimeMinutes startAt=$startAt"
+            )
+            AppLogger.i(
+                TAG,
                 "sub-agent schedule created: titleB64=${LogCodec.utf8Base64(normalizedTitle)}, repeatType=${repeatType.name}, time=${plan.reminderTime}"
             )
             Unit
+        }.onFailure { e ->
+            AppLogger.e(TAG, "sub-agent schedule FAILED: ${e.message}", e)
         }
     }
 
-    private suspend fun saveScheduleUpdateStrictlyFromAgent(update: ScheduleUpdate): Result<Unit> {
+    private suspend fun saveScheduleUpdateStrictlyFromAgent(title: String, detail: String, reminderAt: Long, repeatType: RepeatType, repeatDays: List<Int>, repeatDayOfMonth: Int?, reminderTimeMinutes: Int): Result<Unit> {
         return runCatching {
-            val repeatType = RepeatType.fromRaw(update.repeatType)
             val zoneId = ZoneId.systemDefault().id
             val nowMillis = System.currentTimeMillis()
-            val reminderRaw = RecurrenceCalculator.normalizeEpochMillis(update.reminderAt)
-            val startRaw = RecurrenceCalculator.normalizeEpochMillis(update.startAt)
-            val reminderTimeMinutes = parseTimeTextToMinutes(update.reminderTime)
-                ?: if (reminderRaw > 0) extractReminderMinutes(reminderRaw, zoneId) else null
-                ?: error("主Agent未给出有效提醒时间")
-
-            val repeatDaysFromAgent = update.repeatDaysOfWeek.filter { it in 1..7 }.distinct().sorted()
-            val inferredWeekday = if (reminderRaw > 0) {
-                Instant.ofEpochMilli(reminderRaw).atZone(ZoneId.of(zoneId)).dayOfWeek.value
-            } else null
-
-            val repeatDays = when (repeatType) {
-                RepeatType.WEEKLY -> {
-                    repeatDaysFromAgent.ifEmpty {
-                        inferredWeekday?.let { listOf(it) }
-                            ?: error("主Agent未给出 weekly_days")
-                    }
-                }
-                else -> emptyList()
-            }
-
-            val repeatDayOfMonth = when (repeatType) {
-                RepeatType.MONTHLY -> {
-                    update.repeatDayOfMonth?.coerceIn(1, 31)
-                        ?: if (reminderRaw > 0) {
-                            Instant.ofEpochMilli(reminderRaw).atZone(ZoneId.of(zoneId)).dayOfMonth
-                        } else {
-                            null
-                        }
-                        ?: error("主Agent未给出 monthly_day")
-                }
-                else -> null
-            }
-
             val nextReminder = when (repeatType) {
                 RepeatType.NONE -> {
-                    require(reminderRaw > 0) { "主Agent未给出一次性 reminder_at" }
-                    normalizeOneTimeReminder(reminderRaw, nowMillis)
+                    require(reminderAt > 0) { "一次性提醒缺少 reminder_at" }
+                    if (reminderAt > nowMillis) reminderAt else nowMillis + 60_000
                 }
-                else -> {
-                    RecurrenceCalculator.computeNextRecurringReminder(
-                        repeatType = repeatType,
-                        reminderTimeMinutes = reminderTimeMinutes,
-                        repeatDaysOfWeek = repeatDays,
-                        repeatDayOfMonth = repeatDayOfMonth,
-                        timezoneId = zoneId,
-                        fromMillis = nowMillis
-                    ) ?: error("无法根据主Agent配置计算下一次提醒")
-                }
+                else -> RecurrenceCalculator.computeNextRecurringReminder(
+                    repeatType, reminderTimeMinutes, repeatDays, repeatDayOfMonth, zoneId, nowMillis
+                ) ?: error("无法计算下次提醒")
             }
-
-            val insight = runCatching {
-                agent.generateReminderInsight(update.title, update.detail, buildProviderConfig())
-            }.getOrElse { fallbackInsight(update.title, update.detail) }
-
             val id = scheduleDao.upsert(
                 ScheduleEntity(
-                    title = update.title,
-                    detail = update.detail,
-                    startAt = if (startRaw > 0) startRaw else nextReminder,
-                    reminderAt = nextReminder,
+                    title = title, detail = detail,
+                    startAt = nextReminder, reminderAt = nextReminder,
                     repeatType = repeatType.name,
                     repeatDaysOfWeek = RecurrenceCalculator.encodeWeekdays(repeatDays),
                     repeatDayOfMonth = repeatDayOfMonth,
                     reminderTimeMinutes = reminderTimeMinutes,
-                    timezoneId = zoneId,
-                    insight = insight,
-                    source = "agent"
+                    timezoneId = zoneId, source = "agent"
                 )
             )
             scheduleDao.getById(id)?.let { reminderScheduler.schedule(it) }
-            Unit
         }
     }
 
@@ -531,21 +533,8 @@ class ActMeRepository(
         return hour * 60 + minute
     }
 
-    private fun buildScheduleGateRequest(userInput: String, update: ScheduleUpdate): String {
-        val reminderRaw = RecurrenceCalculator.normalizeEpochMillis(update.reminderAt)
-        val startRaw = RecurrenceCalculator.normalizeEpochMillis(update.startAt)
-        return """
-            以下是聊天中待创建的日程候选，请转成最终结构化配置：
-            用户原始需求：$userInput
-            候选标题：${update.title}
-            候选详情：${update.detail}
-            候选 repeat_type：${update.repeatType ?: "NONE"}
-            候选 reminder_time：${update.reminderTime ?: ""}
-            候选 weekly_days：${update.repeatDaysOfWeek.joinToString(",")}
-            候选 monthly_day：${update.repeatDayOfMonth ?: ""}
-            候选 start_at(ms)：$startRaw
-            候选 reminder_at(ms)：$reminderRaw
-        """.trimIndent()
+    private fun buildScheduleGateRequest(userInput: String, title: String, detail: String): String {
+        return "用户需求：$userInput\n候选标题：$title\n候选详情：$detail"
     }
 
     // ---- Provider management ----
