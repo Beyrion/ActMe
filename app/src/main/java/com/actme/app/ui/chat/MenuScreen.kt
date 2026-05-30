@@ -18,6 +18,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Settings
@@ -32,6 +33,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -65,6 +67,12 @@ fun MenuScreen(
     var renameTarget by remember { mutableStateOf<ChatSessionEntity?>(null) }
     var renameInput by remember { mutableStateOf("") }
     var deleteTarget by remember { mutableStateOf<ChatSessionEntity?>(null) }
+    var searchQuery by remember { mutableStateOf("") }
+
+    val filteredSessions = remember(searchQuery, sessionInfos) {
+        if (searchQuery.isBlank()) sessionInfos
+        else sessionInfos.filter { it.session.title.contains(searchQuery, ignoreCase = true) }
+    }
 
     Column(
         modifier = Modifier
@@ -87,13 +95,30 @@ fun MenuScreen(
             }
         }
 
+        // ---- Search bar ----
+        OutlinedTextField(
+            value = searchQuery,
+            onValueChange = { searchQuery = it },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 6.dp),
+            placeholder = { Text("搜索会话", style = MaterialTheme.typography.bodyMedium) },
+            leadingIcon = { Icon(Icons.Filled.Search, contentDescription = "搜索", modifier = Modifier.size(20.dp)) },
+            singleLine = true,
+            textStyle = MaterialTheme.typography.bodyMedium,
+            shape = RoundedCornerShape(16.dp),
+            colors = OutlinedTextFieldDefaults.colors(
+                unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant
+            )
+        )
+
         // ---- Session list ----
         LazyColumn(
             modifier = Modifier
                 .weight(1f)
                 .padding(horizontal = 4.dp, vertical = 8.dp)
         ) {
-            items(sessionInfos, key = { it.session.id }) { info ->
+            items(filteredSessions, key = { it.session.id }) { info ->
                 var showMenu by remember { mutableStateOf(false) }
                 val session = info.session
                 val selected = session.id == currentConversationId
