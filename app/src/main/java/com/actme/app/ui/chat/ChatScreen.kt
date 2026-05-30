@@ -4,7 +4,7 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.util.Base64
-import android.util.Log
+import com.actme.app.util.AppLogger
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -131,9 +131,9 @@ fun ChatScreen(
         val mgr = asrManager
         if (mgr != null && !mgr.isLoaded && preloadJob?.isActive != true) {
             preloadJob = scope.launch {
-                Log.i("ChatScreen", "Preloading ASR model in parallel with recording...")
+                AppLogger.i("ChatScreen", "Preloading ASR model in parallel with recording...")
                 mgr.init()
-                Log.i("ChatScreen", "ASR model preload complete, loaded=${mgr.isLoaded}")
+                AppLogger.i("ChatScreen", "ASR model preload complete, loaded=${mgr.isLoaded}")
             }
         }
     }
@@ -188,15 +188,15 @@ fun ChatScreen(
                 }
             }
             val text = manager.transcribe(file, asrLanguage)
-            Log.i("ChatScreen", "ASR transcribed: $text")
+            AppLogger.i("ChatScreen", "ASR transcribed: $text")
             if (text.isNotBlank()) {
                 input = input + text
             } else {
-                Log.w("ChatScreen", "ASR returned blank text")
+                AppLogger.w("ChatScreen", "ASR returned blank text")
                 Toast.makeText(context, "未识别到语音内容", Toast.LENGTH_SHORT).show()
             }
         } catch (e: Exception) {
-            Log.e("ChatScreen", "ASR error", e)
+            AppLogger.e("ChatScreen", "ASR error", e)
             Toast.makeText(context, "语音识别失败: ${e.message}", Toast.LENGTH_SHORT).show()
         } finally {
             isTranscribing = false

@@ -5,7 +5,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.os.Build
-import android.util.Log
+import com.actme.app.util.AppLogger
 import com.actme.app.data.local.RecurrenceCalculator
 import com.actme.app.data.local.ScheduleEntity
 
@@ -16,7 +16,7 @@ class ReminderScheduler(context: Context) {
     fun schedule(entity: ScheduleEntity) {
         val triggerAt = RecurrenceCalculator.normalizeEpochMillis(entity.reminderAt)
         if (triggerAt <= System.currentTimeMillis()) {
-            Log.i(TAG, "skip schedule: id=${entity.id}, triggerAt=$triggerAt is past")
+            AppLogger.i(TAG, "skip schedule: id=${entity.id}, triggerAt=$triggerAt is past")
             return
         }
 
@@ -43,13 +43,13 @@ class ReminderScheduler(context: Context) {
                     triggerAt,
                     pendingIntent
                 )
-                Log.i(TAG, "scheduled exact alarm: id=${entity.id}, triggerAt=$triggerAt")
+                AppLogger.i(TAG, "scheduled exact alarm: id=${entity.id}, triggerAt=$triggerAt")
                 return
             } catch (se: SecurityException) {
-                Log.i(TAG, "exact alarm denied, fallback to inexact: id=${entity.id}, reason=${se.message}")
+                AppLogger.i(TAG, "exact alarm denied, fallback to inexact: id=${entity.id}, reason=${se.message}")
             }
         } else {
-            Log.i(TAG, "exact alarm permission missing, fallback to inexact: id=${entity.id}")
+            AppLogger.i(TAG, "exact alarm permission missing, fallback to inexact: id=${entity.id}")
         }
 
         alarmManager.setAndAllowWhileIdle(
@@ -57,7 +57,7 @@ class ReminderScheduler(context: Context) {
             triggerAt,
             pendingIntent
         )
-        Log.i(TAG, "scheduled inexact alarm: id=${entity.id}, triggerAt=$triggerAt")
+        AppLogger.i(TAG, "scheduled inexact alarm: id=${entity.id}, triggerAt=$triggerAt")
     }
 
     fun cancel(scheduleId: Long) {
@@ -72,7 +72,7 @@ class ReminderScheduler(context: Context) {
         )
         alarmManager.cancel(pendingIntent)
         pendingIntent.cancel()
-        Log.i(TAG, "cancelled alarm: id=$scheduleId")
+        AppLogger.i(TAG, "cancelled alarm: id=$scheduleId")
     }
 
     companion object {

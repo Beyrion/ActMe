@@ -1,6 +1,6 @@
 package com.actme.app.data.remote
 
-import android.util.Log
+import com.actme.app.util.AppLogger
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -63,14 +63,14 @@ class OpenAiResponsesClient {
         enableWebSearch: Boolean = false
     ): String {
         if (config.sk.isBlank()) {
-            Log.i(TAG, "run aborted: api key is blank")
+            AppLogger.i(TAG, "run aborted: api key is blank")
             return "当前未配置 API Key，请在设置中添加提供商。"
         }
         val url = when (config.providerFormat) {
             "anthropic" -> apiUrl(config.endpoint, "messages")
             else -> apiUrl(config.endpoint, "chat/completions")
         }
-        Log.i(
+        AppLogger.i(
             TAG,
             "run request: url=$url, model=${config.model}, messages=${messages.size}"
         )
@@ -83,10 +83,10 @@ class OpenAiResponsesClient {
         val response = okHttp.newCall(request).execute()
         val body = response.body?.string().orEmpty()
         if (!response.isSuccessful) {
-            Log.i(TAG, "run failed: code=${response.code}")
+            AppLogger.i(TAG, "run failed: code=${response.code}")
             return "请求失败(${response.code})：$body"
         }
-        Log.i(TAG, "run success")
+        AppLogger.i(TAG, "run success")
         return parseSseBody(body, config.providerFormat)
     }
 
@@ -119,7 +119,7 @@ class OpenAiResponsesClient {
             }
         } catch (e: Exception) {
             if (e is CancellationException) throw e
-            Log.e(TAG, "runStreaming error: ${e.message}")
+            AppLogger.e(TAG, "runStreaming error: ${e.message}")
         } finally {
             call.cancel()
         }
@@ -131,7 +131,7 @@ class OpenAiResponsesClient {
             val url = apiUrl(endpoint, "models")
             val authHeader = if (providerFormat == "anthropic") "x-api-key" else "Authorization"
             val authValue = if (providerFormat == "anthropic") sk else "Bearer $sk"
-            Log.i(TAG, "fetchModels: GET $url")
+            AppLogger.i(TAG, "fetchModels: GET $url")
             val request = Request.Builder()
                 .url(url)
                 .header(authHeader, authValue)
@@ -140,7 +140,7 @@ class OpenAiResponsesClient {
                 .build()
             val response = okHttp.newCall(request).execute()
             if (!response.isSuccessful) {
-                Log.i(TAG, "fetchModels failed: code=${response.code}, body=${response.body?.string()}")
+                AppLogger.i(TAG, "fetchModels failed: code=${response.code}, body=${response.body?.string()}")
                 return emptyList()
             }
             val body = response.body?.string().orEmpty()

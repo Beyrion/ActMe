@@ -1,6 +1,6 @@
 package com.actme.app.data.repo
 
-import android.util.Log
+import com.actme.app.util.AppLogger
 import com.actme.app.data.agent.ActMeAgent
 import com.actme.app.data.agent.ReplyExtractor
 import com.actme.app.data.agent.ScheduleUpdate
@@ -61,7 +61,7 @@ class ActMeRepository(
 
     suspend fun ensureActiveConversationId(): Long = withContext(Dispatchers.IO) {
         val id = chatDao.getLatestSession()?.id ?: createConversation("新聊天")
-        Log.i(TAG, "ensure active conversation: id=$id")
+        AppLogger.i(TAG, "ensure active conversation: id=$id")
         id
     }
 
@@ -73,7 +73,7 @@ class ActMeRepository(
                 updatedAt = System.currentTimeMillis()
             )
         )
-        Log.i(TAG, "create conversation: id=$id, titleB64=${LogCodec.utf8Base64(title)}")
+        AppLogger.i(TAG, "create conversation: id=$id, titleB64=${LogCodec.utf8Base64(title)}")
         id
     }
 
@@ -81,14 +81,14 @@ class ActMeRepository(
         val session = chatDao.getSessionById(conversationId) ?: return@withContext
         val sanitized = title.trim().ifBlank { session.title }.take(24)
         chatDao.updateSession(session.copy(title = sanitized, updatedAt = System.currentTimeMillis()))
-        Log.i(TAG, "rename conversation: id=$conversationId, titleB64=${LogCodec.utf8Base64(sanitized)}")
+        AppLogger.i(TAG, "rename conversation: id=$conversationId, titleB64=${LogCodec.utf8Base64(sanitized)}")
     }
 
     suspend fun deleteConversation(conversationId: Long): Long = withContext(Dispatchers.IO) {
         chatDao.deleteMessagesByConversation(conversationId)
         chatDao.deleteSessionById(conversationId)
         val fallbackId = chatDao.getLatestSession()?.id ?: createConversation("新聊天")
-        Log.i(TAG, "delete conversation: id=$conversationId, fallbackId=$fallbackId")
+        AppLogger.i(TAG, "delete conversation: id=$conversationId, fallbackId=$fallbackId")
         fallbackId
     }
 
@@ -99,7 +99,7 @@ class ActMeRepository(
         imageMimeType: String? = null
     ) = withContext(Dispatchers.IO) {
         val now = System.currentTimeMillis()
-        Log.i(TAG, "send message begin: conversationId=$conversationId, hasImage=${imageBase64 != null}")
+        AppLogger.i(TAG, "send message begin: conversationId=$conversationId, hasImage=${imageBase64 != null}")
         chatDao.insert(
             ChatMessageEntity(
                 conversationId = conversationId,
@@ -152,12 +152,12 @@ class ActMeRepository(
                 }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "streaming error: ${e.message}")
+            AppLogger.e(TAG, "streaming error: ${e.message}")
         }
 
         val rawText = extractor.getRaw()
         val result = agent.parseRaw(rawText)
-        Log.i(
+        AppLogger.i(
             TAG,
             "agent result: memoryUpdates=${result.memoryUpdates.size}, scheduleUpdates=${result.scheduleUpdates.size}, skillUpdates=${result.skillUpdates.size}"
         )
@@ -181,13 +181,13 @@ class ActMeRepository(
             val gateRequest = buildScheduleGateRequest(userInput, update)
             val gateResult = addScheduleBySubAgent(gateRequest)
             if (gateResult.isFailure) {
-                Log.i(TAG, "chat schedule gate failed, fallback strict-agent-parse")
+                AppLogger.i(TAG, "chat schedule gate failed, fallback strict-agent-parse")
                 val strictResult = saveScheduleUpdateStrictlyFromAgent(update)
                 if (strictResult.isFailure) {
-                    Log.i(TAG, "chat schedule dropped")
+                    AppLogger.i(TAG, "chat schedule dropped")
                 }
             } else {
-                Log.i(TAG, "chat schedule gated by sub-agent: titleB64=${LogCodec.utf8Base64(update.title)}")
+                AppLogger.i(TAG, "chat schedule gated by sub-agent: titleB64=${LogCodec.utf8Base64(update.title)}")
             }
         }
 
@@ -202,22 +202,22 @@ class ActMeRepository(
                 )
             )
         }
-        Log.i(TAG, "send message complete: conversationId=$conversationId")
+        AppLogger.i(TAG, "send message complete: conversationId=$conversationId")
     }
 
     suspend fun addOrUpdateMemory(item: MemoryItemEntity) = withContext(Dispatchers.IO) {
         if (item.id == 0L) {
             memoryDao.upsert(item)
-            Log.i(TAG, "memory created: categoryB64=${LogCodec.utf8Base64(item.category)}")
+            AppLogger.i(TAG, "memory created: categoryB64=${LogCodec.utf8Base64(item.category)}")
         } else {
             memoryDao.update(item)
-            Log.i(TAG, "memory updated: id=${item.id}, categoryB64=${LogCodec.utf8Base64(item.category)}")
+            AppLogger.i(TAG, "memory updated: id=${item.id}, categoryB64=${LogCodec.utf8Base64(item.category)}")
         }
     }
 
     suspend fun deleteMemoryItem(id: Long) = withContext(Dispatchers.IO) {
         memoryDao.deleteById(id)
-        Log.i(TAG, "memory deleted: id=$id")
+        AppLogger.i(TAG, "memory deleted: id=$id")
     }
 
     suspend fun addManualSchedule(
@@ -266,7 +266,7 @@ class ActMeRepository(
             )
         )
         scheduleDao.getById(id)?.let { reminderScheduler.schedule(it) }
-        Log.i(
+        AppLogger.i(
             TAG,
             "manual schedule created: id=$id, repeatType=${repeatType.name}, nextReminder=$nextReminder"
         )
@@ -348,7 +348,7 @@ class ActMeRepository(
                 repeatDayOfMonth = repeatDayOfMonth,
                 reminderTimeMinutes = reminderTimeMinutes
             )
-            Log.i(
+            AppLogger.i(
                 TAG,
                 "sub-agent schedule created: titleB64=${LogCodec.utf8Base64(normalizedTitle)}, repeatType=${repeatType.name}, time=${plan.reminderTime}"
             )
@@ -443,7 +443,7 @@ class ActMeRepository(
     suspend fun deleteSchedule(id: Long) = withContext(Dispatchers.IO) {
         reminderScheduler.cancel(id)
         scheduleDao.deleteById(id)
-        Log.i(TAG, "schedule deleted: id=$id")
+        AppLogger.i(TAG, "schedule deleted: id=$id")
     }
 
     suspend fun onReminderTriggered(id: Long) = withContext(Dispatchers.IO) {
@@ -459,7 +459,7 @@ class ActMeRepository(
         val updated = schedule.copy(reminderAt = nextReminder)
         scheduleDao.upsert(updated)
         reminderScheduler.schedule(updated)
-        Log.i(TAG, "reminder rolled: id=$id, nextReminder=$nextReminder")
+        AppLogger.i(TAG, "reminder rolled: id=$id, nextReminder=$nextReminder")
     }
 
     suspend fun rescheduleAllReminders() = withContext(Dispatchers.IO) {
@@ -472,7 +472,7 @@ class ActMeRepository(
             }
             reminderScheduler.schedule(updated)
         }
-        Log.i(TAG, "rescheduled all reminders")
+        AppLogger.i(TAG, "rescheduled all reminders")
     }
 
     private fun runLocalSkills(userInput: String, skills: List<SkillEntity>): String {

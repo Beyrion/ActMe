@@ -8,7 +8,7 @@ import com.actme.app.data.local.SkillEntity
 import com.actme.app.data.remote.MessagePayload
 import com.actme.app.data.remote.OpenAiResponsesClient
 import com.actme.app.data.remote.ProviderConfig
-import android.util.Log
+import com.actme.app.util.AppLogger
 import java.time.ZoneId
 import kotlinx.coroutines.flow.Flow
 import kotlinx.serialization.SerialName
@@ -194,7 +194,7 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
         )
         val jsonPart = extractJson(raw)
         val parsed = runCatching { json.decodeFromString<ScheduleSubAgentPlan>(jsonPart) }.getOrNull()
-        Log.i(TAG, "schedule sub-agent parsed=${parsed != null}")
+        AppLogger.i(TAG, "schedule sub-agent parsed=${parsed != null}")
         return parsed
     }
 

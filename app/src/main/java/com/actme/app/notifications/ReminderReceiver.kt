@@ -5,7 +5,7 @@ import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.util.Log
+import com.actme.app.util.AppLogger
 import androidx.core.app.NotificationCompat
 import com.actme.app.ActMeApp
 import com.actme.app.ui.NotificationDetailActivity
@@ -17,23 +17,23 @@ class ReminderReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val scheduleId = intent.getLongExtra(ReminderScheduler.EXTRA_SCHEDULE_ID, -1L)
         if (scheduleId <= 0) {
-            Log.i(TAG, "receive reminder ignored: invalid scheduleId=$scheduleId")
+            AppLogger.i(TAG, "receive reminder ignored: invalid scheduleId=$scheduleId")
             return
         }
 
         val pendingResult = goAsync()
         val app = context.applicationContext as? ActMeApp
         if (app == null) {
-            Log.i(TAG, "receive reminder ignored: app is null")
+            AppLogger.i(TAG, "receive reminder ignored: app is null")
             pendingResult.finish()
             return
         }
-        Log.i(TAG, "receive reminder: scheduleId=$scheduleId")
+        AppLogger.i(TAG, "receive reminder: scheduleId=$scheduleId")
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 val schedule = app.container.repository.getScheduleById(scheduleId)
                 if (schedule == null) {
-                    Log.i(TAG, "schedule not found: id=$scheduleId")
+                    AppLogger.i(TAG, "schedule not found: id=$scheduleId")
                     return@launch
                 }
                 val detailIntent = Intent(context, NotificationDetailActivity::class.java).apply {
@@ -64,7 +64,7 @@ class ReminderReceiver : BroadcastReceiver() {
 
                 val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                 manager.notify(schedule.id.toInt(), notification)
-                Log.i(TAG, "notification shown: scheduleId=${schedule.id}")
+                AppLogger.i(TAG, "notification shown: scheduleId=${schedule.id}")
 
                 app.container.repository.onReminderTriggered(schedule.id)
             } finally {
