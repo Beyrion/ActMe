@@ -5,6 +5,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
@@ -14,11 +15,27 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
 import com.actme.app.ActMeApp
 import com.actme.app.ui.chat.ChatScreen
 import com.actme.app.ui.chat.ChatViewModel
@@ -73,43 +90,91 @@ class MainActivity : ComponentActivity() {
                             val sendingConversationId by chatViewModel.sendingConversationId.collectAsStateWithLifecycle(null)
                             val asrLanguage by settingsViewModel.asrLanguage.collectAsStateWithLifecycle("Chinese")
                             val isModelReady by settingsViewModel.isModelReady.collectAsStateWithLifecycle(false)
-                            ChatScreen(
-                                messages = messages,
-                                onSend = { text, imgBase64, imgMime -> chatViewModel.sendMessage(text, imgBase64, imgMime) },
-                                sendingConversationId = sendingConversationId,
-                                isRecording = isRecording,
-                                onStartRecording = { chatViewModel.setRecording(true) },
-                                onStopRecording = { chatViewModel.setRecording(false) },
-                                availableModels = availableModels,
-                                selectedModel = selectedModel,
-                                onSelectModel = chatViewModel::selectModel,
-                                asrLanguage = asrLanguage,
-                                isModelReady = isModelReady,
-                                onNavigateToMenu = { navController.navigate("menu") }
-                            )
-                        }
-                        composable("menu") {
                             val sessionInfos by chatViewModel.sessionInfos.collectAsStateWithLifecycle(emptyList())
                             val currentConversationId by chatViewModel.currentConversationId.collectAsStateWithLifecycle(null)
-                            val sendingConversationId by chatViewModel.sendingConversationId.collectAsStateWithLifecycle(null)
-                            MenuScreen(
-                                sessionInfos = sessionInfos,
-                                currentConversationId = currentConversationId,
-                                sendingConversationId = sendingConversationId,
-                                onCreateConversation = {
-                                    chatViewModel.createNewConversation()
-                                    navController.popBackStack("chat", false)
-                                },
-                                onSwitchConversation = { id ->
-                                    chatViewModel.switchConversation(id)
-                                    navController.popBackStack("chat", false)
-                                },
-                                onRenameConversation = chatViewModel::renameConversation,
-                                onDeleteConversation = chatViewModel::deleteConversation,
-                                onNavigateToMemory = { navController.navigate("memory") },
-                                onNavigateToSchedule = { navController.navigate("schedule") },
-                                onNavigateToSettings = { navController.navigate("settings") }
-                            )
+
+                            var showMenu by remember { mutableStateOf(false) }
+
+                            BackHandler(enabled = showMenu) {
+                                showMenu = false
+                            }
+
+                            Box(modifier = Modifier.fillMaxSize()) {
+                                ChatScreen(
+                                    messages = messages,
+                                    onSend = { text, imgBase64, imgMime -> chatViewModel.sendMessage(text, imgBase64, imgMime) },
+                                    sendingConversationId = sendingConversationId,
+                                    isRecording = isRecording,
+                                    onStartRecording = { chatViewModel.setRecording(true) },
+                                    onStopRecording = { chatViewModel.setRecording(false) },
+                                    availableModels = availableModels,
+                                    selectedModel = selectedModel,
+                                    onSelectModel = chatViewModel::selectModel,
+                                    asrLanguage = asrLanguage,
+                                    isModelReady = isModelReady,
+                                    onNavigateToMenu = { showMenu = true }
+                                )
+
+                                // Scrim overlay
+                                AnimatedVisibility(
+                                    visible = showMenu,
+                                    enter = fadeIn(),
+                                    exit = fadeOut()
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .background(Color.Black.copy(alpha = 0.3f))
+                                            .clickable(
+                                                indication = null,
+                                                interactionSource = remember { MutableInteractionSource() }
+                                            ) { showMenu = false }
+                                    )
+                                }
+
+                                // Menu sidebar
+                                AnimatedVisibility(
+                                    visible = showMenu,
+                                    enter = slideInHorizontally(initialOffsetX = { -it }),
+                                    exit = slideOutHorizontally(targetOffsetX = { -it })
+                                ) {
+                                    Surface(
+                                        modifier = Modifier
+                                            .fillMaxWidth(0.85f)
+                                            .fillMaxHeight(),
+                                        color = MaterialTheme.colorScheme.background,
+                                        shadowElevation = 8.dp
+                                    ) {
+                                        MenuScreen(
+                                            sessionInfos = sessionInfos,
+                                            currentConversationId = currentConversationId,
+                                            sendingConversationId = sendingConversationId,
+                                            onCreateConversation = {
+                                                chatViewModel.createNewConversation()
+                                                showMenu = false
+                                            },
+                                            onSwitchConversation = { id ->
+                                                chatViewModel.switchConversation(id)
+                                                showMenu = false
+                                            },
+                                            onRenameConversation = chatViewModel::renameConversation,
+                                            onDeleteConversation = chatViewModel::deleteConversation,
+                                            onNavigateToMemory = {
+                                                showMenu = false
+                                                navController.navigate("memory")
+                                            },
+                                            onNavigateToSchedule = {
+                                                showMenu = false
+                                                navController.navigate("schedule")
+                                            },
+                                            onNavigateToSettings = {
+                                                showMenu = false
+                                                navController.navigate("settings")
+                                            }
+                                        )
+                                    }
+                                }
+                            }
                         }
                         composable("memory") {
                             MemoryCategoryScreen(
