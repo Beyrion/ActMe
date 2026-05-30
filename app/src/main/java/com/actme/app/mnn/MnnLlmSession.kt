@@ -1,5 +1,6 @@
 package com.actme.app.mnn
 
+import com.actme.app.util.AppLogger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -41,13 +42,13 @@ class MnnLlmSession {
 
     suspend fun submit(prompt: String): String = withContext(Dispatchers.IO) {
         val result = nativeSubmit(nativePtr, prompt)
-        android.util.Log.i("MnnLlmSession", "submit result (${result.length} chars): ${result.take(200)}")
+        AppLogger.i("MnnLlmSession", "submit result (${result.length} chars): ${result.take(200)}")
         result
     }
 
     suspend fun submitRaw(prompt: String): String = withContext(Dispatchers.IO) {
         val result = nativeSubmitRaw(nativePtr, prompt)
-        android.util.Log.i("MnnLlmSession", "submitRaw result (${result.length} chars): ${result.take(200)}")
+        AppLogger.i("MnnLlmSession", "submitRaw result (${result.length} chars): ${result.take(200)}")
         result
     }
 

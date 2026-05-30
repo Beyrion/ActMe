@@ -1,7 +1,7 @@
 package com.actme.app.mnn
 
 import android.content.Context
-import android.util.Log
+import com.actme.app.util.AppLogger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -82,7 +82,7 @@ class ModelManager(private val context: Context) {
 
     suspend fun fetchModelInfo(): ModelInfo = withContext(Dispatchers.IO) {
         val url = "$BASE_URL/$MODEL_OWNER/$MODEL_NAME/repo/files?Revision=master&Recursive=true"
-        Log.i(TAG, "Fetching model info from: $url")
+        AppLogger.i(TAG, "Fetching model info from: $url")
 
         val request = Request.Builder().url(url).get()
             .header("Accept", "application/json")
@@ -94,7 +94,7 @@ class ModelManager(private val context: Context) {
         }
 
         val body = response.body?.string() ?: throw Exception("服务器返回空数据")
-        Log.d(TAG, "API response: ${body.take(500)}")
+        AppLogger.d(TAG, "API response: ${body.take(500)}")
 
         val files = mutableListOf<ModelFile>()
         var totalSize = 0L
@@ -114,12 +114,12 @@ class ModelManager(private val context: Context) {
                 totalSize += size
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to parse response, using fallback file list", e)
+            AppLogger.e(TAG, "Failed to parse response, using fallback file list", e)
             return@withContext fallbackFileList()
         }
 
         if (files.isEmpty()) {
-            Log.w(TAG, "Empty file list from API, using fallback")
+            AppLogger.w(TAG, "Empty file list from API, using fallback")
             return@withContext fallbackFileList()
         }
 
@@ -151,16 +151,16 @@ class ModelManager(private val context: Context) {
     suspend fun downloadModel(): String = withContext(Dispatchers.IO) {
         try {
             _downloadState.value = DownloadState.Checking
-            Log.i(TAG, "Starting model download...")
+            AppLogger.i(TAG, "Starting model download...")
 
             val info = try {
                 fetchModelInfo()
             } catch (e: Exception) {
-                Log.w(TAG, "Could not fetch model info, using fallback", e)
+                AppLogger.w(TAG, "Could not fetch model info, using fallback", e)
                 fallbackFileList()
             }
             _modelInfo.value = info
-            Log.i(TAG, "Model: ${info.name}, ${info.fileCount} files, ${formatSize(info.totalSize)}")
+            AppLogger.i(TAG, "Model: ${info.name}, ${info.fileCount} files, ${formatSize(info.totalSize)}")
 
             val targetDir = File(modelDir)
             targetDir.mkdirs()
@@ -168,7 +168,7 @@ class ModelManager(private val context: Context) {
             var totalBytesDownloaded = 0L
 
             info.files.forEachIndexed { index, file ->
-                Log.i(TAG, "[${index + 1}/${info.fileCount}] Downloading: ${file.name} (${formatSize(file.size)})")
+                AppLogger.i(TAG, "[${index + 1}/${info.fileCount}] Downloading: ${file.name} (${formatSize(file.size)})")
 
                 _downloadState.value = DownloadState.Downloading(
                     currentFile = file.name,
@@ -185,7 +185,7 @@ class ModelManager(private val context: Context) {
                 // Skip if already downloaded with correct size
                 if (targetFile.exists() && targetFile.length() > 0 &&
                     (file.size <= 0 || targetFile.length() >= file.size * 0.95)) {
-                    Log.i(TAG, "  Skipping (already exists): ${file.name}")
+                    AppLogger.i(TAG, "  Skipping (already exists): ${file.name}")
                     totalBytesDownloaded += targetFile.length()
                     return@forEachIndexed
                 }
@@ -238,14 +238,14 @@ class ModelManager(private val context: Context) {
                     }
                 }
 
-                Log.i(TAG, "  Done: ${file.name}")
+                AppLogger.i(TAG, "  Done: ${file.name}")
             }
 
             _downloadState.value = DownloadState.Completed(modelDir)
-            Log.i(TAG, "Model download complete: $modelDir")
+            AppLogger.i(TAG, "Model download complete: $modelDir")
             modelDir
         } catch (e: Exception) {
-            Log.e(TAG, "Model download failed", e)
+            AppLogger.e(TAG, "Model download failed", e)
             _downloadState.value = DownloadState.Error(e.message ?: "下载失败")
             throw e
         }

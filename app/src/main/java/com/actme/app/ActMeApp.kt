@@ -4,7 +4,7 @@ import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.os.Build
-import android.util.Log
+import com.actme.app.util.AppLogger
 import com.actme.app.di.AppContainer
 import com.actme.app.skills.SkillSeeder
 
@@ -14,12 +14,12 @@ class ActMeApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        Log.i(TAG, "application onCreate")
-        Log.i(TAG, "log encoding policy: plain fields ASCII, user text UTF-8 Base64 (suffix=B64)")
+        AppLogger.i(TAG, "application onCreate")
+        AppLogger.i(TAG, "log encoding policy: plain fields ASCII, user text UTF-8 Base64 (suffix=B64)")
         container = AppContainer(this)
         createNotificationChannel()
         SkillSeeder.seedIfNeeded(this, container.database.skillDao())
-        Log.i(TAG, "application initialized")
+        AppLogger.i(TAG, "application initialized")
     }
 
     private fun createNotificationChannel() {
@@ -33,7 +33,7 @@ class ActMeApp : Application() {
         }
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(channel)
-        Log.i(TAG, "notification channel ready: $REMINDER_CHANNEL_ID")
+        AppLogger.i(TAG, "notification channel ready: $REMINDER_CHANNEL_ID")
     }
 
     companion object {

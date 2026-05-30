@@ -1,6 +1,6 @@
 package com.actme.app.audio
 
-import android.util.Log
+import com.actme.app.util.AppLogger
 import com.actme.app.mnn.MnnLlmSession
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -48,17 +48,17 @@ class AsrManager(
                 buildDefaultConfig()
             }
 
-            Log.i(TAG, "Initializing ASR with config: ${mergedConfig.take(500)}")
+            AppLogger.i(TAG, "Initializing ASR with config: ${mergedConfig.take(500)}")
 
             session = MnnLlmSession().apply {
                 init(modelDir, mergedConfig)
                 setMaxNewTokens(256) // ASR only needs short output
             }
 
-            Log.i(TAG, "ASR session initialized. Config: ${session?.dumpConfig()}")
+            AppLogger.i(TAG, "ASR session initialized. Config: ${session?.dumpConfig()}")
             true
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to initialize ASR session", e)
+            AppLogger.e(TAG, "Failed to initialize ASR session", e)
             false
         }
     }
@@ -67,12 +67,12 @@ class AsrManager(
         val s = session ?: throw IllegalStateException("ASR not initialized")
 
         val prompt = buildAsrPrompt(audioFile, language)
-        Log.i(TAG, "Transcribing: ${audioFile.absolutePath} (${audioFile.length()} bytes)")
-        Log.i(TAG, "Prompt: $prompt")
+        AppLogger.i(TAG, "Transcribing: ${audioFile.absolutePath} (${audioFile.length()} bytes)")
+        AppLogger.i(TAG, "Prompt: $prompt")
 
         try {
             val result = s.submitRaw(prompt)
-            Log.i(TAG, "ASR result: $result")
+            AppLogger.i(TAG, "ASR result: $result")
             result.trim()
         } finally {
             // Keep session warm for subsequent transcriptions

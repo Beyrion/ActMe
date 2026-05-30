@@ -4,7 +4,7 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.util.Base64
-import android.util.Log
+import com.actme.app.util.AppLogger
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -24,7 +24,11 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
@@ -59,8 +63,19 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -100,12 +115,30 @@ fun ChatScreen(
     onNavigateToMenu: () -> Unit = {}
 ) {
     val scope = rememberCoroutineScope()
-    var input by remember { mutableStateOf("") }
+    var input by rememberSaveable { mutableStateOf("") }
+    val focusRequester = remember { FocusRequester() }
+    val focusManager = LocalFocusManager.current
+    var isInputFocused by remember { mutableStateOf(false) }
 
     var selectedImageBase64 by remember { mutableStateOf<String?>(null) }
     var selectedImageMimeType by remember { mutableStateOf<String?>(null) }
     var selectedImageBytes by remember { mutableStateOf<ByteArray?>(null) }
     var showModelMenu by remember { mutableStateOf(false) }
+
+    fun doSend() {
+        val text = input.trim()
+        if (text.isNotBlank() || selectedImageBase64 != null) {
+            onSend(text, selectedImageBase64, selectedImageMimeType)
+            input = ""
+            selectedImageBase64 = null
+            selectedImageMimeType = null
+            selectedImageBytes = null
+            scope.launch {
+                kotlinx.coroutines.delay(100)
+                focusRequester.requestFocus()
+            }
+        }
+    }
 
     val context = LocalContext.current
     val sending = sendingConversationId != null
@@ -131,9 +164,9 @@ fun ChatScreen(
         val mgr = asrManager
         if (mgr != null && !mgr.isLoaded && preloadJob?.isActive != true) {
             preloadJob = scope.launch {
-                Log.i("ChatScreen", "Preloading ASR model in parallel with recording...")
+                AppLogger.i("ChatScreen", "Preloading ASR model in parallel with recording...")
                 mgr.init()
-                Log.i("ChatScreen", "ASR model preload complete, loaded=${mgr.isLoaded}")
+                AppLogger.i("ChatScreen", "ASR model preload complete, loaded=${mgr.isLoaded}")
             }
         }
     }
@@ -188,15 +221,15 @@ fun ChatScreen(
                 }
             }
             val text = manager.transcribe(file, asrLanguage)
-            Log.i("ChatScreen", "ASR transcribed: $text")
+            AppLogger.i("ChatScreen", "ASR transcribed: $text")
             if (text.isNotBlank()) {
                 input = input + text
             } else {
-                Log.w("ChatScreen", "ASR returned blank text")
+                AppLogger.w("ChatScreen", "ASR returned blank text")
                 Toast.makeText(context, "未识别到语音内容", Toast.LENGTH_SHORT).show()
             }
         } catch (e: Exception) {
-            Log.e("ChatScreen", "ASR error", e)
+            AppLogger.e("ChatScreen", "ASR error", e)
             Toast.makeText(context, "语音识别失败: ${e.message}", Toast.LENGTH_SHORT).show()
         } finally {
             isTranscribing = false
@@ -233,17 +266,37 @@ fun ChatScreen(
         modifier = Modifier.fillMaxSize()
     ) {
         Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(12.dp)
+            modifier = Modifier.fillMaxSize()
         ) {
             // ---- Top bar ----
-            Row(verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onNavigateToMenu) {
-                Icon(Icons.Filled.Menu, contentDescription = "菜单")
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 12.dp, end = 12.dp, top = 12.dp)
+            ) {
+                IconButton(
+                    onClick = {
+                        focusManager.clearFocus()
+                        onNavigateToMenu()
+                    },
+                    modifier = Modifier.align(Alignment.CenterStart)
+                ) {
+                    Icon(Icons.Filled.Menu, contentDescription = "菜单")
+                }
+                Text(
+                    "ActMe",
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.align(Alignment.Center)
+                )
             }
-                Text("ActMe Agent", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-            }
+
+            // ---- Content area (shifts with keyboard) ----
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(horizontal = 12.dp)
+            ) {
 
             // ---- Message list ----
             val listState = rememberLazyListState()
@@ -285,6 +338,15 @@ fun ChatScreen(
                 if (sending && isAtBottom) {
                     val targetIndex = listState.layoutInfo.totalItemsCount - 1
                     if (targetIndex >= 0) listState.scrollToItem(targetIndex)
+                }
+            }
+
+            // Auto-scroll to bottom when keyboard appears
+            LaunchedEffect(isInputFocused) {
+                if (isInputFocused) {
+                    kotlinx.coroutines.delay(200)
+                    val targetIndex = listState.layoutInfo.totalItemsCount - 1
+                    if (targetIndex >= 0) listState.animateScrollToItem(targetIndex)
                 }
             }
 
@@ -380,13 +442,32 @@ fun ChatScreen(
                 ) {
                     Column {
                         OutlinedTextField(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .focusRequester(focusRequester)
+                                .onFocusChanged { isInputFocused = it.isFocused }
+                                .pointerInput(Unit) {
+                                    detectTapGestures(
+                                        onLongPress = { input += "\n" }
+                                    )
+                                }
+                                .onKeyEvent { event ->
+                                    if (event.type == KeyEventType.KeyDown && event.key == Key.Enter) {
+                                        val native = event.nativeKeyEvent
+                                        if (native != null && !native.isShiftPressed && native.metaState == 0) {
+                                            doSend()
+                                            return@onKeyEvent true
+                                        }
+                                    }
+                                    false
+                                },
                             value = input,
                             onValueChange = { input = it },
                             placeholder = { Text("告诉 ActMe 你现在想做什么...") },
-                            minLines = 2,
+                            minLines = 1,
                             maxLines = 6,
-                            singleLine = false,
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                            keyboardActions = KeyboardActions(onSend = { doSend() }),
                             colors = OutlinedTextFieldDefaults.colors(
                                 focusedBorderColor = Color.Transparent,
                                 unfocusedBorderColor = Color.Transparent
@@ -520,22 +601,14 @@ fun ChatScreen(
                             if (sending) {
                                 CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
                             } else {
-                                IconButton(onClick = {
-                                    val text = input.trim()
-                                    if (text.isNotBlank() || selectedImageBase64 != null) {
-                                        onSend(text, selectedImageBase64, selectedImageMimeType)
-                                        input = ""
-                                        selectedImageBase64 = null
-                                        selectedImageMimeType = null
-                                        selectedImageBytes = null
-                                    }
-                                }) {
+                                IconButton(onClick = { doSend() }) {
                                     Icon(Icons.Filled.ArrowUpward, contentDescription = "发送")
                                 }
                             }
                         }
                     }
                 }
+            }
             }
         }
     }

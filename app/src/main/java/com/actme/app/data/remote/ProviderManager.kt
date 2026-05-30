@@ -6,6 +6,8 @@ import androidx.security.crypto.MasterKey
 import com.actme.app.data.local.ProviderDao
 import com.actme.app.data.local.ProviderEntity
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 
 class ProviderManager(private val context: Context, private val providerDao: ProviderDao) {
 
@@ -28,6 +30,9 @@ class ProviderManager(private val context: Context, private val providerDao: Pro
 
     val providers: Flow<List<ProviderEntity>> = providerDao.observeAll()
 
+    private val _activeProviderIdFlow = MutableStateFlow(getActiveProviderId())
+    val activeProviderIdFlow: StateFlow<Long> = _activeProviderIdFlow
+
     suspend fun getAllProviders(): List<ProviderEntity> = providerDao.getAll()
 
     fun getSk(providerId: Long): String {
@@ -48,6 +53,7 @@ class ProviderManager(private val context: Context, private val providerDao: Pro
 
     fun setActiveProviderId(id: Long) {
         appPrefs.edit().putLong("active_provider_id", id).apply()
+        _activeProviderIdFlow.value = id
     }
 
     suspend fun getActiveProvider(): ProviderEntity? {
