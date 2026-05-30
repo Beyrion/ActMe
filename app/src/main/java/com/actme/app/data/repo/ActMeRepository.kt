@@ -561,6 +561,7 @@ class ActMeRepository(
     }
 
     val providers = providerManager.providers
+    val activeProviderIdFlow = providerManager.activeProviderIdFlow
 
     suspend fun addProvider(name: String, format: String, endpoint: String, sk: String): Long {
         return providerManager.addProvider(name, format, endpoint, sk)

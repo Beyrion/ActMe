@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -71,6 +72,12 @@ class ChatViewModel(private val repository: ActMeRepository) : ViewModel() {
                 if (providers.isNotEmpty()) {
                     refreshModelState()
                 }
+            }
+        }
+        // Re-fetch models when the active provider is switched (SharedPrefs change, no DB emission)
+        viewModelScope.launch {
+            repository.activeProviderIdFlow.drop(1).collect {
+                refreshModelState()
             }
         }
     }
