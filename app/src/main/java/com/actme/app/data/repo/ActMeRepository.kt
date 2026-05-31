@@ -168,12 +168,30 @@ class ActMeRepository(
         // Multi-pass system call loop: execute system_calls → feed back → re-call agent
         val maxPasses = 3
         var searchResults: String? = null
+        var searchSucceeded = false
+        var searchFailed = false
         for (pass in 1..maxPasses) {
             if (result.systemCalls.isEmpty()) break
+
+            val hasWebSearch = result.systemCalls.any { it.type == "web_search" }
+            if (hasWebSearch) {
+                chatDao.updateContent(streamingMsgId, displayBuilder.toString() + "\n\n🔍 正在联网搜索...")
+            }
 
             AppLogger.i(TAG, "executing ${result.systemCalls.size} system calls (pass $pass)")
             val executedResults = SystemSkillExecutor.execute(result.systemCalls)
             searchResults = if (searchResults != null) "$searchResults\n$executedResults" else executedResults
+
+            // Check if search actually returned useful results
+            if (hasWebSearch) {
+                if (executedResults.contains("【联网搜索结果")) {
+                    searchSucceeded = true
+                    chatDao.updateContent(streamingMsgId, displayBuilder.toString() + "\n\n✅ 已获取联网搜索结果，正在整理...")
+                } else if (executedResults.contains("【搜索错误】")) {
+                    searchFailed = true
+                    chatDao.updateContent(streamingMsgId, displayBuilder.toString() + "\n\n⚠️ 联网搜索失败，基于已有知识回复...")
+                }
+            }
 
             // Re-call agent with search results (non-streaming for intermediate passes)
             val continuationInput = "system_calls 执行结果：\n$executedResults\n\n请基于以上结果继续生成回复。"
@@ -192,8 +210,19 @@ class ActMeRepository(
         }
 
         val localSkillHints = runLocalSkills(userInput, enabledSkills)
-        val finalReply = if (localSkillHints.isBlank()) result.reply else "${result.reply}\n\n$localSkillHints"
+        var finalReply = if (localSkillHints.isBlank()) result.reply else "${result.reply}\n\n$localSkillHints"
+        // Append search status footer if search was attempted
+        if (searchFailed) {
+            finalReply += "\n\n---\n⚠️ 联网搜索失败，以上回复基于已有知识，可能不是最新信息。"
+        } else if (searchSucceeded) {
+            finalReply += "\n\n---\n🔍 [展开搜索结果](search://result)"
+        }
         chatDao.updateContent(streamingMsgId, finalReply)
+
+        // Persist search results so the UI can display them
+        if (!searchResults.isNullOrBlank()) {
+            chatDao.updateSearchResult(streamingMsgId, searchResults)
+        }
         touchConversation(conversationId)
 
         result.memoryUpdates.forEach { update ->

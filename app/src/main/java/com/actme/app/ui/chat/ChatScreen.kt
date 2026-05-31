@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -621,7 +622,45 @@ fun ChatScreen(
 private fun MessageBubble(msg: ChatMessageEntity) {
     val isUser = msg.role == "user"
     val hasImage = !msg.imageBase64.isNullOrBlank() && !msg.imageMimeType.isNullOrBlank()
+    val hasSearchResult = !msg.searchResult.isNullOrBlank()
     var showFullImage by remember { mutableStateOf(false) }
+    var showSearchResult by remember { mutableStateOf(false) }
+
+    // Search result dialog
+    if (showSearchResult && hasSearchResult) {
+        AlertDialog(
+            onDismissRequest = { showSearchResult = false },
+            title = { Text("搜索结果", fontWeight = FontWeight.Bold) },
+            text = {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    // Scrollable search results
+                    LazyColumn(modifier = Modifier.heightIn(max = 400.dp)) {
+                        item {
+                            val cleanResult = msg.searchResult!!
+                                .replace("【联网搜索结果：", "")
+                            Markdown(
+                                content = cleanResult,
+                                colors = markdownColor(),
+                                typography = markdownTypography(
+                                    text = MaterialTheme.typography.bodySmall,
+                                    paragraph = MaterialTheme.typography.bodySmall,
+                                    h1 = MaterialTheme.typography.bodyMedium,
+                                    h2 = MaterialTheme.typography.bodyMedium,
+                                    h3 = MaterialTheme.typography.bodySmall,
+                                    code = MaterialTheme.typography.bodySmall,
+                                )
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showSearchResult = false }) {
+                    Text("关闭")
+                }
+            }
+        )
+    }
 
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -689,11 +728,13 @@ private fun MessageBubble(msg: ChatMessageEntity) {
                         color = MaterialTheme.colorScheme.primary
                     )
                 }
+                // Strip search result link from displayed content
+                val displayContent = msg.content.replace(Regex("\\n?---\\n🔍 \\[展开搜索结果]\\(search://result\\)"), "")
                 if (isUser) {
-                    Text(msg.content, style = MaterialTheme.typography.bodyMedium)
+                    Text(displayContent, style = MaterialTheme.typography.bodyMedium)
                 } else {
                     Markdown(
-                        content = msg.content,
+                        content = displayContent,
                         colors = markdownColor(),
                         typography = markdownTypography(
                             text = MaterialTheme.typography.bodyMedium,
@@ -705,6 +746,20 @@ private fun MessageBubble(msg: ChatMessageEntity) {
                         )
                     )
                 }
+            }
+        }
+
+        // Search result expand button
+        if (hasSearchResult) {
+            TextButton(
+                onClick = { showSearchResult = true },
+                modifier = Modifier.padding(top = 2.dp)
+            ) {
+                Text(
+                    "🔍 展开搜索结果",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
             }
         }
     }

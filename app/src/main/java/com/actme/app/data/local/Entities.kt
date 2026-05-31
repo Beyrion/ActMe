@@ -24,6 +24,7 @@ data class ChatMessageEntity(
     val content: String,
     val imageBase64: String? = null,
     val imageMimeType: String? = null,
+    val searchResult: String? = null,
     val createdAt: Long = System.currentTimeMillis()
 )
 

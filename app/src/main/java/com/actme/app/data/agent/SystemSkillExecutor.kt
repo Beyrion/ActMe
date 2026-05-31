@@ -174,7 +174,12 @@ object SystemSkillExecutor {
         warmUpBing()
 
         val q = URLEncoder.encode(query, "UTF-8")
-        val url = URL("https://cn.bing.com/search?q=" + q + "&setlang=zh-cn&count=10")
+        // form=QBRE tells Bing this is a real user search (not an API call).
+        // Without it, Bing may return poor results for Chinese queries.
+        // pq= encodes the same query as "previous query" for session continuity.
+        val pq = URLEncoder.encode(query.take(50), "UTF-8")
+        val url = URL("https://www.bing.com/search?q=" + q +
+            "&form=QBRE&pq=" + pq + "&qs=n&sp=-1&lq=0")
         AppLogger.i(TAG, "BING-REQ: GET " + url.toString())
 
         val conn = (url.openConnection() as HttpURLConnection).apply {
@@ -389,6 +394,22 @@ object SystemSkillExecutor {
             AppLogger.w(TAG, "SEARXNG: " + inst + " " + e.message)
             null
         }
+    }
+
+    /**
+     * Reorder Chinese query terms to avoid Bing over-matching on a generic first term.
+     * Bing tokenizes Chinese queries left-to-right; if the first term contains a
+     * high-frequency word (e.g. "中国"), it dominates and later terms are ignored.
+     *
+     * Strategy: sort by length descending — longer terms are more specific.
+     */
+    private fun reorderQuery(query: String): String {
+        val terms = query.split(Regex("[\\s，,]+")).map { it.trim() }.filter { it.isNotEmpty() }
+        if (terms.size <= 1) return query
+
+        // Sort by length desc: "今日黄金价格"(6) before "中国"(2)
+        val reordered = terms.sortedByDescending { it.length }.joinToString(" ")
+        return if (reordered == query) query else reordered
     }
 
     // ==================== HTML helpers ====================

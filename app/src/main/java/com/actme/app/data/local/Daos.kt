@@ -36,6 +36,9 @@ interface ChatDao {
     @Query("UPDATE chat_messages SET content = :content WHERE id = :id")
     suspend fun updateContent(id: Long, content: String)
 
+    @Query("UPDATE chat_messages SET searchResult = :result WHERE id = :id")
+    suspend fun updateSearchResult(id: Long, result: String)
+
     @Insert
     suspend fun insertSession(session: ChatSessionEntity): Long
 
