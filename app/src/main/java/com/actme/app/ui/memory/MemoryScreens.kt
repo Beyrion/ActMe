@@ -97,23 +97,33 @@ fun MemoryListScreen(
         }
         Text("点击条目可进入详情编辑，并可返回。")
 
-        OutlinedTextField(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 10.dp),
-            value = input,
-            onValueChange = { input = it },
-            label = { Text("新增条目") }
-        )
-        Button(
-            onClick = {
-                if (input.isBlank()) return@Button
-                onSaveNew(input.trim())
-                input = ""
-            },
-            modifier = Modifier.padding(top = 8.dp)
-        ) {
-            Text("保存新增")
+        val isSystemCategory = category == "系统"
+        if (!isSystemCategory) {
+            OutlinedTextField(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 10.dp),
+                value = input,
+                onValueChange = { input = it },
+                label = { Text("新增条目") }
+            )
+            Button(
+                onClick = {
+                    if (input.isBlank()) return@Button
+                    onSaveNew(input.trim())
+                    input = ""
+                },
+                modifier = Modifier.padding(top = 8.dp)
+            ) {
+                Text("保存新增")
+            }
+        } else {
+            Text(
+                "系统记忆由 App 管理，不可手动添加。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                modifier = Modifier.padding(top = 12.dp)
+            )
         }
 
         LazyColumn(
@@ -164,34 +174,44 @@ fun MemoryItemScreen(
             }
             Text("条目详情", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
         }
-        Text("分类：$category")
+        val isSystemItem = item?.source == "system"
+        Text("分类：$category${if (isSystemItem) " · 系统" else ""}")
 
-        OutlinedTextField(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 12.dp),
-            value = input,
-            onValueChange = { input = it },
-            label = { Text("条目内容") }
-        )
-        Button(
-            modifier = Modifier.padding(top = 8.dp),
-            onClick = {
-                if (input.isBlank()) return@Button
-                onSave(itemId, input.trim())
-                onBack()
-            }
-        ) {
-            Text("保存并返回")
-        }
-        if (itemId > 0L) {
+        if (isSystemItem) {
+            Text(
+                "系统记忆由 App 管理，不可编辑或删除。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                modifier = Modifier.padding(top = 12.dp)
+            )
+        } else {
+            OutlinedTextField(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 12.dp),
+                value = input,
+                onValueChange = { input = it },
+                label = { Text("条目内容") }
+            )
             Button(
                 modifier = Modifier.padding(top = 8.dp),
                 onClick = {
-                    showDeleteConfirm = true
+                    if (input.isBlank()) return@Button
+                    onSave(itemId, input.trim())
+                    onBack()
                 }
             ) {
-                Text("删除条目")
+                Text("保存并返回")
+            }
+            if (itemId > 0L) {
+                Button(
+                    modifier = Modifier.padding(top = 8.dp),
+                    onClick = {
+                        showDeleteConfirm = true
+                    }
+                ) {
+                    Text("删除条目")
+                }
             }
         }
     }

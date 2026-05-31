@@ -51,8 +51,17 @@ interface MemoryDao {
     @Query("SELECT * FROM memory_items WHERE category = :category ORDER BY updatedAt DESC")
     fun observeByCategory(category: String): Flow<List<MemoryItemEntity>>
 
+    @Query("SELECT * FROM memory_items WHERE source != 'system' ORDER BY updatedAt DESC")
+    suspend fun getUserMemories(): List<MemoryItemEntity>
+
+    @Query("SELECT * FROM memory_items WHERE source = 'system' ORDER BY id ASC")
+    suspend fun getSystemMemories(): List<MemoryItemEntity>
+
     @Query("SELECT * FROM memory_items ORDER BY updatedAt DESC")
     suspend fun getAllNow(): List<MemoryItemEntity>
+
+    @Query("SELECT COUNT(*) FROM memory_items WHERE source = 'system'")
+    suspend fun countSystem(): Int
 
     @Query("SELECT * FROM memory_items WHERE id = :id LIMIT 1")
     fun observeById(id: Long): Flow<MemoryItemEntity?>

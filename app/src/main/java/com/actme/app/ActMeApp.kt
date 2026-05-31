@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.os.Build
 import com.actme.app.util.AppLogger
 import com.actme.app.di.AppContainer
+import com.actme.app.skills.MemorySeeder
 import com.actme.app.skills.SkillSeeder
 
 class ActMeApp : Application() {
@@ -19,6 +20,7 @@ class ActMeApp : Application() {
         container = AppContainer(this)
         createNotificationChannel()
         SkillSeeder.seedIfNeeded(this, container.database.skillDao())
+        MemorySeeder.seedIfNeeded(this, container.database.memoryDao())
         AppLogger.i(TAG, "application initialized")
     }
 

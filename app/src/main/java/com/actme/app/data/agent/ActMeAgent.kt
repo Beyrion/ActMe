@@ -9,7 +9,11 @@ import com.actme.app.data.remote.MessagePayload
 import com.actme.app.data.remote.OpenAiResponsesClient
 import com.actme.app.data.remote.ProviderConfig
 import com.actme.app.util.AppLogger
+import java.time.LocalDateTime
 import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.time.format.TextStyle
+import java.util.Locale
 import kotlinx.coroutines.flow.Flow
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -20,7 +24,14 @@ data class AgentResult(
     val reply: String,
     @SerialName("memory_updates") val memoryUpdates: List<MemoryUpdate> = emptyList(),
     @SerialName("schedule_updates") val scheduleUpdates: List<ScheduleUpdate> = emptyList(),
-    @SerialName("skill_updates") val skillUpdates: List<SkillUpdate> = emptyList()
+    @SerialName("skill_updates") val skillUpdates: List<SkillUpdate> = emptyList(),
+    @SerialName("system_calls") val systemCalls: List<SystemCall> = emptyList()
+)
+
+@Serializable
+data class SystemCall(
+    val type: String,
+    val query: String = ""
 )
 
 @Serializable
@@ -69,16 +80,18 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
     suspend fun runTurn(
         userInput: String,
         memories: List<MemoryItemEntity>,
+        systemMemories: List<MemoryItemEntity>,
         schedules: List<ScheduleEntity>,
         skills: List<SkillEntity>,
         config: ProviderConfig,
         enableWebSearch: Boolean = false,
         imageBase64: String? = null,
         imageMimeType: String? = null,
-        historyMessages: List<ChatMessageEntity> = emptyList()
+        historyMessages: List<ChatMessageEntity> = emptyList(),
+        webSearchResults: String? = null
     ): AgentResult {
         val raw = openAiClient.run(
-            buildMessages(userInput, memories, schedules, skills, enableWebSearch, imageBase64, imageMimeType, historyMessages),
+            buildMessages(userInput, memories, systemMemories, schedules, skills, enableWebSearch, imageBase64, imageMimeType, historyMessages, webSearchResults),
             config = config,
             enableWebSearch = enableWebSearch
         )
@@ -88,16 +101,18 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
     fun runTurnStreaming(
         userInput: String,
         memories: List<MemoryItemEntity>,
+        systemMemories: List<MemoryItemEntity>,
         schedules: List<ScheduleEntity>,
         skills: List<SkillEntity>,
         config: ProviderConfig,
         enableWebSearch: Boolean = false,
         imageBase64: String? = null,
         imageMimeType: String? = null,
-        historyMessages: List<ChatMessageEntity> = emptyList()
+        historyMessages: List<ChatMessageEntity> = emptyList(),
+        webSearchResults: String? = null
     ): Flow<String> {
         return openAiClient.runStreaming(
-            buildMessages(userInput, memories, schedules, skills, enableWebSearch, imageBase64, imageMimeType, historyMessages),
+            buildMessages(userInput, memories, systemMemories, schedules, skills, enableWebSearch, imageBase64, imageMimeType, historyMessages, webSearchResults),
             config = config,
             enableWebSearch = enableWebSearch
         )
@@ -112,14 +127,16 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
     private fun buildMessages(
         userInput: String,
         memories: List<MemoryItemEntity>,
+        systemMemories: List<MemoryItemEntity>,
         schedules: List<ScheduleEntity>,
         skills: List<SkillEntity>,
         enableWebSearch: Boolean,
         imageBase64: String?,
         imageMimeType: String?,
-        historyMessages: List<ChatMessageEntity>
+        historyMessages: List<ChatMessageEntity>,
+        webSearchResults: String? = null
     ): List<MessagePayload> {
-        val systemPrompt = buildSystemPrompt(memories, schedules, skills, enableWebSearch)
+        val systemPrompt = buildSystemPrompt(memories, systemMemories, schedules, skills, enableWebSearch, webSearchResults)
         val messages = mutableListOf<MessagePayload>()
         messages += MessagePayload("system", systemPrompt)
         historyMessages.forEach { entity ->
@@ -200,12 +217,24 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
 
     private fun buildSystemPrompt(
         memories: List<MemoryItemEntity>,
+        systemMemories: List<MemoryItemEntity>,
         schedules: List<ScheduleEntity>,
         skills: List<SkillEntity>,
-        enableWebSearch: Boolean
+        enableWebSearch: Boolean,
+        webSearchResults: String? = null
     ): String {
-        val localZone = ZoneId.systemDefault().id
-        val memoryText = if (memories.isEmpty()) "暂无" else memories
+        val localZone = ZoneId.systemDefault()
+        val zoneId = localZone.id
+        val now = LocalDateTime.now(localZone)
+        val nowFormatted = now.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))
+        val dayOfWeek = now.dayOfWeek.getDisplayName(TextStyle.FULL, Locale.CHINESE)
+        val currentTimeInfo = "当前时间：$nowFormatted ($dayOfWeek)，时区：$zoneId"
+
+        // System memories — app identity and capabilities, injected first
+        val systemMemoryText = if (systemMemories.isEmpty()) "" else systemMemories
+            .joinToString("\n") { "- ${it.content}" }
+
+        val userMemoryText = if (memories.isEmpty()) "暂无" else memories
             .take(40)
             .joinToString("\n") { "- [${it.category}] ${it.content}" }
         val scheduleText = if (schedules.isEmpty()) "暂无" else schedules
@@ -216,20 +245,35 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
             .joinToString("\n") { "- ${it.name}: ${it.triggerKeywords}" }
 
         val webSearchHint = if (enableWebSearch) {
-            "当前轮已开启联网查询能力：请你自行判断是否需要联网。只有在涉及最新信息、外部事实核验、价格/新闻/政策等场景时才调用联网工具。"
+            "当前轮已开启联网查询能力。如果需要搜索最新信息，在 system_calls 中添加 {\"type\":\"web_search\",\"query\":\"搜索关键词\"}。"
         } else {
             "当前轮未开启联网查询，请仅基于已有信息回复。"
         }
 
+        val searchResultsSection = if (!webSearchResults.isNullOrBlank()) {
+            "\n联网搜索结果：\n$webSearchResults\n"
+        } else ""
+
         return """
             你是 App 内置的 ActMe Agent，必须用中文回复。
             目标：帮助用户行动、整理记忆、安排日程、维护技能。
-            记忆分类只能使用：${MemoryCategories.all.joinToString("、")}。
+            记忆分类（可写）：${MemoryCategories.writable.joinToString("、")}。
             你可以在每次对话中判断是否需要写入 memory_updates 或 schedule_updates。
             若用户提出可复用策略，可以写入 skill_updates。
             $webSearchHint
-            当前用户本地时区：$localZone。
+            【关于本 App】
+            $systemMemoryText
+
+            【系统能力】
+            你拥有以下系统级技能，通过 system_calls 字段调用：
+            1. get_current_time — 获取当前精确时间（含时区、星期）
+            2. web_search — 联网搜索最新信息，需要提供 query 参数
+            示例：{"system_calls":[{"type":"get_current_time"},{"type":"web_search","query":"2026年最新..."}]}
+            当 system_calls 非空时，reply 可留空；系统执行后会返回结果让你继续生成最终回复。
+            【时间信息】
+            $currentTimeInfo
             时间字段一律输出 Unix 毫秒时间戳（不是秒），并严格按本地时区理解"今天/明天/每天12点"等表达。
+            $searchResultsSection
             只输出 JSON，不要 Markdown，不要额外解释。格式如下：
             {
               "reply": "给用户的中文回复",
@@ -244,16 +288,18 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
                 "repeat_day_of_month":15,
                 "reminder_time":"12:00"
               }],
-              "skill_updates": [{"name":"...","description":"...","trigger_keywords":["..."],"action_template":"..."}]
+              "skill_updates": [{"name":"...","description":"...","trigger_keywords":["..."],"action_template":"..."}],
+              "system_calls": [{"type":"get_current_time"},{"type":"web_search","query":"搜索内容"}]
             }
             说明：
             - 一次性提醒：repeat_type 用 NONE，并给出 reminder_at。
             - 每天提醒：repeat_type 用 DAILY，并给出 reminder_time(如 12:00)。
             - 每周提醒：repeat_type 用 WEEKLY，并给出 repeat_days_of_week(1=周一...7=周日) 与 reminder_time。
             - 每月提醒：repeat_type 用 MONTHLY，并给出 repeat_day_of_month 与 reminder_time。
+            - 需要时间信息时优先用系统注入的当前时间，仅在需要精确对比时才调用 get_current_time。
 
-            当前记忆：
-            $memoryText
+            用户记忆：
+            $userMemoryText
 
             当前日程：
             $scheduleText

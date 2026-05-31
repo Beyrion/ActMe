@@ -90,6 +90,7 @@ enum class RepeatType {
 
 object MemoryCategories {
     val all = listOf(
+        "系统",
         "短期目标",
         "长期目标",
         "个人焦虑",
@@ -99,4 +100,7 @@ object MemoryCategories {
         "健康状态",
         "学习工作"
     )
+
+    // Categories the agent is allowed to write to (excludes system)
+    val writable = all.filter { it != "系统" }
 }

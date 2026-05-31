@@ -3,6 +3,7 @@ package com.actme.app.data.repo
 import com.actme.app.util.AppLogger
 import com.actme.app.data.agent.ActMeAgent
 import com.actme.app.data.agent.ReplyExtractor
+import com.actme.app.data.agent.SystemSkillExecutor
 import com.actme.app.data.agent.ScheduleUpdate
 import com.actme.app.data.local.ChatDao
 import com.actme.app.data.local.ProviderEntity
@@ -112,7 +113,8 @@ class ActMeRepository(
         )
         touchConversation(conversationId, titleCandidate = userInput)
 
-        val memories = memoryDao.getAllNow()
+        val userMemories = memoryDao.getUserMemories()
+        val systemMemories = memoryDao.getSystemMemories()
         val allSchedules = scheduleDao.getAllNow()
         val enabledSkills = skillDao.getEnabledNow()
         val historyMessages = chatDao.getByConversation(conversationId)
@@ -136,7 +138,8 @@ class ActMeRepository(
         try {
             agent.runTurnStreaming(
                 userInput = userInput,
-                memories = memories,
+                memories = userMemories,
+                systemMemories = systemMemories,
                 schedules = allSchedules,
                 skills = enabledSkills,
                 config = config,
@@ -156,11 +159,37 @@ class ActMeRepository(
         }
 
         val rawText = extractor.getRaw()
-        val result = agent.parseRaw(rawText)
+        var result = agent.parseRaw(rawText)
         AppLogger.i(
             TAG,
-            "agent result: memoryUpdates=${result.memoryUpdates.size}, scheduleUpdates=${result.scheduleUpdates.size}, skillUpdates=${result.skillUpdates.size}"
+            "agent result: replyLen=${result.reply.length}, memoryUpdates=${result.memoryUpdates.size}, scheduleUpdates=${result.scheduleUpdates.size}, skillUpdates=${result.skillUpdates.size}, systemCalls=${result.systemCalls.size}"
         )
+
+        // Multi-pass system call loop: execute system_calls → feed back → re-call agent
+        val maxPasses = 3
+        var searchResults: String? = null
+        for (pass in 1..maxPasses) {
+            if (result.systemCalls.isEmpty()) break
+
+            AppLogger.i(TAG, "executing ${result.systemCalls.size} system calls (pass $pass)")
+            val executedResults = SystemSkillExecutor.execute(result.systemCalls)
+            searchResults = if (searchResults != null) "$searchResults\n$executedResults" else executedResults
+
+            // Re-call agent with search results (non-streaming for intermediate passes)
+            val continuationInput = "system_calls 执行结果：\n$executedResults\n\n请基于以上结果继续生成回复。"
+            result = agent.runTurn(
+                userInput = continuationInput,
+                memories = userMemories,
+                systemMemories = systemMemories,
+                schedules = allSchedules,
+                skills = enabledSkills,
+                config = config,
+                enableWebSearch = false,
+                historyMessages = historyMessages,
+                webSearchResults = searchResults
+            )
+            AppLogger.i(TAG, "pass $pass result: replyLen=${result.reply.length}, systemCalls=${result.systemCalls.size}")
+        }
 
         val localSkillHints = runLocalSkills(userInput, enabledSkills)
         val finalReply = if (localSkillHints.isBlank()) result.reply else "${result.reply}\n\n$localSkillHints"
