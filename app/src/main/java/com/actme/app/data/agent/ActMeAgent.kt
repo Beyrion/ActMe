@@ -461,14 +461,12 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
 
     suspend fun refineImageScheduleCandidates(
         sourceText: String,
-        localCandidates: List<ScheduleSubAgentPlan>,
         timezoneId: String,
         nowLocalIso: String,
         config: ProviderConfig
     ): ScheduleBatchPlan? {
-        val candidatesJson = runCatching { json.encodeToString(localCandidates) }.getOrDefault("[]")
         val prompt = """
-            你是 ActMe 的云端日程整理助手。你的任务不是看图片，而是基于“端侧图片模型提取出的原文摘要 + 粗候选日程”生成最终日程列表。
+            你是 ActMe 的云端日程整理助手。你的任务不是看图片，而是基于“端侧图片模型提取出的 OCR 文字结果”生成最终日程列表。
             当前时区：$timezoneId
             当前本地时间：$nowLocalIso
 
@@ -488,18 +486,15 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
             }
 
             规则：
-            - 你可以调整端侧候选的标题、重复规则、日期、时间，并决定最终保留几条日程。
+            - 你需要从 OCR 文字中判断应创建几条日程，并生成最终结构化结果。
             - 同一图片中多个事项要分别输出为多条 schedules。
             - 没有明确 reminder_time 的事项不要输出。
-            - 如果端侧候选明显重复或冲突，你应合并、去重或修正。
+            - 如果 OCR 文字中信息重复或冲突，你应合并、去重或修正。
             - 不要输出无法支撑的猜测性事项。
             - 最多输出 8 条。
 
-            端侧提取的原文摘要：
+            端侧 OCR 文本：
             $sourceText
-
-            端侧粗候选日程：
-            $candidatesJson
         """.trimIndent()
 
         val raw = openAiClient.run(
