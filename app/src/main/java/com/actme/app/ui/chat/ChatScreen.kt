@@ -103,7 +103,6 @@ import com.actme.app.audio.AudioRecorderManager
 import com.actme.app.data.agent.ScheduleSubAgentPlan
 import com.actme.app.data.local.ChatMessageEntity
 import com.actme.app.image.LocalImageImportManager
-import com.actme.app.image.ScheduleImportPlan
 import com.actme.app.image.TodoImportPlan
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -116,7 +115,7 @@ fun ChatScreen(
     messages: List<ChatMessageEntity>,
     onSend: (String, String?, String?) -> Unit,
     onImportSchedules: (List<ScheduleSubAgentPlan>, (Result<Int>) -> Unit) -> Unit,
-    onRefineImageSchedules: (String, List<ScheduleSubAgentPlan>, (Result<List<ScheduleSubAgentPlan>>) -> Unit) -> Unit,
+    onRefineImageSchedules: (String, (Result<List<ScheduleSubAgentPlan>>) -> Unit) -> Unit,
     onImportTodos: (List<String>, (Result<Int>) -> Unit) -> Unit,
     sendingConversationId: Long? = null,
     isRecording: Boolean = false,
@@ -142,7 +141,7 @@ fun ChatScreen(
     var selectedImageBytes by remember { mutableStateOf<ByteArray?>(null) }
     var showModelMenu by remember { mutableStateOf(false) }
     var importBusy by remember { mutableStateOf(false) }
-    var scheduleCandidate by remember { mutableStateOf<ScheduleImportPlan?>(null) }
+    var scheduleCandidate by remember { mutableStateOf<List<ScheduleSubAgentPlan>>(emptyList()) }
     var todoCandidate by remember { mutableStateOf<TodoImportPlan?>(null) }
 
     fun doSend() {
@@ -315,20 +314,14 @@ fun ChatScreen(
                 return@launch
             }
             try {
-                val plan = imageImportManager.parseSchedules(imageFile)
-                val schedules = plan.schedules.filter {
-                    it.title.isNotBlank() && !it.reminderTime.isNullOrBlank()
-                }
-                if (schedules.isEmpty()) {
-                    Toast.makeText(context, "本地视觉模型未识别出足够的日程信息", Toast.LENGTH_SHORT).show()
+                val ocr = imageImportManager.extractText(imageFile)
+                if (ocr.sourceText.isBlank()) {
+                    Toast.makeText(context, "本地视觉模型未识别出文字内容", Toast.LENGTH_SHORT).show()
                 } else {
-                    onRefineImageSchedules(plan.sourceText, schedules) { result ->
+                    onRefineImageSchedules(ocr.sourceText) { result ->
                         importBusy = false
                         result.onSuccess { refined ->
-                            scheduleCandidate = ScheduleImportPlan(
-                                schedules = refined,
-                                sourceText = plan.sourceText
-                            )
+                            scheduleCandidate = refined
                         }.onFailure { error ->
                             Toast.makeText(
                                 context,
@@ -343,7 +336,7 @@ fun ChatScreen(
                 Toast.makeText(context, "图片转日程失败: ${e.message}", Toast.LENGTH_LONG).show()
             } finally {
                 imageFile.delete()
-                if (scheduleCandidate == null) {
+                if (scheduleCandidate.isEmpty()) {
                     importBusy = false
                 }
             }
@@ -379,11 +372,10 @@ fun ChatScreen(
         }
     }
 
-    if (scheduleCandidate != null) {
-        val candidate = scheduleCandidate!!
-        val schedules = candidate.schedules.take(8)
+    if (scheduleCandidate.isNotEmpty()) {
+        val schedules = scheduleCandidate.take(8)
         AlertDialog(
-            onDismissRequest = { scheduleCandidate = null },
+            onDismissRequest = { scheduleCandidate = emptyList() },
             title = { Text("确认导入日程（${schedules.size} 条）") },
             text = {
                 LazyColumn(modifier = Modifier.heightIn(max = 360.dp)) {
@@ -414,14 +406,14 @@ fun ChatScreen(
                             Toast.LENGTH_LONG
                         ).show()
                     }
-                    scheduleCandidate = null
+                    scheduleCandidate = emptyList()
                     selectedImageBase64 = null
                     selectedImageMimeType = null
                     selectedImageBytes = null
                 }) { Text("导入") }
             },
             dismissButton = {
-                TextButton(onClick = { scheduleCandidate = null }) { Text("取消") }
+                TextButton(onClick = { scheduleCandidate = emptyList() }) { Text("取消") }
             }
         )
     }

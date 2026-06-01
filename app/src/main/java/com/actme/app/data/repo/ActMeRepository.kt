@@ -623,17 +623,15 @@ class ActMeRepository(
     }
 
     suspend fun refineImageSchedulesFromLocal(
-        sourceText: String,
-        localCandidates: List<ScheduleSubAgentPlan>
+        sourceText: String
     ): Result<List<ScheduleSubAgentPlan>> = withContext(Dispatchers.IO) {
         runCatching {
-            require(localCandidates.isNotEmpty()) { "本地模型没有提取出候选日程" }
+            require(sourceText.isNotBlank()) { "本地模型没有提取出文字内容" }
             val zone = ZoneId.systemDefault()
             val zoneId = zone.id
             val nowLocalIso = Instant.ofEpochMilli(System.currentTimeMillis()).atZone(zone).toString()
             val batch = agent.refineImageScheduleCandidates(
                 sourceText = sourceText,
-                localCandidates = localCandidates,
                 timezoneId = zoneId,
                 nowLocalIso = nowLocalIso,
                 config = buildProviderConfig()

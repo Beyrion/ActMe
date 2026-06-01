@@ -197,11 +197,10 @@ class ChatViewModel(private val repository: ActMeRepository) : ViewModel() {
 
     fun refineImageSchedules(
         sourceText: String,
-        localCandidates: List<ScheduleSubAgentPlan>,
         onResult: (Result<List<ScheduleSubAgentPlan>>) -> Unit
     ) {
         viewModelScope.launch {
-            onResult(repository.refineImageSchedulesFromLocal(sourceText, localCandidates))
+            onResult(repository.refineImageSchedulesFromLocal(sourceText))
         }
     }
 

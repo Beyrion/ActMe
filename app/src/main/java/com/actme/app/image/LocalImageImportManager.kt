@@ -1,6 +1,5 @@
 package com.actme.app.image
 
-import com.actme.app.data.agent.ScheduleSubAgentPlan
 import com.actme.app.mnn.MnnLlmSession
 import com.actme.app.mnn.VisionModelManager
 import com.actme.app.util.AppLogger
@@ -19,8 +18,7 @@ data class TodoImportPlan(
 )
 
 @Serializable
-data class ScheduleImportPlan(
-    val schedules: List<ScheduleSubAgentPlan> = emptyList(),
+data class OcrExtractResult(
     @SerialName("source_text") val sourceText: String = ""
 )
 
@@ -56,43 +54,27 @@ class LocalImageImportManager(
         }
     }
 
-    suspend fun parseSchedules(imageFile: File): ScheduleImportPlan {
+    suspend fun extractText(imageFile: File): OcrExtractResult {
         ensureReady()
         session.reset()
         val prompt = """
-            请读取这张图片中的文字和布局信息，并判断其中包含几个明确的日程/提醒事项。
+            请读取这张图片中的文字内容，执行 OCR 与轻量整理。
             仅输出 JSON，不要解释，不要 Markdown。
-            如果图片里有多个事项，请全部提取；如果没有足够信息，请尽量提取最可靠的时间与事项；没有的字段填空字符串或空数组，不要编造。
+            不要直接构建日程，不要输出重复规则判断，只提取图片里的文字信息。
             输出格式：
             {
-              "schedules":[
-                {
-                  "title":"日程标题",
-                  "detail":"补充说明",
-                  "repeat_type":"NONE|DAILY|WEEKLY|MONTHLY",
-                  "one_time_date":"yyyy-MM-dd",
-                  "reminder_time":"HH:mm",
-                  "weekly_days":[1,3,5],
-                  "monthly_day":15
-                }
-              ],
-              "source_text":"图片中的关键原文摘要"
+              "source_text":"尽可能完整、按阅读顺序整理后的图片文字。保留日期、时间、地点、课程名、事项名等关键信息。"
             }
             规则：
-            - 每个事项单独输出为一条 schedule。
-            - 一次性事项用 NONE。
-            - 每天重复用 DAILY。
-            - 每周重复用 WEEKLY，1=周一...7=周日。
-            - 每月重复用 MONTHLY。
-            - 如果无法识别到日期但能识别出每天/每周等规则，按重复日程输出。
-            - 没有明确时间的事项不要输出到 schedules 里。
-            - schedules 最多返回 8 条。
+            - source_text 要尽量保留原始信息，不要过度总结。
+            - 无法识别的部分可以省略，但不要编造。
+            - 如果图片中存在多行课程表/活动安排，尽量全部保留。
 
             <img>${imageFile.absolutePath}</img>
         """.trimIndent()
         val raw = session.submit(prompt)
         val jsonText = extractJson(raw)
-        return json.decodeFromString<ScheduleImportPlan>(jsonText)
+        return json.decodeFromString<OcrExtractResult>(jsonText)
     }
 
     suspend fun parseTodos(imageFile: File): TodoImportPlan {
