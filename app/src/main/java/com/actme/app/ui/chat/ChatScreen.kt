@@ -81,8 +81,16 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import android.content.Intent
+import android.net.Uri
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.UriHandler
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import com.mikepenz.markdown.m3.Markdown
 import com.mikepenz.markdown.m3.markdownColor
@@ -619,6 +627,36 @@ private fun MessageBubble(msg: ChatMessageEntity) {
     val isUser = msg.role == "user"
     val hasImage = !msg.imageBase64.isNullOrBlank() && !msg.imageMimeType.isNullOrBlank()
     var showFullImage by remember { mutableStateOf(false) }
+    var pendingUrl by remember { mutableStateOf<String?>(null) }
+    val context = LocalContext.current
+    val customUriHandler = remember {
+        object : UriHandler {
+            override fun openUri(uri: String) { pendingUrl = uri }
+        }
+    }
+
+    if (pendingUrl != null) {
+        AlertDialog(
+            onDismissRequest = { pendingUrl = null },
+            title = { Text("打开链接") },
+            text = {
+                Text(
+                    pendingUrl!!,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(pendingUrl))
+                    context.startActivity(intent)
+                    pendingUrl = null
+                }) { Text("打开") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingUrl = null }) { Text("取消") }
+            }
+        )
+    }
 
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -689,18 +727,25 @@ private fun MessageBubble(msg: ChatMessageEntity) {
                 if (isUser) {
                     Text(msg.content, style = MaterialTheme.typography.bodyMedium)
                 } else {
-                    Markdown(
-                        content = msg.content,
-                        colors = markdownColor(),
-                        typography = markdownTypography(
-                            text = MaterialTheme.typography.bodyMedium,
-                            paragraph = MaterialTheme.typography.bodyMedium,
-                            h1 = MaterialTheme.typography.bodyLarge,
-                            h2 = MaterialTheme.typography.bodyLarge,
-                            h3 = MaterialTheme.typography.bodyMedium,
-                            code = MaterialTheme.typography.bodySmall,
-                        )
-                    )
+                    CompositionLocalProvider(LocalUriHandler provides customUriHandler) {
+                        SelectionContainer {
+                            Markdown(
+                                content = msg.content,
+                                colors = markdownColor(
+                                    linkText = Color(0xFF1A73E8),
+                                ),
+                                typography = markdownTypography(
+                                    text = MaterialTheme.typography.bodyMedium,
+                                    paragraph = MaterialTheme.typography.bodyMedium,
+                                    h1 = MaterialTheme.typography.bodyLarge,
+                                    h2 = MaterialTheme.typography.bodyLarge,
+                                    h3 = MaterialTheme.typography.bodyMedium,
+                                    code = MaterialTheme.typography.bodySmall,
+                                    link = TextStyle(textDecoration = TextDecoration.Underline),
+                                )
+                            )
+                        }
+                    }
                 }
             }
         }
