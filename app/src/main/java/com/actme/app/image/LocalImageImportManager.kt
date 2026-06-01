@@ -9,6 +9,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import org.json.JSONArray
 import org.json.JSONObject
 
 @Serializable
@@ -73,8 +74,7 @@ class LocalImageImportManager(
             <img>${imageFile.absolutePath}</img>
         """.trimIndent()
         val raw = session.submit(prompt)
-        val jsonText = extractJson(raw)
-        return json.decodeFromString<OcrExtractResult>(jsonText)
+        return parseOcrResult(raw)
     }
 
     suspend fun parseTodos(imageFile: File): TodoImportPlan {
@@ -100,8 +100,7 @@ class LocalImageImportManager(
             <img>${imageFile.absolutePath}</img>
         """.trimIndent()
         val raw = session.submit(prompt)
-        val jsonText = extractJson(raw)
-        return json.decodeFromString<TodoImportPlan>(jsonText)
+        return parseTodoImportPlan(raw)
     }
 
     fun release() {
@@ -131,6 +130,129 @@ class LocalImageImportManager(
         val end = raw.lastIndexOf('}')
         require(start >= 0 && end > start) { "本地模型未返回有效 JSON：${raw.take(200)}" }
         return raw.substring(start, end + 1)
+    }
+
+    private fun parseOcrResult(raw: String): OcrExtractResult {
+        for (candidate in jsonCandidates(raw)) {
+            runCatching { json.decodeFromString<OcrExtractResult>(candidate) }
+                .getOrNull()
+                ?.let { return it }
+
+            val sourceText = runCatching { JSONObject(candidate).optString("source_text") }
+                .getOrDefault("")
+                .trim()
+            if (sourceText.isNotBlank()) return OcrExtractResult(sourceText = sourceText)
+        }
+
+        val sourceText = extractLooseStringField(raw, "source_text").ifBlank { cleanModelText(raw) }
+        AppLogger.w(TAG, "OCR JSON parse failed; using loose text fallback, raw=${raw.take(300)}")
+        return OcrExtractResult(sourceText = sourceText)
+    }
+
+    private fun parseTodoImportPlan(raw: String): TodoImportPlan {
+        for (candidate in jsonCandidates(raw)) {
+            runCatching { json.decodeFromString<TodoImportPlan>(candidate) }
+                .getOrNull()
+                ?.let { return it }
+
+            runCatching {
+                val obj = JSONObject(candidate)
+                val items = obj.optJSONArray("items").toTodoImportItems()
+                val sourceText = obj.optString("source_text").trim()
+                TodoImportPlan(items = items, sourceText = sourceText)
+            }.getOrNull()?.let { plan ->
+                if (plan.items.isNotEmpty() || plan.sourceText.isNotBlank()) return plan
+            }
+        }
+
+        val sourceText = extractLooseStringField(raw, "source_text").ifBlank { cleanModelText(raw) }
+        AppLogger.w(TAG, "todo import JSON parse failed; using loose fallback, raw=${raw.take(300)}")
+        return TodoImportPlan(sourceText = sourceText)
+    }
+
+    private fun JSONArray?.toTodoImportItems(): List<TodoImportItem> {
+        if (this == null) return emptyList()
+        return buildList {
+            for (index in 0 until length()) {
+                val item = optJSONObject(index) ?: continue
+                val title = item.optString("title").trim()
+                if (title.isBlank()) continue
+                add(TodoImportItem(title = title, detail = item.optString("detail").trim()))
+            }
+        }.take(8)
+    }
+
+    private fun jsonCandidates(raw: String): List<String> {
+        val cleaned = stripCodeFence(raw.trim())
+        val candidates = linkedSetOf<String>()
+        if (cleaned.startsWith("{") && cleaned.endsWith("}")) candidates.add(cleaned)
+        runCatching { extractJson(cleaned) }.getOrNull()?.let { candidates.add(it) }
+        candidates.addAll(extractBalancedJsonObjects(cleaned))
+        return candidates.toList()
+    }
+
+    private fun stripCodeFence(text: String): String {
+        return text
+            .removePrefix("```json")
+            .removePrefix("```JSON")
+            .removePrefix("```")
+            .removeSuffix("```")
+            .trim()
+    }
+
+    private fun extractBalancedJsonObjects(text: String): List<String> {
+        val results = mutableListOf<String>()
+        var start = -1
+        var depth = 0
+        var inString = false
+        var escaped = false
+        for (index in text.indices) {
+            val ch = text[index]
+            if (inString) {
+                when {
+                    escaped -> escaped = false
+                    ch == '\\' -> escaped = true
+                    ch == '"' -> inString = false
+                }
+                continue
+            }
+            when (ch) {
+                '"' -> inString = true
+                '{' -> {
+                    if (depth == 0) start = index
+                    depth += 1
+                }
+                '}' -> {
+                    if (depth > 0) {
+                        depth -= 1
+                        if (depth == 0 && start >= 0) {
+                            results.add(text.substring(start, index + 1))
+                            start = -1
+                        }
+                    }
+                }
+            }
+        }
+        return results
+    }
+
+    private fun extractLooseStringField(raw: String, field: String): String {
+        val pattern = Regex(
+            """"${Regex.escape(field)}"\s*:\s*"([\s\S]*?)(?:"\s*[,}]|$)""",
+            setOf(RegexOption.IGNORE_CASE)
+        )
+        val match = pattern.find(raw) ?: return ""
+        return match.groupValues.getOrNull(1)
+            ?.replace("\\n", "\n")
+            ?.replace("\\\"", "\"")
+            ?.trim()
+            .orEmpty()
+    }
+
+    private fun cleanModelText(raw: String): String {
+        return stripCodeFence(raw)
+            .replace(Regex("""^\s*json\s*""", RegexOption.IGNORE_CASE), "")
+            .trim()
     }
 
     companion object {
