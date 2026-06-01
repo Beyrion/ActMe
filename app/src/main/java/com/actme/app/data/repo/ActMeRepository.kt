@@ -699,6 +699,20 @@ class ActMeRepository(
         }
     }
 
+    suspend fun addSchedulesFromStructuredPlans(plans: List<ScheduleSubAgentPlan>): Result<Int> = withContext(Dispatchers.IO) {
+        runCatching {
+            val normalized = plans.filter {
+                it.title.isNotBlank() && !it.reminderTime.isNullOrBlank()
+            }
+            require(normalized.isNotEmpty()) { "没有可导入的日程内容" }
+            normalized.forEach { plan ->
+                addScheduleFromStructuredPlan(plan).getOrThrow()
+            }
+            AppLogger.i(TAG, "local-image schedules created: count=${normalized.size}")
+            normalized.size
+        }
+    }
+
     private suspend fun saveScheduleUpdateStrictlyFromAgent(update: ScheduleUpdate): Result<Unit> {
         return runCatching {
             val repeatType = RepeatType.fromRaw(update.repeatType)

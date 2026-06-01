@@ -103,6 +103,7 @@ import com.actme.app.audio.AudioRecorderManager
 import com.actme.app.data.agent.ScheduleSubAgentPlan
 import com.actme.app.data.local.ChatMessageEntity
 import com.actme.app.image.LocalImageImportManager
+import com.actme.app.image.ScheduleImportPlan
 import com.actme.app.image.TodoImportPlan
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -115,6 +116,7 @@ fun ChatScreen(
     messages: List<ChatMessageEntity>,
     onSend: (String, String?, String?) -> Unit,
     onImportSchedule: (ScheduleSubAgentPlan, (Result<Unit>) -> Unit) -> Unit,
+    onImportSchedules: (List<ScheduleSubAgentPlan>, (Result<Int>) -> Unit) -> Unit,
     onImportTodos: (List<String>, (Result<Int>) -> Unit) -> Unit,
     sendingConversationId: Long? = null,
     isRecording: Boolean = false,
@@ -140,7 +142,7 @@ fun ChatScreen(
     var selectedImageBytes by remember { mutableStateOf<ByteArray?>(null) }
     var showModelMenu by remember { mutableStateOf(false) }
     var importBusy by remember { mutableStateOf(false) }
-    var scheduleCandidate by remember { mutableStateOf<ScheduleSubAgentPlan?>(null) }
+    var scheduleCandidate by remember { mutableStateOf<ScheduleImportPlan?>(null) }
     var todoCandidate by remember { mutableStateOf<TodoImportPlan?>(null) }
 
     fun doSend() {
@@ -313,11 +315,14 @@ fun ChatScreen(
                 return@launch
             }
             try {
-                val plan = imageImportManager.parseSchedule(imageFile)
-                if (plan.title.isBlank() || plan.reminderTime.isNullOrBlank()) {
+                val plan = imageImportManager.parseSchedules(imageFile)
+                val schedules = plan.schedules.filter {
+                    it.title.isNotBlank() && !it.reminderTime.isNullOrBlank()
+                }
+                if (schedules.isEmpty()) {
                     Toast.makeText(context, "本地视觉模型未识别出足够的日程信息", Toast.LENGTH_SHORT).show()
                 } else {
-                    scheduleCandidate = plan
+                    scheduleCandidate = plan.copy(schedules = schedules)
                 }
             } catch (e: Exception) {
                 AppLogger.e("ChatScreen", "local image schedule import failed", e)
@@ -360,31 +365,36 @@ fun ChatScreen(
 
     if (scheduleCandidate != null) {
         val candidate = scheduleCandidate!!
-        val weeklyDays = candidate.weeklyDays.orEmpty()
+        val schedules = candidate.schedules.take(8)
         AlertDialog(
             onDismissRequest = { scheduleCandidate = null },
-            title = { Text("确认导入日程") },
+            title = { Text("确认导入日程（${schedules.size} 条）") },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("标题：${candidate.title.ifBlank { "未识别" }}")
-                    Text("详情：${candidate.detail?.ifBlank { "无" } ?: "无"}")
-                    Text("重复：${candidate.repeatType}")
-                    Text("日期：${candidate.oneTimeDate?.ifBlank { "无" } ?: "无"}")
-                    Text("时间：${candidate.reminderTime?.ifBlank { "无" } ?: "无"}")
-                    if (weeklyDays.isNotEmpty()) {
-                        Text("每周：${weeklyDays.joinToString(",")}")
-                    }
-                    if (candidate.monthlyDay != null) {
-                        Text("每月：${candidate.monthlyDay} 号")
+                LazyColumn(modifier = Modifier.heightIn(max = 360.dp)) {
+                    items(schedules) { plan ->
+                        val weeklyDays = plan.weeklyDays.orEmpty()
+                        Column(modifier = Modifier.padding(vertical = 6.dp)) {
+                            Text("标题：${plan.title.ifBlank { "未识别" }}")
+                            Text("详情：${plan.detail?.ifBlank { "无" } ?: "无"}")
+                            Text("重复：${plan.repeatType}")
+                            Text("日期：${plan.oneTimeDate?.ifBlank { "无" } ?: "无"}")
+                            Text("时间：${plan.reminderTime?.ifBlank { "无" } ?: "无"}")
+                            if (weeklyDays.isNotEmpty()) {
+                                Text("每周：${weeklyDays.joinToString(",")}")
+                            }
+                            if (plan.monthlyDay != null) {
+                                Text("每月：${plan.monthlyDay} 号")
+                            }
+                        }
                     }
                 }
             },
             confirmButton = {
                 TextButton(onClick = {
-                    onImportSchedule(candidate) { result ->
+                    onImportSchedules(schedules) { result ->
                         Toast.makeText(
                             context,
-                            if (result.isSuccess) "已导入日程" else (result.exceptionOrNull()?.message ?: "导入失败"),
+                            if (result.isSuccess) "已导入 ${result.getOrNull() ?: schedules.size} 条日程" else (result.exceptionOrNull()?.message ?: "导入失败"),
                             Toast.LENGTH_LONG
                         ).show()
                     }

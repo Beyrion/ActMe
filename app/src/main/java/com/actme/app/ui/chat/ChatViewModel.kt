@@ -189,6 +189,12 @@ class ChatViewModel(private val repository: ActMeRepository) : ViewModel() {
         }
     }
 
+    fun importImageSchedules(plans: List<ScheduleSubAgentPlan>, onResult: (Result<Int>) -> Unit) {
+        viewModelScope.launch {
+            onResult(repository.addSchedulesFromStructuredPlans(plans))
+        }
+    }
+
     fun importImageTodos(items: List<String>, onResult: (Result<Int>) -> Unit) {
         viewModelScope.launch {
             onResult(repository.addTodoItems(items))
