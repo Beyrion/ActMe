@@ -97,11 +97,13 @@ import com.mikepenz.markdown.m3.Markdown
 import com.mikepenz.markdown.m3.markdownColor
 import com.mikepenz.markdown.m3.markdownTypography
 import androidx.core.content.ContextCompat
-import androidx.compose.runtime.collectAsState
 import com.actme.app.audio.AsrManager
 import com.actme.app.ui.theme.MarqueeBorder
 import com.actme.app.audio.AudioRecorderManager
+import com.actme.app.data.agent.ScheduleSubAgentPlan
 import com.actme.app.data.local.ChatMessageEntity
+import com.actme.app.image.LocalImageImportManager
+import com.actme.app.image.TodoImportPlan
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import java.io.ByteArrayOutputStream
@@ -112,6 +114,8 @@ import java.io.File
 fun ChatScreen(
     messages: List<ChatMessageEntity>,
     onSend: (String, String?, String?) -> Unit,
+    onImportSchedule: (ScheduleSubAgentPlan, (Result<Unit>) -> Unit) -> Unit,
+    onImportTodos: (List<String>, (Result<Int>) -> Unit) -> Unit,
     sendingConversationId: Long? = null,
     isRecording: Boolean = false,
     onStartRecording: (() -> Unit)? = null,
@@ -122,6 +126,7 @@ fun ChatScreen(
     asrLanguage: String = "Chinese",
     isModelReady: Boolean = false,
     onStopSending: () -> Unit = {},
+    localVisionModelDir: String = "",
     onNavigateToMenu: () -> Unit = {}
 ) {
     val scope = rememberCoroutineScope()
@@ -134,6 +139,9 @@ fun ChatScreen(
     var selectedImageMimeType by remember { mutableStateOf<String?>(null) }
     var selectedImageBytes by remember { mutableStateOf<ByteArray?>(null) }
     var showModelMenu by remember { mutableStateOf(false) }
+    var importBusy by remember { mutableStateOf(false) }
+    var scheduleCandidate by remember { mutableStateOf<ScheduleSubAgentPlan?>(null) }
+    var todoCandidate by remember { mutableStateOf<TodoImportPlan?>(null) }
 
     fun doSend() {
         val text = input.trim()
@@ -167,6 +175,10 @@ fun ChatScreen(
 
     val asrManager = remember(isModelReady) {
         if (isModelReady) AsrManager(AsrManager.getDefaultModelPath(context)) else null
+    }
+    val imageImportManager = remember(localVisionModelDir) {
+        val resolved = localVisionModelDir.trim().ifBlank { LocalImageImportManager.getDefaultModelPath(context) }
+        LocalImageImportManager(resolved)
     }
 
     // Preload ASR model in parallel with recording
@@ -205,6 +217,12 @@ fun ChatScreen(
             isVoiceRecording = false
         }
         onDispose { }
+    }
+
+    DisposableEffect(imageImportManager) {
+        onDispose {
+            imageImportManager.release()
+        }
     }
 
     LaunchedEffect(recordingFile) {
@@ -269,6 +287,158 @@ fun ChatScreen(
                 }
             }
         }
+    }
+
+    suspend fun persistSelectedImageToCache(): File {
+        val bytes = selectedImageBytes ?: error("请先选择图片")
+        val ext = when {
+            selectedImageMimeType?.contains("png", ignoreCase = true) == true -> "png"
+            else -> "jpg"
+        }
+        val file = File(context.cacheDir, "image_import_${System.currentTimeMillis()}.$ext")
+        file.writeBytes(bytes)
+        return file
+    }
+
+    fun importScheduleFromImage() {
+        scope.launch {
+            if (selectedImageBytes == null) {
+                Toast.makeText(context, "请先选择图片", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            importBusy = true
+            val imageFile = runCatching { persistSelectedImageToCache() }.getOrElse {
+                Toast.makeText(context, "保存图片失败: ${it.message}", Toast.LENGTH_SHORT).show()
+                importBusy = false
+                return@launch
+            }
+            try {
+                val plan = imageImportManager.parseSchedule(imageFile)
+                if (plan.title.isBlank() || plan.reminderTime.isNullOrBlank()) {
+                    Toast.makeText(context, "本地视觉模型未识别出足够的日程信息", Toast.LENGTH_SHORT).show()
+                } else {
+                    scheduleCandidate = plan
+                }
+            } catch (e: Exception) {
+                AppLogger.e("ChatScreen", "local image schedule import failed", e)
+                Toast.makeText(context, "图片转日程失败: ${e.message}", Toast.LENGTH_LONG).show()
+            } finally {
+                imageFile.delete()
+                importBusy = false
+            }
+        }
+    }
+
+    fun importTodosFromImage() {
+        scope.launch {
+            if (selectedImageBytes == null) {
+                Toast.makeText(context, "请先选择图片", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            importBusy = true
+            val imageFile = runCatching { persistSelectedImageToCache() }.getOrElse {
+                Toast.makeText(context, "保存图片失败: ${it.message}", Toast.LENGTH_SHORT).show()
+                importBusy = false
+                return@launch
+            }
+            try {
+                val plan = imageImportManager.parseTodos(imageFile)
+                if (plan.items.isEmpty()) {
+                    Toast.makeText(context, "本地视觉模型未识别出待办项", Toast.LENGTH_SHORT).show()
+                } else {
+                    todoCandidate = plan
+                }
+            } catch (e: Exception) {
+                AppLogger.e("ChatScreen", "local image todo import failed", e)
+                Toast.makeText(context, "图片转待办失败: ${e.message}", Toast.LENGTH_LONG).show()
+            } finally {
+                imageFile.delete()
+                importBusy = false
+            }
+        }
+    }
+
+    if (scheduleCandidate != null) {
+        val candidate = scheduleCandidate!!
+        val weeklyDays = candidate.weeklyDays.orEmpty()
+        AlertDialog(
+            onDismissRequest = { scheduleCandidate = null },
+            title = { Text("确认导入日程") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("标题：${candidate.title.ifBlank { "未识别" }}")
+                    Text("详情：${candidate.detail?.ifBlank { "无" } ?: "无"}")
+                    Text("重复：${candidate.repeatType}")
+                    Text("日期：${candidate.oneTimeDate?.ifBlank { "无" } ?: "无"}")
+                    Text("时间：${candidate.reminderTime?.ifBlank { "无" } ?: "无"}")
+                    if (weeklyDays.isNotEmpty()) {
+                        Text("每周：${weeklyDays.joinToString(",")}")
+                    }
+                    if (candidate.monthlyDay != null) {
+                        Text("每月：${candidate.monthlyDay} 号")
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    onImportSchedule(candidate) { result ->
+                        Toast.makeText(
+                            context,
+                            if (result.isSuccess) "已导入日程" else (result.exceptionOrNull()?.message ?: "导入失败"),
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                    scheduleCandidate = null
+                    selectedImageBase64 = null
+                    selectedImageMimeType = null
+                    selectedImageBytes = null
+                }) { Text("导入") }
+            },
+            dismissButton = {
+                TextButton(onClick = { scheduleCandidate = null }) { Text("取消") }
+            }
+        )
+    }
+
+    if (todoCandidate != null) {
+        val candidate = todoCandidate!!
+        AlertDialog(
+            onDismissRequest = { todoCandidate = null },
+            title = { Text("确认导入待办") },
+            text = {
+                LazyColumn(modifier = Modifier.heightIn(max = 320.dp)) {
+                    items(candidate.items.take(8)) { item ->
+                        Column(modifier = Modifier.padding(vertical = 6.dp)) {
+                            Text("• ${item.title}")
+                            if (item.detail.isNotBlank()) {
+                                Text(item.detail, style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val items = candidate.items.map {
+                        if (it.detail.isBlank()) it.title else "${it.title}：${it.detail}"
+                    }
+                    onImportTodos(items) { result ->
+                        Toast.makeText(
+                            context,
+                            if (result.isSuccess) "已导入 ${result.getOrNull() ?: items.size} 条待办到短期目标" else (result.exceptionOrNull()?.message ?: "导入失败"),
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                    todoCandidate = null
+                    selectedImageBase64 = null
+                    selectedImageMimeType = null
+                    selectedImageBytes = null
+                }) { Text("导入") }
+            },
+            dismissButton = {
+                TextButton(onClick = { todoCandidate = null }) { Text("取消") }
+            }
+        )
     }
 
     MarqueeBorder(
@@ -387,58 +557,72 @@ fun ChatScreen(
                 // Selected image preview with X overlay
                 if (selectedImageBase64 != null && selectedImageBytes != null) {
                     var showPreviewFull by remember { mutableStateOf(false) }
-                    Box(
-                        modifier = Modifier
-                            .padding(bottom = 4.dp)
-                            .size(64.dp)
-                    ) {
-                        val bitmap = BitmapFactory.decodeByteArray(selectedImageBytes!!, 0, selectedImageBytes!!.size)
-                        Image(
-                            bitmap = bitmap.asImageBitmap(),
-                            contentDescription = "选中的图片",
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickable { showPreviewFull = true },
-                            contentScale = ContentScale.Crop
-                        )
-                        // Small X button
+                    Column(modifier = Modifier.padding(bottom = 6.dp)) {
                         Box(
                             modifier = Modifier
-                                .align(Alignment.TopEnd)
-                                .padding(2.dp)
-                                .size(18.dp)
-                                .background(Color.Black.copy(alpha = 0.5f), CircleShape)
-                                .clickable {
-                                    selectedImageBase64 = null
-                                    selectedImageMimeType = null
-                                    selectedImageBytes = null
-                                },
-                            contentAlignment = Alignment.Center
+                                .padding(bottom = 4.dp)
+                                .size(64.dp)
                         ) {
-                            Icon(
-                                Icons.Filled.Close,
-                                contentDescription = "移除图片",
-                                tint = Color.White,
-                                modifier = Modifier.size(10.dp)
+                            val bitmap = BitmapFactory.decodeByteArray(selectedImageBytes!!, 0, selectedImageBytes!!.size)
+                            Image(
+                                bitmap = bitmap.asImageBitmap(),
+                                contentDescription = "选中的图片",
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable { showPreviewFull = true },
+                                contentScale = ContentScale.Crop
                             )
-                        }
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .padding(2.dp)
+                                    .size(18.dp)
+                                    .background(Color.Black.copy(alpha = 0.5f), CircleShape)
+                                    .clickable {
+                                        selectedImageBase64 = null
+                                        selectedImageMimeType = null
+                                        selectedImageBytes = null
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    Icons.Filled.Close,
+                                    contentDescription = "移除图片",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(10.dp)
+                                )
+                            }
 
-                        // Full-screen preview
-                        if (showPreviewFull) {
-                            AlertDialog(onDismissRequest = { showPreviewFull = false }) {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable { showPreviewFull = false }
-                                ) {
-                                    Image(
-                                        bitmap = bitmap.asImageBitmap(),
-                                        contentDescription = "查看大图",
-                                        modifier = Modifier.fillMaxWidth(),
-                                        contentScale = ContentScale.FillWidth
-                                    )
+                            if (showPreviewFull) {
+                                AlertDialog(onDismissRequest = { showPreviewFull = false }) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable { showPreviewFull = false }
+                                    ) {
+                                        Image(
+                                            bitmap = bitmap.asImageBitmap(),
+                                            contentDescription = "查看大图",
+                                            modifier = Modifier.fillMaxWidth(),
+                                            contentScale = ContentScale.FillWidth
+                                        )
+                                    }
                                 }
+                            }
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            TextButton(
+                                onClick = { importScheduleFromImage() },
+                                enabled = !importBusy
+                            ) {
+                                Text(if (importBusy) "处理中..." else "转日程")
+                            }
+                            TextButton(
+                                onClick = { importTodosFromImage() },
+                                enabled = !importBusy
+                            ) {
+                                Text(if (importBusy) "处理中..." else "转待办")
                             }
                         }
                     }

@@ -6,6 +6,7 @@ import com.actme.app.data.agent.ReplyExtractor
 import com.actme.app.data.agent.SystemCall
 import com.actme.app.data.agent.SystemSkillExecutor
 import com.actme.app.data.agent.ScheduleUpdate
+import com.actme.app.data.agent.ScheduleSubAgentPlan
 import com.actme.app.data.local.ChatDao
 import com.actme.app.data.local.ProviderEntity
 import com.actme.app.data.local.ChatMessageEntity
@@ -621,6 +622,83 @@ class ActMeRepository(
         }
     }
 
+    suspend fun addScheduleFromStructuredPlan(plan: ScheduleSubAgentPlan): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            require(
+                plan.repeatType == "NONE" ||
+                    plan.repeatType == "DAILY" ||
+                    plan.repeatType == "WEEKLY" ||
+                    plan.repeatType == "MONTHLY"
+            ) { "本地视觉模型返回的 repeat_type 非法：${plan.repeatType}" }
+
+            val zone = ZoneId.systemDefault()
+            val nowMillis = System.currentTimeMillis()
+            val repeatType = RepeatType.fromRaw(plan.repeatType)
+            val reminderTimeMinutes = parseTimeTextToMinutes(plan.reminderTime)
+                ?: error("本地视觉模型未识别出有效提醒时间")
+            val localTime = LocalTime.of(reminderTimeMinutes / 60, reminderTimeMinutes % 60)
+
+            val normalizedTitle = plan.title.trim().ifBlank { "图片导入日程" }
+            val normalizedDetail = plan.detail?.trim().orEmpty()
+
+            val startAt: Long
+            val reminderAt: Long
+            val repeatDays: List<Int>
+            val repeatDayOfMonth: Int?
+
+            when (repeatType) {
+                RepeatType.NONE -> {
+                    val dateText = plan.oneTimeDate?.trim().orEmpty()
+                    require(dateText.matches(Regex("^\\d{4}-\\d{2}-\\d{2}$"))) { "本地视觉模型未识别出有效日期" }
+                    val date = LocalDate.parse(dateText, DATE_FORMATTER)
+                    val dateTime = date.atTime(localTime)
+                    val millis = dateTime.atZone(zone).toInstant().toEpochMilli()
+                    startAt = millis
+                    reminderAt = millis
+                    repeatDays = emptyList()
+                    repeatDayOfMonth = null
+                }
+                RepeatType.DAILY -> {
+                    startAt = nowMillis
+                    reminderAt = nowMillis
+                    repeatDays = emptyList()
+                    repeatDayOfMonth = null
+                }
+                RepeatType.WEEKLY -> {
+                    val days = plan.weeklyDays.orEmpty().filter { it in 1..7 }.distinct().sorted()
+                    require(days.isNotEmpty()) { "本地视觉模型未识别出 weekly_days" }
+                    startAt = nowMillis
+                    reminderAt = nowMillis
+                    repeatDays = days
+                    repeatDayOfMonth = null
+                }
+                RepeatType.MONTHLY -> {
+                    val monthDay = plan.monthlyDay?.coerceIn(1, 31)
+                        ?: error("本地视觉模型未识别出 monthly_day")
+                    startAt = nowMillis
+                    reminderAt = nowMillis
+                    repeatDays = emptyList()
+                    repeatDayOfMonth = monthDay
+                }
+            }
+
+            addManualSchedule(
+                title = normalizedTitle,
+                detail = normalizedDetail,
+                startAt = startAt,
+                reminderAt = reminderAt,
+                repeatType = repeatType,
+                repeatDaysOfWeek = repeatDays,
+                repeatDayOfMonth = repeatDayOfMonth,
+                reminderTimeMinutes = reminderTimeMinutes
+            )
+            AppLogger.i(
+                TAG,
+                "local-image schedule created: titleB64=${LogCodec.utf8Base64(normalizedTitle)}, repeatType=${repeatType.name}"
+            )
+        }
+    }
+
     private suspend fun saveScheduleUpdateStrictlyFromAgent(update: ScheduleUpdate): Result<Unit> {
         return runCatching {
             val repeatType = RepeatType.fromRaw(update.repeatType)
@@ -703,6 +781,24 @@ class ActMeRepository(
 
     suspend fun getScheduleById(id: Long): ScheduleEntity? = withContext(Dispatchers.IO) {
         scheduleDao.getById(id)
+    }
+
+    suspend fun addTodoItems(items: List<String>): Result<Int> = withContext(Dispatchers.IO) {
+        runCatching {
+            val normalized = items.map { it.trim() }.filter { it.isNotBlank() }.distinct()
+            require(normalized.isNotEmpty()) { "没有可导入的待办内容" }
+            normalized.forEach { item ->
+                memoryDao.upsert(
+                    MemoryItemEntity(
+                        category = "短期目标",
+                        content = item,
+                        source = "image_import"
+                    )
+                )
+            }
+            AppLogger.i(TAG, "image todos imported: count=${normalized.size}")
+            normalized.size
+        }
     }
 
     suspend fun deleteSchedule(id: Long) = withContext(Dispatchers.IO) {

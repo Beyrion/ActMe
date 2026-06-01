@@ -90,6 +90,7 @@ class MainActivity : ComponentActivity() {
                             val sendingConversationId by chatViewModel.sendingConversationId.collectAsStateWithLifecycle(null)
                             val asrLanguage by settingsViewModel.asrLanguage.collectAsStateWithLifecycle("Chinese")
                             val isModelReady by settingsViewModel.isModelReady.collectAsStateWithLifecycle(false)
+                            val localVisionModelDir by settingsViewModel.localVisionModelDir.collectAsStateWithLifecycle("")
                             val sessionInfos by chatViewModel.sessionInfos.collectAsStateWithLifecycle(emptyList())
                             val currentConversationId by chatViewModel.currentConversationId.collectAsStateWithLifecycle(null)
 
@@ -103,6 +104,8 @@ class MainActivity : ComponentActivity() {
                                 ChatScreen(
                                     messages = messages,
                                     onSend = { text, imgBase64, imgMime -> chatViewModel.sendMessage(text, imgBase64, imgMime) },
+                                    onImportSchedule = chatViewModel::importImageSchedule,
+                                    onImportTodos = chatViewModel::importImageTodos,
                                     sendingConversationId = sendingConversationId,
                                     isRecording = isRecording,
                                     onStartRecording = { chatViewModel.setRecording(true) },
@@ -113,6 +116,7 @@ class MainActivity : ComponentActivity() {
                                     asrLanguage = asrLanguage,
                                     isModelReady = isModelReady,
                                     onStopSending = chatViewModel::stopSending,
+                                    localVisionModelDir = localVisionModelDir,
                                     onNavigateToMenu = { showMenu = true }
                                 )
 
@@ -241,16 +245,24 @@ class MainActivity : ComponentActivity() {
                             val activeProviderId by settingsViewModel.activeProviderId.collectAsStateWithLifecycle(-1L)
                             val isModelReady by settingsViewModel.isModelReady.collectAsStateWithLifecycle(false)
                             val downloadState by settingsViewModel.downloadState.collectAsStateWithLifecycle(DownloadState.NotStarted)
+                            val isVisionModelReady by settingsViewModel.isVisionModelReady.collectAsStateWithLifecycle(false)
+                            val visionDownloadState by settingsViewModel.visionDownloadState.collectAsStateWithLifecycle(DownloadState.NotStarted)
                             val asrLanguage by settingsViewModel.asrLanguage.collectAsStateWithLifecycle("Chinese")
+                            val localVisionModelDir by settingsViewModel.localVisionModelDir.collectAsStateWithLifecycle("")
                             SettingsScreen(
                                 providers = providers,
                                 activeProviderId = activeProviderId,
                                 isModelReady = isModelReady,
                                 downloadState = downloadState,
+                                isVisionModelReady = isVisionModelReady,
+                                visionDownloadState = visionDownloadState,
                                 asrLanguage = asrLanguage,
+                                localVisionModelDir = localVisionModelDir,
                                 onSetAsrLanguage = settingsViewModel::setAsrLanguage,
                                 onDownloadModel = settingsViewModel::downloadModel,
                                 onDeleteModel = settingsViewModel::deleteModel,
+                                onDownloadVisionModel = settingsViewModel::downloadVisionModel,
+                                onDeleteVisionModel = settingsViewModel::deleteVisionModel,
                                 onClearChatHistory = settingsViewModel::clearAllChatHistory,
                                 onAddProvider = settingsViewModel::addProvider,
                                 onUpdateProvider = settingsViewModel::updateProvider,

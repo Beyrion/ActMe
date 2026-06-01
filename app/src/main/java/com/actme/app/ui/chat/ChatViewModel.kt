@@ -2,6 +2,7 @@ package com.actme.app.ui.chat
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.actme.app.data.agent.ScheduleSubAgentPlan
 import com.actme.app.data.local.ChatMessageEntity
 import com.actme.app.data.local.ChatSessionInfo
 import com.actme.app.data.repo.ActMeRepository
@@ -180,5 +181,17 @@ class ChatViewModel(private val repository: ActMeRepository) : ViewModel() {
 
     fun stopSending() {
         sendingJob?.cancel()
+    }
+
+    fun importImageSchedule(plan: ScheduleSubAgentPlan, onResult: (Result<Unit>) -> Unit) {
+        viewModelScope.launch {
+            onResult(repository.addScheduleFromStructuredPlan(plan))
+        }
+    }
+
+    fun importImageTodos(items: List<String>, onResult: (Result<Int>) -> Unit) {
+        viewModelScope.launch {
+            onResult(repository.addTodoItems(items))
+        }
     }
 }

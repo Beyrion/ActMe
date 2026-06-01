@@ -9,6 +9,7 @@ import com.actme.app.data.repo.ActMeRepository
 import com.actme.app.mnn.DownloadState
 import com.actme.app.mnn.ModelInfo
 import com.actme.app.mnn.ModelManager
+import com.actme.app.mnn.VisionModelManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -25,6 +26,7 @@ class SettingsViewModel(
 
     private val prefs = application.getSharedPreferences("actme_voice_settings", Context.MODE_PRIVATE)
     private val modelManager = ModelManager(application)
+    private val visionModelManager = VisionModelManager(application)
 
     val providers: StateFlow<List<ProviderEntity>> = repository.providers
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
@@ -38,8 +40,15 @@ class SettingsViewModel(
     private val _isModelReady = MutableStateFlow(modelManager.isModelReady)
     val isModelReady: StateFlow<Boolean> = _isModelReady
 
+    private val _isVisionModelReady = MutableStateFlow(visionModelManager.isModelReady)
+    val isVisionModelReady: StateFlow<Boolean> = _isVisionModelReady
+    private val _localVisionModelDir = MutableStateFlow(visionModelManager.modelDir)
+    val localVisionModelDir: StateFlow<String> = _localVisionModelDir
+
     val downloadState: StateFlow<DownloadState> = modelManager.downloadState
     val modelInfo: StateFlow<ModelInfo?> = modelManager.modelInfo
+    val visionDownloadState: StateFlow<DownloadState> = visionModelManager.downloadState
+    val visionModelInfo: StateFlow<ModelInfo?> = visionModelManager.modelInfo
 
     fun setAsrLanguage(lang: String) {
         _asrLanguage.value = lang
@@ -55,9 +64,23 @@ class SettingsViewModel(
         }
     }
 
+    fun downloadVisionModel() {
+        viewModelScope.launch {
+            try {
+                visionModelManager.downloadModel()
+                _isVisionModelReady.value = visionModelManager.isModelReady
+            } catch (_: Exception) {}
+        }
+    }
+
     fun deleteModel() {
         File(modelManager.modelDir).deleteRecursively()
         _isModelReady.value = false
+    }
+
+    fun deleteVisionModel() {
+        File(visionModelManager.modelDir).deleteRecursively()
+        _isVisionModelReady.value = false
     }
 
     fun clearAllChatHistory() {

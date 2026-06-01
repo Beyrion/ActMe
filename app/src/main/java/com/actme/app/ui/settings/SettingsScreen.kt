@@ -62,10 +62,15 @@ fun SettingsScreen(
     activeProviderId: Long,
     isModelReady: Boolean,
     downloadState: DownloadState,
+    isVisionModelReady: Boolean,
+    visionDownloadState: DownloadState,
     asrLanguage: String,
+    localVisionModelDir: String,
     onSetAsrLanguage: (String) -> Unit,
     onDownloadModel: () -> Unit,
     onDeleteModel: () -> Unit,
+    onDownloadVisionModel: () -> Unit,
+    onDeleteVisionModel: () -> Unit,
     onClearChatHistory: () -> Unit,
     onAddProvider: (String, String, String, String) -> Unit,
     onUpdateProvider: (Long, String, String, String, String) -> Unit,
@@ -88,6 +93,7 @@ fun SettingsScreen(
     var showAddDialog by remember { mutableStateOf(false) }
     var deleteTarget by remember { mutableStateOf<ProviderEntity?>(null) }
     var showDeleteModelDialog by remember { mutableStateOf(false) }
+    var showDeleteVisionModelDialog by remember { mutableStateOf(false) }
     var langExpanded by remember { mutableStateOf(false) }
 
     // Clear history dialog
@@ -140,6 +146,23 @@ fun SettingsScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showDeleteModelDialog = false }) { Text("取消") }
+            }
+        )
+    }
+
+    if (showDeleteVisionModelDialog) {
+        AlertDialog(
+            onDismissRequest = { showDeleteVisionModelDialog = false },
+            title = { Text("删除视觉模型") },
+            text = { Text("确定要删除本地图片识别模型吗？删除后需重新下载才能使用图片转日程/待办。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    onDeleteVisionModel()
+                    showDeleteVisionModelDialog = false
+                }) { Text("删除", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteVisionModelDialog = false }) { Text("取消") }
             }
         )
     }
@@ -391,6 +414,85 @@ fun SettingsScreen(
                         )
                     }
                 }
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
+        HorizontalDivider()
+        Spacer(Modifier.height(8.dp))
+
+        Text(
+            "本地视觉模型",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp)
+        )
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                ListItem(
+                    headlineContent = { Text("Qwen3-VL-2B-Instruct-MNN") },
+                    supportingContent = {
+                        Text("来源：ModelScope 社区，目录：$localVisionModelDir")
+                    },
+                    trailingContent = {
+                        when {
+                            isVisionModelReady -> {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Text(
+                                        "已下载",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                    IconButton(
+                                        onClick = { showDeleteVisionModelDialog = true },
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
+                                        Icon(
+                                            Icons.Outlined.DeleteOutline,
+                                            contentDescription = "删除视觉模型",
+                                            modifier = Modifier.size(18.dp),
+                                            tint = MaterialTheme.colorScheme.error
+                                        )
+                                    }
+                                }
+                            }
+                            visionDownloadState is DownloadState.Downloading -> {
+                                val state = visionDownloadState as DownloadState.Downloading
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        strokeWidth = 2.dp
+                                    )
+                                    Text(
+                                        "${(state.currentFileProgress * 100).toInt()}%",
+                                        style = MaterialTheme.typography.labelSmall
+                                    )
+                                }
+                            }
+                            visionDownloadState is DownloadState.Checking -> {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp
+                                )
+                            }
+                            else -> {
+                                TextButton(onClick = onDownloadVisionModel) {
+                                    Text("下载")
+                                }
+                            }
+                        }
+                    }
+                    }
+                )
             }
         }
 
