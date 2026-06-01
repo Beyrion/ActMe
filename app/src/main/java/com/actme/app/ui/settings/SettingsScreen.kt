@@ -491,7 +491,6 @@ fun SettingsScreen(
                             }
                         }
                     }
-                    }
                 )
             }
         }
