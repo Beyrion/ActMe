@@ -1,8 +1,10 @@
 package com.actme.app.ui.chat
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
+import android.net.Uri
 import android.util.Base64
 import com.actme.app.util.AppLogger
 import android.widget.Toast
@@ -35,6 +37,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -56,6 +59,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -83,7 +87,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.UriHandler
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import com.mikepenz.markdown.m3.Markdown
 import com.mikepenz.markdown.m3.markdownColor
@@ -625,6 +633,15 @@ private fun MessageBubble(msg: ChatMessageEntity) {
     val hasSearchResult = !msg.searchResult.isNullOrBlank()
     var showFullImage by remember { mutableStateOf(false) }
     var showSearchResult by remember { mutableStateOf(false) }
+    var pendingUrl by remember { mutableStateOf<String?>(null) }
+    val context = LocalContext.current
+    val customUriHandler = remember {
+        object : UriHandler {
+            override fun openUri(uri: String) {
+                pendingUrl = uri
+            }
+        }
+    }
 
     // Search result dialog
     if (showSearchResult && hasSearchResult) {
@@ -638,18 +655,25 @@ private fun MessageBubble(msg: ChatMessageEntity) {
                         item {
                             val cleanResult = msg.searchResult!!
                                 .replace("【联网搜索结果：", "")
-                            Markdown(
-                                content = cleanResult,
-                                colors = markdownColor(),
-                                typography = markdownTypography(
-                                    text = MaterialTheme.typography.bodySmall,
-                                    paragraph = MaterialTheme.typography.bodySmall,
-                                    h1 = MaterialTheme.typography.bodyMedium,
-                                    h2 = MaterialTheme.typography.bodyMedium,
-                                    h3 = MaterialTheme.typography.bodySmall,
-                                    code = MaterialTheme.typography.bodySmall,
-                                )
-                            )
+                            CompositionLocalProvider(LocalUriHandler provides customUriHandler) {
+                                SelectionContainer {
+                                    Markdown(
+                                        content = cleanResult,
+                                        colors = markdownColor(
+                                            linkText = Color(0xFF1A73E8),
+                                        ),
+                                        typography = markdownTypography(
+                                            text = MaterialTheme.typography.bodySmall,
+                                            paragraph = MaterialTheme.typography.bodySmall,
+                                            h1 = MaterialTheme.typography.bodyMedium,
+                                            h2 = MaterialTheme.typography.bodyMedium,
+                                            h3 = MaterialTheme.typography.bodySmall,
+                                            code = MaterialTheme.typography.bodySmall,
+                                            link = TextStyle(textDecoration = TextDecoration.Underline),
+                                        )
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -658,6 +682,29 @@ private fun MessageBubble(msg: ChatMessageEntity) {
                 TextButton(onClick = { showSearchResult = false }) {
                     Text("关闭")
                 }
+            }
+        )
+    }
+
+    if (pendingUrl != null) {
+        AlertDialog(
+            onDismissRequest = { pendingUrl = null },
+            title = { Text("Open link") },
+            text = {
+                Text(
+                    pendingUrl!!,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(pendingUrl))
+                    context.startActivity(intent)
+                    pendingUrl = null
+                }) { Text("Open") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingUrl = null }) { Text("Cancel") }
             }
         )
     }
@@ -733,18 +780,25 @@ private fun MessageBubble(msg: ChatMessageEntity) {
                 if (isUser) {
                     Text(displayContent, style = MaterialTheme.typography.bodyMedium)
                 } else {
-                    Markdown(
-                        content = displayContent,
-                        colors = markdownColor(),
-                        typography = markdownTypography(
-                            text = MaterialTheme.typography.bodyMedium,
-                            paragraph = MaterialTheme.typography.bodyMedium,
-                            h1 = MaterialTheme.typography.bodyLarge,
-                            h2 = MaterialTheme.typography.bodyLarge,
-                            h3 = MaterialTheme.typography.bodyMedium,
-                            code = MaterialTheme.typography.bodySmall,
-                        )
-                    )
+                    CompositionLocalProvider(LocalUriHandler provides customUriHandler) {
+                        SelectionContainer {
+                            Markdown(
+                                content = displayContent,
+                                colors = markdownColor(
+                                    linkText = Color(0xFF1A73E8),
+                                ),
+                                typography = markdownTypography(
+                                    text = MaterialTheme.typography.bodyMedium,
+                                    paragraph = MaterialTheme.typography.bodyMedium,
+                                    h1 = MaterialTheme.typography.bodyLarge,
+                                    h2 = MaterialTheme.typography.bodyLarge,
+                                    h3 = MaterialTheme.typography.bodyMedium,
+                                    code = MaterialTheme.typography.bodySmall,
+                                    link = TextStyle(textDecoration = TextDecoration.Underline),
+                                )
+                            )
+                        }
+                    }
                 }
             }
         }
