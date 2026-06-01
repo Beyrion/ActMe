@@ -25,6 +25,10 @@ data class ChatMessageEntity(
     val imageBase64: String? = null,
     val imageMimeType: String? = null,
     val searchResult: String? = null,
+    val tokenInput: Int? = null,
+    val tokenOutput: Int? = null,
+    val tokenTotal: Int? = null,
+    val tokenSource: String? = null,
     val createdAt: Long = System.currentTimeMillis()
 )
 

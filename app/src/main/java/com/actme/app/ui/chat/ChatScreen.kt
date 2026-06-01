@@ -121,6 +121,7 @@ fun ChatScreen(
     onSelectModel: (String) -> Unit = {},
     asrLanguage: String = "Chinese",
     isModelReady: Boolean = false,
+    onStopSending: () -> Unit = {},
     onNavigateToMenu: () -> Unit = {}
 ) {
     val scope = rememberCoroutineScope()
@@ -608,7 +609,9 @@ fun ChatScreen(
                             }
 
                             if (sending) {
-                                CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                                IconButton(onClick = onStopSending) {
+                                    Icon(Icons.Filled.Stop, contentDescription = "停止")
+                                }
                             } else {
                                 IconButton(onClick = { doSend() }) {
                                     Icon(Icons.Filled.ArrowUpward, contentDescription = "发送")
@@ -631,6 +634,7 @@ private fun MessageBubble(msg: ChatMessageEntity) {
     val isUser = msg.role == "user"
     val hasImage = !msg.imageBase64.isNullOrBlank() && !msg.imageMimeType.isNullOrBlank()
     val hasSearchResult = !msg.searchResult.isNullOrBlank()
+    val resultLabel = resultPanelLabel(msg.searchResult)
     var showFullImage by remember { mutableStateOf(false) }
     var showSearchResult by remember { mutableStateOf(false) }
     var pendingUrl by remember { mutableStateOf<String?>(null) }
@@ -647,14 +651,13 @@ private fun MessageBubble(msg: ChatMessageEntity) {
     if (showSearchResult && hasSearchResult) {
         AlertDialog(
             onDismissRequest = { showSearchResult = false },
-            title = { Text("搜索结果", fontWeight = FontWeight.Bold) },
+            title = { Text(resultLabel, fontWeight = FontWeight.Bold) },
             text = {
                 Column(modifier = Modifier.fillMaxWidth()) {
                     // Scrollable search results
                     LazyColumn(modifier = Modifier.heightIn(max = 400.dp)) {
                         item {
-                            val cleanResult = msg.searchResult!!
-                                .replace("【联网搜索结果：", "")
+                            val cleanResult = cleanResultPanelContent(msg.searchResult!!)
                             CompositionLocalProvider(LocalUriHandler provides customUriHandler) {
                                 SelectionContainer {
                                     Markdown(
@@ -776,7 +779,7 @@ private fun MessageBubble(msg: ChatMessageEntity) {
                     )
                 }
                 // Strip search result link from displayed content
-                val displayContent = msg.content.replace(Regex("\\n?---\\n🔍 \\[展开搜索结果]\\(search://result\\)"), "")
+                val displayContent = stripResultExpandLink(msg.content)
                 if (isUser) {
                     Text(displayContent, style = MaterialTheme.typography.bodyMedium)
                 } else {
@@ -810,13 +813,97 @@ private fun MessageBubble(msg: ChatMessageEntity) {
                 modifier = Modifier.padding(top = 2.dp)
             ) {
                 Text(
-                    "🔍 展开搜索结果",
+                    resultExpandLabel(msg.searchResult),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.primary
                 )
             }
         }
+
+        val tokenLabel = messageTokenLabel(msg)
+        if (tokenLabel != null) {
+            Text(
+                tokenLabel,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(
+                    top = 2.dp,
+                    start = if (isUser) 0.dp else 8.dp,
+                    end = if (isUser) 8.dp else 0.dp
+                )
+            )
+        }
     }
+}
+
+private fun resultPanelLabel(result: String?): String {
+    if (result.isNullOrBlank()) return "联网资料"
+    val hasBrowse = result.contains("[BROWSE_RESULT]") || result.contains("[BROWSE_ERROR]")
+    val hasSearch = result.contains("【联网搜索结果")
+    return when {
+        hasBrowse && hasSearch -> "联网资料"
+        hasBrowse -> "网页阅读内容"
+        else -> "搜索结果"
+    }
+}
+
+private fun resultExpandLabel(result: String?): String {
+    val label = resultPanelLabel(result)
+    return when (label) {
+        "网页阅读内容" -> "📖 展开网页阅读内容"
+        "联网资料" -> "🌐 展开联网资料"
+        else -> "🔍 展开搜索结果"
+    }
+}
+
+private fun cleanResultPanelContent(result: String): String {
+    return result
+        .replace("【联网搜索结果：", "")
+        .replace("[BROWSE_RESULT]", "【网页阅读内容】")
+        .replace("[BROWSE_ERROR]", "【网页阅读失败】")
+}
+
+private fun stripResultExpandLink(content: String): String {
+    return content.replace(Regex("\\n?---\\n[🔍📖🌐] \\[展开(?:搜索结果|网页阅读内容|联网资料)]\\(search://result\\)"), "")
+}
+
+private fun messageTokenLabel(msg: ChatMessageEntity): String? {
+    if (msg.role == "user") return null
+    val total = msg.tokenTotal
+    if (msg.tokenSource == "api" && total != null && total > 0) {
+        val input = msg.tokenInput ?: 0
+        val output = msg.tokenOutput ?: 0
+        return "API tokens: 输入 $input / 输出 $output / 总计 $total"
+    }
+    val estimated = estimateMessageTokens(msg)
+    return if (estimated > 0) "约 $estimated tokens" else null
+}
+
+private fun estimateMessageTokens(msg: ChatMessageEntity): Int {
+    val textTokens = estimateTextTokens(msg.content)
+    val imageTokens = if (!msg.imageBase64.isNullOrBlank()) 85 else 0
+    return textTokens + imageTokens
+}
+
+private fun estimateTextTokens(text: String): Int {
+    if (text.isBlank()) return 0
+    var cjk = 0
+    var nonCjk = 0
+    for (ch in text) {
+        when {
+            ch.isWhitespace() -> Unit
+            isCjk(ch) -> cjk += 1
+            else -> nonCjk += 1
+        }
+    }
+    return cjk + ((nonCjk + 3) / 4)
+}
+
+private fun isCjk(ch: Char): Boolean {
+    val code = ch.code
+    return code in 0x3400..0x4DBF ||
+        code in 0x4E00..0x9FFF ||
+        code in 0xF900..0xFAFF
 }
 
 // ---- Skeleton placeholder ----

@@ -3,8 +3,10 @@ package com.actme.app.data.remote
 import com.actme.app.util.AppLogger
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -36,6 +38,30 @@ data class MessagePayload(
     val imageMimeType: String? = null
 )
 
+data class TokenUsage(
+    val inputTokens: Int = 0,
+    val outputTokens: Int = 0,
+    val totalTokens: Int = inputTokens + outputTokens
+) {
+    fun plus(other: TokenUsage): TokenUsage {
+        return TokenUsage(
+            inputTokens = inputTokens + other.inputTokens,
+            outputTokens = outputTokens + other.outputTokens,
+            totalTokens = totalTokens + other.totalTokens
+        )
+    }
+}
+
+data class LlmResult(
+    val text: String,
+    val usage: TokenUsage? = null
+)
+
+data class LlmStreamChunk(
+    val text: String = "",
+    val usage: TokenUsage? = null
+)
+
 class OpenAiResponsesClient {
     private val json = Json { ignoreUnknownKeys = true }
     private val okHttp = OkHttpClient.Builder().build()
@@ -62,9 +88,17 @@ class OpenAiResponsesClient {
         config: ProviderConfig,
         enableWebSearch: Boolean = false
     ): String {
+        return runWithUsage(messages, config, enableWebSearch).text
+    }
+
+    suspend fun runWithUsage(
+        messages: List<MessagePayload>,
+        config: ProviderConfig,
+        enableWebSearch: Boolean = false
+    ): LlmResult {
         if (config.sk.isBlank()) {
             AppLogger.i(TAG, "run aborted: api key is blank")
-            return "当前未配置 API Key，请在设置中添加提供商。"
+            return LlmResult("当前未配置 API Key，请在设置中添加提供商。")
         }
         val url = when (config.providerFormat) {
             "anthropic" -> apiUrl(config.endpoint, "messages")
@@ -80,14 +114,20 @@ class OpenAiResponsesClient {
             else -> buildOpenAiRequest(messages, config, enableWebSearch)
         }
 
-        val response = okHttp.newCall(request).execute()
-        val body = response.body?.string().orEmpty()
+        var response = okHttp.newCall(request).execute()
+        var body = response.body?.string().orEmpty()
+        if (!response.isSuccessful && shouldRetryWithoutOpenAiUsage(config, body)) {
+            AppLogger.w(TAG, "run retry without stream_options.include_usage")
+            response.close()
+            response = okHttp.newCall(buildOpenAiRequest(messages, config, enableWebSearch, includeUsage = false)).execute()
+            body = response.body?.string().orEmpty()
+        }
         if (!response.isSuccessful) {
             AppLogger.i(TAG, "run failed: code=${response.code}")
-            return "请求失败(${response.code})：$body"
+            return LlmResult("请求失败(${response.code})：$body")
         }
         AppLogger.i(TAG, "run success")
-        return parseSseBody(body, config.providerFormat)
+        return parseSseBodyWithUsage(body, config.providerFormat)
     }
 
     fun runStreaming(
@@ -95,8 +135,18 @@ class OpenAiResponsesClient {
         config: ProviderConfig,
         enableWebSearch: Boolean = false
     ): Flow<String> = flow {
+        runStreamingWithUsage(messages, config, enableWebSearch).collect { chunk ->
+            if (chunk.text.isNotEmpty()) emit(chunk.text)
+        }
+    }.flowOn(Dispatchers.IO)
+
+    fun runStreamingWithUsage(
+        messages: List<MessagePayload>,
+        config: ProviderConfig,
+        enableWebSearch: Boolean = false
+    ): Flow<LlmStreamChunk> = flow {
         if (config.sk.isBlank()) {
-            emit("当前未配置 API Key，请在设置中添加提供商。")
+            emit(LlmStreamChunk(text = "当前未配置 API Key，请在设置中添加提供商。"))
             return@flow
         }
         val request = when (config.providerFormat) {
@@ -108,14 +158,36 @@ class OpenAiResponsesClient {
             val response = call.execute()
             if (!response.isSuccessful) {
                 val body = response.body?.string().orEmpty()
-                emit("请求失败(${response.code})：$body")
+                if (shouldRetryWithoutOpenAiUsage(config, body)) {
+                    AppLogger.w(TAG, "stream retry without stream_options.include_usage")
+                    response.close()
+                    val fallback = okHttp.newCall(buildOpenAiRequest(messages, config, enableWebSearch, includeUsage = false))
+                    try {
+                        val fallbackResponse = fallback.execute()
+                        if (!fallbackResponse.isSuccessful) {
+                            val fallbackBody = fallbackResponse.body?.string().orEmpty()
+                            emit(LlmStreamChunk(text = "请求失败(${fallbackResponse.code})：$fallbackBody"))
+                            return@flow
+                        }
+                        val fallbackSource = fallbackResponse.body?.source() ?: return@flow
+                        while (!fallbackSource.exhausted()) {
+                            val line = fallbackSource.readUtf8Line() ?: break
+                            val chunk = parseSseLine(line, config.providerFormat)
+                            if (chunk != null && (chunk.text.isNotEmpty() || chunk.usage != null)) emit(chunk)
+                        }
+                    } finally {
+                        fallback.cancel()
+                    }
+                    return@flow
+                }
+                emit(LlmStreamChunk(text = "请求失败(${response.code})：$body"))
                 return@flow
             }
             val source = response.body?.source() ?: return@flow
             while (!source.exhausted()) {
                 val line = source.readUtf8Line() ?: break
                 val chunk = parseSseLine(line, config.providerFormat)
-                if (!chunk.isNullOrEmpty()) emit(chunk)
+                if (chunk != null && (chunk.text.isNotEmpty() || chunk.usage != null)) emit(chunk)
             }
         } catch (e: Exception) {
             if (e is CancellationException) throw e
@@ -158,11 +230,17 @@ class OpenAiResponsesClient {
     private fun buildOpenAiRequest(
         messages: List<MessagePayload>,
         config: ProviderConfig,
-        enableWebSearch: Boolean
+        enableWebSearch: Boolean,
+        includeUsage: Boolean = true
     ): Request {
         val payload = buildJsonObject {
             put("model", config.model)
             put("stream", true)
+            if (includeUsage) {
+                putJsonObject("stream_options") {
+                    put("include_usage", true)
+                }
+            }
             putJsonArray("messages") {
                 messages.forEach { msg ->
                     add(
@@ -254,13 +332,17 @@ class OpenAiResponsesClient {
     // ---- SSE Parsing ----
 
     private fun parseSseBody(raw: String, format: String): String {
+        return parseSseBodyWithUsage(raw, format).text
+    }
+
+    private fun parseSseBodyWithUsage(raw: String, format: String): LlmResult {
         return when (format) {
             "anthropic" -> parseAnthropicSseBody(raw)
             else -> parseOpenAiSseBody(raw)
         }
     }
 
-    private fun parseSseLine(line: String, format: String): String? {
+    private fun parseSseLine(line: String, format: String): LlmStreamChunk? {
         val trimmed = line.trim()
         if (!trimmed.startsWith("data:")) return null
         val data = trimmed.removePrefix("data:").trim()
@@ -268,22 +350,28 @@ class OpenAiResponsesClient {
         val obj = runCatching { json.parseToJsonElement(data).jsonObject }.getOrNull() ?: return null
         return when (format) {
             "anthropic" -> {
-                if (obj["type"]?.jsonPrimitive?.contentOrNull == "content_block_delta") {
-                    obj["delta"]?.jsonObject?.get("text")?.jsonPrimitive?.contentOrNull
-                } else null
+                val text = if (obj["type"]?.jsonPrimitive?.contentOrNull == "content_block_delta") {
+                    obj["delta"]?.jsonObject?.get("text")?.jsonPrimitive?.contentOrNull.orEmpty()
+                } else ""
+                val usage = parseAnthropicUsage(obj)
+                if (text.isEmpty() && usage == null) null else LlmStreamChunk(text = text, usage = usage)
             }
             else -> {
-                obj["choices"]?.jsonArray?.firstOrNull()
+                val text = obj["choices"]?.jsonArray?.firstOrNull()
                     ?.jsonObject?.get("delta")?.jsonObject
                     ?.get("content")?.jsonPrimitive?.contentOrNull
+                    .orEmpty()
+                val usage = parseOpenAiUsage(obj["usage"] as? JsonObject)
+                if (text.isEmpty() && usage == null) null else LlmStreamChunk(text = text, usage = usage)
             }
         }
     }
 
-    private fun parseOpenAiSseBody(raw: String): String {
-        if (!raw.contains("data:")) return raw
+    private fun parseOpenAiSseBody(raw: String): LlmResult {
+        if (!raw.contains("data:")) return LlmResult(raw)
 
         val deltaBuilder = StringBuilder()
+        var usage: TokenUsage? = null
         raw.lineSequence().forEach { line ->
             val trimmed = line.trim()
             if (!trimmed.startsWith("data:")) return@forEach
@@ -291,6 +379,7 @@ class OpenAiResponsesClient {
             if (data.isBlank() || data == "[DONE]") return@forEach
 
             val eventObj = runCatching { json.parseToJsonElement(data).jsonObject }.getOrNull() ?: return@forEach
+            parseOpenAiUsage(eventObj["usage"] as? JsonObject)?.let { usage = it }
             val choices = eventObj["choices"]?.jsonArray ?: return@forEach
             for (choice in choices) {
                 val choiceObj = choice.jsonObject
@@ -301,13 +390,14 @@ class OpenAiResponsesClient {
                 }
             }
         }
-        return deltaBuilder.toString().ifBlank { raw }
+        return LlmResult(deltaBuilder.toString().ifBlank { raw }, usage)
     }
 
-    private fun parseAnthropicSseBody(raw: String): String {
-        if (!raw.contains("data:")) return raw
+    private fun parseAnthropicSseBody(raw: String): LlmResult {
+        if (!raw.contains("data:")) return LlmResult(raw)
 
         val deltaBuilder = StringBuilder()
+        var usage = TokenUsage()
         raw.lineSequence().forEach { line ->
             val trimmed = line.trim()
             if (!trimmed.startsWith("data:")) return@forEach
@@ -315,6 +405,15 @@ class OpenAiResponsesClient {
             if (data.isBlank()) return@forEach
 
             val eventObj = runCatching { json.parseToJsonElement(data).jsonObject }.getOrNull() ?: return@forEach
+            parseAnthropicUsage(eventObj)?.let { parsed ->
+                val input = maxOf(usage.inputTokens, parsed.inputTokens)
+                val output = maxOf(usage.outputTokens, parsed.outputTokens)
+                usage = TokenUsage(
+                    inputTokens = input,
+                    outputTokens = output,
+                    totalTokens = maxOf(usage.totalTokens, parsed.totalTokens, input + output)
+                )
+            }
             val type = eventObj["type"]?.jsonPrimitive?.contentOrNull.orEmpty()
             when (type) {
                 "content_block_delta" -> {
@@ -325,7 +424,34 @@ class OpenAiResponsesClient {
                 "message_stop" -> { /* stream end */ }
             }
         }
-        return deltaBuilder.toString().ifBlank { raw }
+        return LlmResult(deltaBuilder.toString().ifBlank { raw }, usage.takeIf { it.totalTokens > 0 })
+    }
+
+    private fun parseOpenAiUsage(obj: JsonObject?): TokenUsage? {
+        if (obj == null) return null
+        val input = obj["prompt_tokens"]?.jsonPrimitive?.intOrNull ?: 0
+        val output = obj["completion_tokens"]?.jsonPrimitive?.intOrNull ?: 0
+        val total = obj["total_tokens"]?.jsonPrimitive?.intOrNull ?: input + output
+        if (input == 0 && output == 0 && total == 0) return null
+        return TokenUsage(inputTokens = input, outputTokens = output, totalTokens = total)
+    }
+
+    private fun parseAnthropicUsage(obj: JsonObject): TokenUsage? {
+        val messageUsage = (obj["message"] as? JsonObject)?.get("usage") as? JsonObject
+        val usageObj = (obj["usage"] as? JsonObject) ?: messageUsage ?: return null
+        val input = usageObj["input_tokens"]?.jsonPrimitive?.intOrNull ?: 0
+        val output = usageObj["output_tokens"]?.jsonPrimitive?.intOrNull ?: 0
+        if (input == 0 && output == 0) return null
+        return TokenUsage(inputTokens = input, outputTokens = output, totalTokens = input + output)
+    }
+
+    private fun shouldRetryWithoutOpenAiUsage(config: ProviderConfig, body: String): Boolean {
+        if (config.providerFormat == "anthropic") return false
+        val lower = body.lowercase()
+        return lower.contains("stream_options") ||
+            lower.contains("include_usage") ||
+            lower.contains("unknown parameter") ||
+            lower.contains("unsupported parameter")
     }
 
     companion object {

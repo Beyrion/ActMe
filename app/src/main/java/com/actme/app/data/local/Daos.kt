@@ -39,6 +39,9 @@ interface ChatDao {
     @Query("UPDATE chat_messages SET searchResult = :result WHERE id = :id")
     suspend fun updateSearchResult(id: Long, result: String)
 
+    @Query("UPDATE chat_messages SET tokenInput = :input, tokenOutput = :output, tokenTotal = :total, tokenSource = :source WHERE id = :id")
+    suspend fun updateTokenUsage(id: Long, input: Int?, output: Int?, total: Int?, source: String?)
+
     @Insert
     suspend fun insertSession(session: ChatSessionEntity): Long
 

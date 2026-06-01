@@ -9,6 +9,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -48,6 +49,7 @@ class ChatViewModel(private val repository: ActMeRepository) : ViewModel() {
     private val _sendingConversationId = MutableStateFlow<Long?>(null)
     val sendingConversationId: StateFlow<Long?> = _sendingConversationId
     val sending: Boolean get() = _sendingConversationId.value != null
+    private var sendingJob: Job? = null
     val isRecording = MutableStateFlow(false)
     val transcribedText = MutableStateFlow<String?>(null)
 
@@ -165,10 +167,18 @@ class ChatViewModel(private val repository: ActMeRepository) : ViewModel() {
     fun sendMessage(input: String, imageBase64: String? = null, imageMimeType: String? = null) {
         val conversationId = currentConversationIdMutable.value ?: return
         if (input.isBlank() && imageBase64 == null || _sendingConversationId.value != null) return
-        viewModelScope.launch {
+        sendingJob = viewModelScope.launch {
             _sendingConversationId.value = conversationId
-            runCatching { repository.sendMessage(conversationId, input.trim(), imageBase64, imageMimeType) }
-            _sendingConversationId.value = null
+            try {
+                repository.sendMessage(conversationId, input.trim(), imageBase64, imageMimeType)
+            } finally {
+                _sendingConversationId.value = null
+                sendingJob = null
+            }
         }
+    }
+
+    fun stopSending() {
+        sendingJob?.cancel()
     }
 }

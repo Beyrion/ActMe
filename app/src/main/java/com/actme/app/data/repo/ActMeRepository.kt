@@ -3,6 +3,7 @@ package com.actme.app.data.repo
 import com.actme.app.util.AppLogger
 import com.actme.app.data.agent.ActMeAgent
 import com.actme.app.data.agent.ReplyExtractor
+import com.actme.app.data.agent.SystemCall
 import com.actme.app.data.agent.SystemSkillExecutor
 import com.actme.app.data.agent.ScheduleUpdate
 import com.actme.app.data.local.ChatDao
@@ -20,6 +21,7 @@ import com.actme.app.data.local.SkillEntity
 import com.actme.app.data.remote.OpenAiResponsesClient
 import com.actme.app.data.remote.ProviderConfig
 import com.actme.app.data.remote.ProviderManager
+import com.actme.app.data.remote.TokenUsage
 import com.actme.app.notifications.ReminderScheduler
 import com.actme.app.util.LogCodec
 import java.time.Instant
@@ -27,7 +29,9 @@ import java.time.LocalDate
 import java.time.LocalTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
@@ -45,6 +49,25 @@ class ActMeRepository(
     private val providerManager: ProviderManager,
     private val openAiClient: OpenAiResponsesClient
 ) {
+    private enum class StepStatus { RUNNING, DONE, FAILED, SKIPPED }
+
+    private data class AgentRunStep(
+        val index: Int,
+        val title: String,
+        val detail: String = "",
+        val status: StepStatus = StepStatus.RUNNING
+    )
+
+    private data class ToolBudget(
+        val maxPasses: Int = 6,
+        val maxToolCalls: Int = 12,
+        val maxSearchCalls: Int = 4,
+        val maxBrowseCalls: Int = 8,
+        var toolCalls: Int = 0,
+        var searchCalls: Int = 0,
+        var browseCalls: Int = 0
+    )
+
     val chatSessions: Flow<List<ChatSessionEntity>> = chatDao.observeSessions()
 
     suspend fun getMessageCount(conversationId: Long): Int = withContext(Dispatchers.IO) {
@@ -134,9 +157,75 @@ class ActMeRepository(
 
         val extractor = ReplyExtractor()
         val displayBuilder = StringBuilder()
+        val runSteps = mutableListOf<AgentRunStep>()
+        val budget = ToolBudget()
+        val searchedQueries = mutableSetOf<String>()
+        val visitedUrls = mutableSetOf<String>()
+        var nextStepIndex = 1
+        var totalApiUsage: TokenUsage? = null
+
+        fun addApiUsage(usage: TokenUsage?) {
+            if (usage == null) return
+            totalApiUsage = totalApiUsage?.plus(usage) ?: usage
+        }
+
+        fun mergeStreamingUsage(current: TokenUsage?, incoming: TokenUsage?): TokenUsage? {
+            if (incoming == null) return current
+            if (current == null) return incoming
+            val input = maxOf(current.inputTokens, incoming.inputTokens)
+            val output = maxOf(current.outputTokens, incoming.outputTokens)
+            return TokenUsage(
+                inputTokens = input,
+                outputTokens = output,
+                totalTokens = maxOf(current.totalTokens, incoming.totalTokens, input + output)
+            )
+        }
+
+        fun renderRunProgress(finalReply: String? = null): String {
+            val sb = StringBuilder()
+            if (runSteps.isNotEmpty()) {
+                sb.appendLine("执行过程：")
+                for (step in runSteps) {
+                    val marker = when (step.status) {
+                        StepStatus.RUNNING -> "..."
+                        StepStatus.DONE -> "OK"
+                        StepStatus.FAILED -> "FAIL"
+                        StepStatus.SKIPPED -> "SKIP"
+                    }
+                    sb.append(step.index).append(". [").append(marker).append("] ").append(step.title)
+                    if (step.detail.isNotBlank()) sb.append(" - ").append(step.detail.take(220))
+                    sb.appendLine()
+                }
+                sb.appendLine()
+            }
+            if (!finalReply.isNullOrBlank()) {
+                sb.appendLine("---")
+                sb.append(finalReply)
+            } else if (displayBuilder.isNotBlank() && runSteps.isEmpty()) {
+                sb.append(displayBuilder)
+            }
+            return sb.toString().trim()
+        }
+
+        suspend fun addRunStep(title: String, detail: String = "", status: StepStatus = StepStatus.RUNNING): Int {
+            val index = nextStepIndex++
+            runSteps.add(AgentRunStep(index, title, detail, status))
+            chatDao.updateContent(streamingMsgId, renderRunProgress())
+            return index
+        }
+
+        suspend fun updateRunStep(index: Int, status: StepStatus, detail: String? = null) {
+            val pos = runSteps.indexOfFirst { it.index == index }
+            if (pos >= 0) {
+                val old = runSteps[pos]
+                runSteps[pos] = old.copy(status = status, detail = detail ?: old.detail)
+                chatDao.updateContent(streamingMsgId, renderRunProgress())
+            }
+        }
 
         try {
-            agent.runTurnStreaming(
+            var streamingUsage: TokenUsage? = null
+            agent.runTurnStreamingWithUsage(
                 userInput = userInput,
                 memories = userMemories,
                 systemMemories = systemMemories,
@@ -148,12 +237,17 @@ class ActMeRepository(
                 imageMimeType = imageMimeType,
                 historyMessages = historyMessages
             ).collect { chunk ->
-                val display = extractor.consume(chunk)
+                streamingUsage = mergeStreamingUsage(streamingUsage, chunk.usage)
+                val display = extractor.consume(chunk.text)
                 if (display != null) {
                     displayBuilder.append(display)
                     chatDao.updateContent(streamingMsgId, displayBuilder.toString())
                 }
             }
+            addApiUsage(streamingUsage)
+        } catch (e: CancellationException) {
+            chatDao.updateContent(streamingMsgId, renderRunProgress("已中止。"))
+            throw e
         } catch (e: Exception) {
             AppLogger.e(TAG, "streaming error: ${e.message}")
         }
@@ -166,69 +260,171 @@ class ActMeRepository(
         )
 
         // Multi-pass system call loop: execute system_calls → feed back → re-call agent
-        val maxPasses = 3
         var searchResults: String? = null
         var searchSucceeded = false
         var searchFailed = false
-        for (pass in 1..maxPasses) {
+        var toolLoopPausedReason: String? = null
+        for (pass in 1..budget.maxPasses) {
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
             if (result.systemCalls.isEmpty()) break
+
+            addRunStep(
+                title = "Agent planning pass $pass",
+                detail = "${result.systemCalls.size} tool call(s) requested",
+                status = StepStatus.DONE
+            )
 
             val hasWebSearch = result.systemCalls.any { it.type == "web_search" }
             val hasBrowseUrl = result.systemCalls.any {
-                it.type == "browse_url" || it.type == "web_browse" || it.type == "open_url"
+                it.type == "browse_url" || it.type == "browser_url" || it.type == "web_browse" || it.type == "open_url"
             }
             val hasNetworkCall = hasWebSearch || hasBrowseUrl
             if (hasNetworkCall) {
-                chatDao.updateContent(streamingMsgId, displayBuilder.toString() + "\n\n🔍 正在联网搜索...")
+                chatDao.updateContent(streamingMsgId, renderRunProgress())
             }
 
-            AppLogger.i(TAG, "executing ${result.systemCalls.size} system calls (pass $pass)")
-            val executedResults = SystemSkillExecutor.execute(result.systemCalls)
+            val uniqueCalls = mutableListOf<SystemCall>()
+            for (call in result.systemCalls) {
+                val type = call.type
+                val isSearch = type == "web_search"
+                val isBrowse = type == "browse_url" || type == "browser_url" || type == "web_browse" || type == "open_url"
+                val key = when {
+                    isSearch -> call.query.trim().lowercase()
+                    isBrowse -> call.url.ifBlank { call.query }.trim().lowercase()
+                    else -> type + ":" + call.query + ":" + call.url
+                }
+                val duplicate = (isSearch && key in searchedQueries) || (isBrowse && key in visitedUrls)
+                val budgetBlocked = (isSearch && budget.searchCalls >= budget.maxSearchCalls) ||
+                    (isBrowse && budget.browseCalls >= budget.maxBrowseCalls)
+                if (duplicate) {
+                    addRunStep("Skip duplicate ${call.type}", key, StepStatus.SKIPPED)
+                } else if (budgetBlocked) {
+                    addRunStep("Skip ${call.type}", "type budget exhausted: $key", StepStatus.SKIPPED)
+                } else {
+                    if (isSearch) searchedQueries += key
+                    if (isBrowse) visitedUrls += key
+                    uniqueCalls += call
+                }
+            }
+            val remainingToolCalls = budget.maxToolCalls - budget.toolCalls
+            if (remainingToolCalls <= 0) {
+                toolLoopPausedReason = "tool budget exhausted"
+                addRunStep("Pause tool loop", "$toolLoopPausedReason; send 继续 to run more", StepStatus.SKIPPED)
+                break
+            }
+            val callsToExecute = uniqueCalls.take(remainingToolCalls)
+            if (callsToExecute.size < uniqueCalls.size) {
+                addRunStep("Skip extra tools", "tool budget allows $remainingToolCalls more call(s)", StepStatus.SKIPPED)
+            }
+            if (callsToExecute.isEmpty()) {
+                toolLoopPausedReason = "no new executable tool calls"
+                addRunStep("Pause tool loop", "$toolLoopPausedReason; send 继续 to run more", StepStatus.SKIPPED)
+                break
+            }
+            budget.toolCalls += callsToExecute.size
+            budget.searchCalls += callsToExecute.count { it.type == "web_search" }
+            budget.browseCalls += callsToExecute.count { it.type == "browse_url" || it.type == "browser_url" || it.type == "web_browse" || it.type == "open_url" }
+
+            AppLogger.i(TAG, "executing ${callsToExecute.size}/${result.systemCalls.size} system calls (pass $pass)")
+            var activeToolStep: Int? = null
+            val executedResults = try {
+                SystemSkillExecutor.execute(callsToExecute) { event ->
+                    when (event.type) {
+                        SystemSkillExecutor.ToolStepEvent.Type.STARTED -> {
+                            activeToolStep = addRunStep(event.title, event.detail, StepStatus.RUNNING)
+                        }
+                        SystemSkillExecutor.ToolStepEvent.Type.FINISHED -> {
+                            activeToolStep?.let { updateRunStep(it, StepStatus.DONE, event.detail) }
+                            activeToolStep = null
+                        }
+                        SystemSkillExecutor.ToolStepEvent.Type.FAILED -> {
+                            activeToolStep?.let { updateRunStep(it, StepStatus.FAILED, event.detail) }
+                            activeToolStep = null
+                        }
+                    }
+                }
+            } catch (e: CancellationException) {
+                activeToolStep?.let { updateRunStep(it, StepStatus.FAILED, "cancelled") }
+                chatDao.updateContent(streamingMsgId, renderRunProgress("已中止。"))
+                throw e
+            }
             searchResults = if (searchResults != null) "$searchResults\n$executedResults" else executedResults
 
             // Check if search actually returned useful results
             if (hasBrowseUrl && executedResults.contains("[BROWSE_RESULT]")) {
                 searchSucceeded = true
-                chatDao.updateContent(streamingMsgId, displayBuilder.toString() + "\n\n✅ 已获取网页内容，正在整理...")
             } else if (hasBrowseUrl && executedResults.contains("[BROWSE_ERROR]")) {
                 searchFailed = true
-                chatDao.updateContent(streamingMsgId, displayBuilder.toString() + "\n\n⚠️ 网页浏览失败，基于已有知识回复...")
             }
             if (hasWebSearch) {
                 if (executedResults.contains("【联网搜索结果")) {
                     searchSucceeded = true
-                    chatDao.updateContent(streamingMsgId, displayBuilder.toString() + "\n\n✅ 已获取联网搜索结果，正在整理...")
                 } else if (executedResults.contains("【搜索错误】")) {
                     searchFailed = true
-                    chatDao.updateContent(streamingMsgId, displayBuilder.toString() + "\n\n⚠️ 联网搜索失败，基于已有知识回复...")
                 }
             }
 
             // Re-call agent with search results (non-streaming for intermediate passes)
-            val continuationInput = "system_calls 执行结果：\n$executedResults\n\n请基于以上结果继续生成回复。"
-            result = agent.runTurn(
-                userInput = continuationInput,
-                memories = userMemories,
-                systemMemories = systemMemories,
-                schedules = allSchedules,
-                skills = enabledSkills,
-                config = config,
-                enableWebSearch = false,
-                historyMessages = historyMessages,
-                webSearchResults = searchResults
+            val thinkingStep = addRunStep(
+                title = "Agent observes results",
+                detail = "remaining tools=${budget.maxToolCalls - budget.toolCalls}",
+                status = StepStatus.RUNNING
             )
+            val continuationInput = "system_calls 执行结果：\n$executedResults\n\n请基于以上结果继续生成回复。"
+            val remainingAfterExecution = budget.maxToolCalls - budget.toolCalls
+            val continuationWithBudget = continuationInput + if (remainingAfterExecution > 0) {
+                "\n\nTool budget: remaining=$remainingAfterExecution. You may continue calling get_current_time, web_search, and browse_url if useful. Decide freely whether more searching or browsing is needed based on the task, uncertainty, source quality, and user intent. Prefer primary or authoritative sources when they matter, and use multiple independent pages when helpful. If a search result only shows a breadcrumb URL such as https://www.boc.cn › fimarkets, you may convert it to https://www.boc.cn/fimarkets and browse it. Do not repeat the same query or URL unless there is a clear reason. Return final reply when the answer is sufficiently supported or the user likely wants a quick answer."
+            } else {
+                "\n\nTool budget: remaining=0. Do not call more tools in this turn. Return the best final reply from the available results."
+            }
+            result = try {
+                val turn = agent.runTurnWithUsage(
+                    userInput = continuationWithBudget,
+                    memories = userMemories,
+                    systemMemories = systemMemories,
+                    schedules = allSchedules,
+                    skills = enabledSkills,
+                    config = config,
+                    enableWebSearch = true,
+                    historyMessages = historyMessages,
+                    webSearchResults = searchResults
+                )
+                addApiUsage(turn.usage)
+                turn.result
+            } catch (e: CancellationException) {
+                updateRunStep(thinkingStep, StepStatus.FAILED, "cancelled")
+                chatDao.updateContent(streamingMsgId, renderRunProgress("已中止。"))
+                throw e
+            }
+            updateRunStep(thinkingStep, StepStatus.DONE, "reply=${result.reply.length} chars, next tools=${result.systemCalls.size}")
             AppLogger.i(TAG, "pass $pass result: replyLen=${result.reply.length}, systemCalls=${result.systemCalls.size}")
+        }
+        if (toolLoopPausedReason == null && result.systemCalls.isNotEmpty()) {
+            toolLoopPausedReason = "pass limit reached"
+            addRunStep("Pause tool loop", "$toolLoopPausedReason; send 继续 to run more", StepStatus.SKIPPED)
         }
 
         val localSkillHints = runLocalSkills(userInput, enabledSkills)
         var finalReply = if (localSkillHints.isBlank()) result.reply else "${result.reply}\n\n$localSkillHints"
+        if (toolLoopPausedReason != null && result.systemCalls.isNotEmpty()) {
+            finalReply += "\n\n---\n执行已暂停：$toolLoopPausedReason。可以发送“继续”让我接着执行后续步骤。"
+        }
         // Append search status footer if search was attempted
         if (searchFailed) {
             finalReply += "\n\n---\n⚠️ 联网搜索失败，以上回复基于已有知识，可能不是最新信息。"
         } else if (searchSucceeded) {
-            finalReply += "\n\n---\n🔍 [展开搜索结果](search://result)"
+            finalReply += "\n\n---\n${resultExpandLinkText(searchResults)}"
         }
-        chatDao.updateContent(streamingMsgId, finalReply)
+        chatDao.updateContent(streamingMsgId, renderRunProgress(finalReply))
+        totalApiUsage?.let { usage ->
+            chatDao.updateTokenUsage(
+                streamingMsgId,
+                input = usage.inputTokens,
+                output = usage.outputTokens,
+                total = usage.totalTokens,
+                source = "api"
+            )
+        }
 
         // Persist search results so the UI can display them
         if (!searchResults.isNullOrBlank()) {
@@ -615,6 +811,17 @@ class ActMeRepository(
             候选 start_at(ms)：$startRaw
             候选 reminder_at(ms)：$reminderRaw
         """.trimIndent()
+    }
+
+    private fun resultExpandLinkText(result: String?): String {
+        if (result.isNullOrBlank()) return "🔍 [展开搜索结果](search://result)"
+        val hasBrowse = result.contains("[BROWSE_RESULT]") || result.contains("[BROWSE_ERROR]")
+        val hasSearch = result.contains("【联网搜索结果")
+        return when {
+            hasBrowse && hasSearch -> "🌐 [展开联网资料](search://result)"
+            hasBrowse -> "📖 [展开网页阅读内容](search://result)"
+            else -> "🔍 [展开搜索结果](search://result)"
+        }
     }
 
     // ---- Provider management ----

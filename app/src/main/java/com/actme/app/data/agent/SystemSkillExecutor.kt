@@ -2,6 +2,8 @@ package com.actme.app.data.agent
 
 import com.actme.app.util.AppLogger
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.BufferedReader
@@ -69,6 +71,8 @@ object SystemSkillExecutor {
             for (c in cookies) {
                 AppLogger.i(TAG, "BING-COOKIE: " + c.name + "=" + c.value.take(40) + " domain=" + c.domain + " secure=" + c.secure)
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             AppLogger.w(TAG, "BING-WARMUP: FAIL " + e.message)
         }
@@ -96,23 +100,81 @@ object SystemSkillExecutor {
         SearchBackend("SearXNG",         8_000) { q -> searchSearXngPublic(q) },
     )
 
+    data class ToolStepEvent(
+        val type: Type,
+        val title: String,
+        val detail: String = ""
+    ) {
+        enum class Type { STARTED, FINISHED, FAILED }
+    }
+
     // ----------------------------------------------------------------
 
-    suspend fun execute(calls: List<SystemCall>): String {
+    suspend fun execute(
+        calls: List<SystemCall>,
+        onStep: suspend (ToolStepEvent) -> Unit = {}
+    ): String {
         val results = mutableListOf<String>()
         for (call in calls) {
-            val r = executeOne(call)
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            val r = executeOne(call, onStep)
             if (r != null) results.add(r)
         }
         return results.joinToString("\n---\n")
     }
 
-    private suspend fun executeOne(call: SystemCall): String? {
+    private suspend fun executeOne(
+        call: SystemCall,
+        onStep: suspend (ToolStepEvent) -> Unit
+    ): String? {
+        val title = toolTitle(call)
+        val detail = toolDetail(call)
+        onStep(ToolStepEvent(ToolStepEvent.Type.STARTED, title, detail))
+        return try {
+            val result = when (call.type) {
+                "get_current_time" -> executeGetCurrentTime()
+                "web_search" -> executeWebSearch(call.query)
+                "browse_url", "browser_url", "web_browse", "open_url" -> executeBrowseUrl(call.url.ifBlank { call.query })
+                else -> {
+                    AppLogger.w(TAG, "Unknown call: " + call.type)
+                    "[TOOL_ERROR] Unknown system call: ${call.type}"
+                }
+            }
+            onStep(ToolStepEvent(ToolStepEvent.Type.FINISHED, title, summarizeToolResult(result)))
+            result
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val message = e.message ?: e::class.java.simpleName
+            onStep(ToolStepEvent(ToolStepEvent.Type.FAILED, title, message))
+            "[TOOL_ERROR] $title failed: $message"
+        }
+    }
+
+    private fun toolTitle(call: SystemCall): String {
         return when (call.type) {
-            "get_current_time" -> executeGetCurrentTime()
-            "web_search" -> executeWebSearch(call.query)
-            "browse_url", "web_browse", "open_url" -> executeBrowseUrl(call.url.ifBlank { call.query })
-            else -> { AppLogger.w(TAG, "Unknown call: " + call.type); null }
+            "get_current_time" -> "获取当前时间"
+            "web_search" -> "联网搜索"
+            "browse_url", "browser_url", "web_browse", "open_url" -> "打开网页"
+            else -> "执行系统技能"
+        }
+    }
+
+    private fun toolDetail(call: SystemCall): String {
+        return when (call.type) {
+            "web_search" -> call.query
+            "browse_url", "browser_url", "web_browse", "open_url" -> call.url.ifBlank { call.query }
+            else -> call.type
+        }.take(240)
+    }
+
+    private fun summarizeToolResult(result: String): String {
+        return when {
+            result.contains("[BROWSE_RESULT]") -> "网页内容已读取，${result.length} 字符"
+            result.contains("[BROWSE_ERROR]") -> "网页读取失败"
+            result.contains("联网搜索") || result.contains("SEARCH") -> "搜索完成，${result.length} 字符"
+            result.contains("错误") || result.contains("[TOOL_ERROR]") -> "执行失败"
+            else -> "完成，${result.length} 字符"
         }
     }
 

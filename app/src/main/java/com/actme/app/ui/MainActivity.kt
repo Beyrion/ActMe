@@ -112,6 +112,7 @@ class MainActivity : ComponentActivity() {
                                     onSelectModel = chatViewModel::selectModel,
                                     asrLanguage = asrLanguage,
                                     isModelReady = isModelReady,
+                                    onStopSending = chatViewModel::stopSending,
                                     onNavigateToMenu = { showMenu = true }
                                 )
 

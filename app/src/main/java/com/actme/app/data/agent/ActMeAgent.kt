@@ -6,8 +6,10 @@ import com.actme.app.data.local.MemoryItemEntity
 import com.actme.app.data.local.ScheduleEntity
 import com.actme.app.data.local.SkillEntity
 import com.actme.app.data.remote.MessagePayload
+import com.actme.app.data.remote.LlmStreamChunk
 import com.actme.app.data.remote.OpenAiResponsesClient
 import com.actme.app.data.remote.ProviderConfig
+import com.actme.app.data.remote.TokenUsage
 import com.actme.app.util.AppLogger
 import java.time.LocalDateTime
 import java.time.ZoneId
@@ -31,6 +33,11 @@ data class AgentResult(
     @SerialName("schedule_updates") val scheduleUpdates: List<ScheduleUpdate> = emptyList(),
     @SerialName("skill_updates") val skillUpdates: List<SkillUpdate> = emptyList(),
     @SerialName("system_calls") val systemCalls: List<SystemCall> = emptyList()
+)
+
+data class AgentTurnResult(
+    val result: AgentResult,
+    val usage: TokenUsage? = null
 )
 
 @Serializable
@@ -96,12 +103,40 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
         historyMessages: List<ChatMessageEntity> = emptyList(),
         webSearchResults: String? = null
     ): AgentResult {
-        val raw = openAiClient.run(
+        return runTurnWithUsage(
+            userInput = userInput,
+            memories = memories,
+            systemMemories = systemMemories,
+            schedules = schedules,
+            skills = skills,
+            config = config,
+            enableWebSearch = enableWebSearch,
+            imageBase64 = imageBase64,
+            imageMimeType = imageMimeType,
+            historyMessages = historyMessages,
+            webSearchResults = webSearchResults
+        ).result
+    }
+
+    suspend fun runTurnWithUsage(
+        userInput: String,
+        memories: List<MemoryItemEntity>,
+        systemMemories: List<MemoryItemEntity>,
+        schedules: List<ScheduleEntity>,
+        skills: List<SkillEntity>,
+        config: ProviderConfig,
+        enableWebSearch: Boolean = false,
+        imageBase64: String? = null,
+        imageMimeType: String? = null,
+        historyMessages: List<ChatMessageEntity> = emptyList(),
+        webSearchResults: String? = null
+    ): AgentTurnResult {
+        val llmResult = openAiClient.runWithUsage(
             buildMessages(userInput, memories, systemMemories, schedules, skills, enableWebSearch, imageBase64, imageMimeType, historyMessages, webSearchResults),
             config = config,
             enableWebSearch = enableWebSearch
         )
-        return parseRaw(raw)
+        return AgentTurnResult(parseRaw(llmResult.text), llmResult.usage)
     }
 
     fun runTurnStreaming(
@@ -124,16 +159,36 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
         )
     }
 
+    fun runTurnStreamingWithUsage(
+        userInput: String,
+        memories: List<MemoryItemEntity>,
+        systemMemories: List<MemoryItemEntity>,
+        schedules: List<ScheduleEntity>,
+        skills: List<SkillEntity>,
+        config: ProviderConfig,
+        enableWebSearch: Boolean = false,
+        imageBase64: String? = null,
+        imageMimeType: String? = null,
+        historyMessages: List<ChatMessageEntity> = emptyList(),
+        webSearchResults: String? = null
+    ): Flow<LlmStreamChunk> {
+        return openAiClient.runStreamingWithUsage(
+            buildMessages(userInput, memories, systemMemories, schedules, skills, enableWebSearch, imageBase64, imageMimeType, historyMessages, webSearchResults),
+            config = config,
+            enableWebSearch = enableWebSearch
+        )
+    }
+
     fun parseRaw(raw: String): AgentResult {
         val jsonPart = extractJson(raw)
         return runCatching { json.decodeFromString<AgentResult>(jsonPart) }
             .onFailure { AppLogger.w(TAG, "parseRaw strict failed: ${it.message}; raw=${raw.take(300)}") }
             .getOrNull()
-            ?: parseLooseSystemCalls(raw, jsonPart)
-            ?: AgentResult(reply = raw)
+            ?: parseLooseAgentResult(raw, jsonPart)
+            ?: AgentResult(reply = raw.trim())
     }
 
-    private fun parseLooseSystemCalls(raw: String, jsonPart: String): AgentResult? {
+    private fun parseLooseAgentResult(raw: String, jsonPart: String): AgentResult? {
         val candidates = buildList {
             add(jsonPart)
             add(raw.trim())
@@ -143,7 +198,7 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
         for (candidate in candidates) {
             val parsed = parseLooseJsonCandidate(candidate)
             if (parsed != null) {
-                AppLogger.i(TAG, "parseRaw loose system_calls=${parsed.systemCalls.size}")
+                AppLogger.i(TAG, "parseRaw loose replyLen=${parsed.reply.length}, system_calls=${parsed.systemCalls.size}")
                 return parsed
             }
         }
@@ -151,11 +206,14 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
     }
 
     private fun parseLooseJsonCandidate(text: String): AgentResult? {
-        val element = runCatching { json.parseToJsonElement(extractJson(text)) }.getOrNull() ?: return null
-        val obj = element as? JsonObject ?: return null
-        val calls = extractSystemCalls(obj)
-        if (calls.isEmpty()) return null
-        val reply = obj["reply"]?.jsonPrimitive?.contentOrNull.orEmpty()
+        val jsonText = extractJson(text)
+        val element = runCatching { json.parseToJsonElement(jsonText) }.getOrNull()
+        val obj = element as? JsonObject
+        val calls = obj?.let { extractSystemCalls(it) } ?: extractLooseSystemCalls(jsonText)
+        val reply = obj?.get("reply")?.jsonPrimitive?.contentOrNull
+            ?: extractLooseStringField(jsonText, "reply")
+            ?: ""
+        if (calls.isEmpty() && reply.isBlank()) return null
         return AgentResult(reply = reply, systemCalls = calls)
     }
 
@@ -209,6 +267,90 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
         return match?.groupValues?.getOrNull(1)?.trim()
     }
 
+    private fun extractLooseStringField(text: String, field: String): String? {
+        val marker = "\"$field\""
+        val markerIdx = text.indexOf(marker)
+        if (markerIdx < 0) return null
+        val colonIdx = text.indexOf(':', markerIdx + marker.length)
+        if (colonIdx < 0) return null
+        var pos = colonIdx + 1
+        while (pos < text.length && text[pos].isWhitespace()) pos++
+        if (pos >= text.length || text[pos] != '"') return null
+
+        val result = StringBuilder()
+        var i = pos + 1
+        while (i < text.length) {
+            val c = text[i]
+            if (c == '\\') {
+                if (i + 1 >= text.length) break
+                result.append(unescapeJsonChar(text[i + 1]))
+                i += 2
+            } else if (c == '"' && isLikelyJsonStringTerminator(text, i)) {
+                return result.toString()
+            } else {
+                result.append(c)
+                i++
+            }
+        }
+        return result.toString().ifBlank { null }
+    }
+
+    private fun extractLooseSystemCalls(text: String): List<SystemCall> {
+        val callsIdx = listOf("system_calls", "system_call", "tool_calls", "tool_call", "calls")
+            .map { text.indexOf("\"$it\"") }
+            .filter { it >= 0 }
+            .minOrNull() ?: return emptyList()
+        val tail = text.substring(callsIdx)
+        return Regex("\\{[^{}]*(?:\"type\"|\"name\"|\"tool\"|\"function\")\\s*:\\s*\"([^\"]+)\"[^{}]*\\}")
+            .findAll(tail)
+            .mapNotNull { match ->
+                val block = match.value
+                val type = Regex("\"(?:type|name|tool|function)\"\\s*:\\s*\"([^\"]+)\"")
+                    .find(block)?.groupValues?.getOrNull(1) ?: return@mapNotNull null
+                val query = Regex("\"query\"\\s*:\\s*\"([^\"]*)\"")
+                    .find(block)?.groupValues?.getOrNull(1).orEmpty()
+                val url = Regex("\"url\"\\s*:\\s*\"([^\"]*)\"")
+                    .find(block)?.groupValues?.getOrNull(1).orEmpty()
+                SystemCall(type = type, query = query, url = url)
+            }
+            .toList()
+    }
+
+    private fun unescapeJsonChar(ch: Char): Char {
+        return when (ch) {
+            '"' -> '"'
+            'n' -> '\n'
+            't' -> '\t'
+            'r' -> '\r'
+            '\\' -> '\\'
+            'b' -> '\b'
+            else -> ch
+        }
+    }
+
+    private fun isLikelyJsonStringTerminator(text: String, quoteIndex: Int): Boolean {
+        var i = quoteIndex + 1
+        while (i < text.length && text[i].isWhitespace()) i++
+        if (i >= text.length) return true
+        if (text[i] == '}') return true
+        if (text[i] != ',') return false
+        i++
+        while (i < text.length && text[i].isWhitespace()) i++
+        if (i >= text.length) return true
+        if (text[i] != '"') return false
+        val nextKeys = listOf(
+            "\"memory_updates\"",
+            "\"schedule_updates\"",
+            "\"skill_updates\"",
+            "\"system_calls\"",
+            "\"system_call\"",
+            "\"tool_calls\"",
+            "\"tool_call\"",
+            "\"calls\""
+        )
+        return nextKeys.any { text.startsWith(it, i) }
+    }
+
     private fun buildMessages(
         userInput: String,
         memories: List<MemoryItemEntity>,
@@ -227,13 +369,25 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
         historyMessages.forEach { entity ->
             messages += MessagePayload(
                 role = entity.role,
-                content = entity.content,
+                content = sanitizeHistoryContent(entity),
                 imageBase64 = entity.imageBase64,
                 imageMimeType = entity.imageMimeType
             )
         }
         messages += MessagePayload("user", userInput, imageBase64 = imageBase64, imageMimeType = imageMimeType)
         return messages
+    }
+
+    private fun sanitizeHistoryContent(entity: ChatMessageEntity): String {
+        if (entity.role != "assistant") return entity.content
+        val withoutProgress = if (entity.content.contains("执行过程：") && entity.content.contains("\n---\n")) {
+            entity.content.substringAfterLast("\n---\n")
+        } else {
+            entity.content
+        }
+        return withoutProgress
+            .replace(Regex("\\n?---\\n[🔍📖🌐] \\[展开(?:搜索结果|网页阅读内容|联网资料)]\\(search://result\\)"), "")
+            .trim()
     }
 
     suspend fun generateReminderInsight(title: String, detail: String, config: ProviderConfig): String {
@@ -336,7 +490,13 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
         }
 
         val browseUrlHint = if (enableWebSearch) {
-            "已有明确网页 URL 需要打开读取时，在 system_calls 中添加 {\"type\":\"browse_url\",\"url\":\"https://example.com\"}。该技能会调用内置浏览器并返回渲染后的页面文本。"
+            "已有明确网页 URL 需要打开读取时，可在 system_calls 中添加 {\"type\":\"browse_url\",\"url\":\"https://example.com\"}。该技能会调用内置浏览器并返回渲染后的页面文本。你可以根据任务复杂度和信息充分性，自主决定是否继续打开搜索结果中的相关网页。通常优先浏览官网、一手来源、公告、产品说明、新闻原文、文档、价格页等权威来源；如果搜索摘要已经足够回答简单问题，也可以直接回答。若搜索结果只给出类似 \"https://www.boc.cn › fimarkets\" 的面包屑 URL，可还原为 \"https://www.boc.cn/fimarkets\" 后浏览。"
+        } else {
+            ""
+        }
+
+        val multiStepHint = if (enableWebSearch) {
+            "Multi-step workflow: you may call system_calls, observe the returned results, then call more system_calls in the next pass. You have discretion to choose the number and order of tool calls. Use web_search to discover sources, browse_url to inspect specific pages, and get_current_time for exact time. For broad, uncertain, recent, or source-sensitive questions, consider browsing multiple non-duplicate pages to confirm information. For simple questions, direct answers or one search may be enough. Do not repeat the same query or URL unless there is a clear reason. Stop calling tools when the answer is sufficiently supported, the user likely wants a quick answer, or the tool budget is nearly exhausted."
         } else {
             ""
         }
@@ -353,6 +513,7 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
             若用户提出可复用策略，可以写入 skill_updates。
             $webSearchHint
             $browseUrlHint
+            $multiStepHint
             【关于本 App】
             $systemMemoryText
 
@@ -360,7 +521,8 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
             你拥有以下系统级技能，通过 system_calls 字段调用：
             1. get_current_time — 获取当前精确时间（含时区、星期）
             2. web_search — 联网搜索最新信息，需要提供 query 参数
-            示例：{"system_calls":[{"type":"get_current_time"},{"type":"web_search","query":"2026年最新..."}]}
+            3. browse_url — 使用内置浏览器打开网页并读取渲染后的文本，需要提供 url 参数
+            示例：{"system_calls":[{"type":"web_search","query":"2026年最新..."},{"type":"browse_url","url":"https://example.com"}]}
             当 system_calls 非空时，reply 可留空；系统执行后会返回结果让你继续生成最终回复。
             【时间信息】
             $currentTimeInfo
@@ -465,9 +627,17 @@ class ReplyExtractor {
                     break
                 }
             } else if (c == '"') {
-                state = 2
-                scanPos = i + 1
-                break
+                val terminatorState = replyTerminatorState(text, i)
+                if (terminatorState == 1) {
+                    state = 2
+                    scanPos = i + 1
+                    break
+                } else if (terminatorState == -1) {
+                    break
+                } else {
+                    result.append(c)
+                    i++
+                }
             } else {
                 result.append(c)
                 i++
@@ -479,4 +649,31 @@ class ReplyExtractor {
     }
 
     fun getRaw(): String = raw.toString()
+
+    private fun replyTerminatorState(text: String, quoteIndex: Int): Int {
+        var i = quoteIndex + 1
+        while (i < text.length && text[i].isWhitespace()) i++
+        if (i >= text.length) return -1
+        if (text[i] == '}') return 1
+        if (text[i] != ',') return 0
+        i++
+        while (i < text.length && text[i].isWhitespace()) i++
+        if (i >= text.length) return -1
+        if (text[i] != '"') return 0
+        val nextKeys = listOf(
+            "\"memory_updates\"",
+            "\"schedule_updates\"",
+            "\"skill_updates\"",
+            "\"system_calls\"",
+            "\"system_call\"",
+            "\"tool_calls\"",
+            "\"tool_call\"",
+            "\"calls\""
+        )
+        val couldBeKey = nextKeys.any { key ->
+            key.startsWith(text.substring(i).take(key.length)) || text.startsWith(key, i)
+        }
+        if (!couldBeKey) return 0
+        return if (nextKeys.any { text.startsWith(it, i) }) 1 else -1
+    }
 }
