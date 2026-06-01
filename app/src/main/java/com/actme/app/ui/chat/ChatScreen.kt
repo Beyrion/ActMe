@@ -133,10 +133,7 @@ fun ChatScreen(
             selectedImageBase64 = null
             selectedImageMimeType = null
             selectedImageBytes = null
-            scope.launch {
-                kotlinx.coroutines.delay(100)
-                focusRequester.requestFocus()
-            }
+            focusManager.clearFocus()
         }
     }
 
