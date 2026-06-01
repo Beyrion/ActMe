@@ -142,6 +142,8 @@ fun ChatScreen(
     var showModelMenu by remember { mutableStateOf(false) }
     var importBusy by remember { mutableStateOf(false) }
     var scheduleCandidate by remember { mutableStateOf<List<ScheduleSubAgentPlan>>(emptyList()) }
+    var scheduleOcrText by remember { mutableStateOf("") }
+    var showScheduleOcrText by remember { mutableStateOf(false) }
     var todoCandidate by remember { mutableStateOf<TodoImportPlan?>(null) }
 
     fun doSend() {
@@ -322,6 +324,7 @@ fun ChatScreen(
                         importBusy = false
                         result.onSuccess { refined ->
                             scheduleCandidate = refined
+                            scheduleOcrText = ocr.sourceText
                         }.onFailure { error ->
                             Toast.makeText(
                                 context,
@@ -372,10 +375,39 @@ fun ChatScreen(
         }
     }
 
+    if (showScheduleOcrText && scheduleOcrText.isNotBlank()) {
+        AlertDialog(
+            onDismissRequest = { showScheduleOcrText = false },
+            title = { Text("本地 OCR 原文", fontWeight = FontWeight.Bold) },
+            text = {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    LazyColumn(modifier = Modifier.heightIn(max = 400.dp)) {
+                        item {
+                            SelectionContainer {
+                                Text(
+                                    text = scheduleOcrText,
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showScheduleOcrText = false }) {
+                    Text("关闭")
+                }
+            }
+        )
+    }
+
     if (scheduleCandidate.isNotEmpty()) {
         val schedules = scheduleCandidate.take(8)
         AlertDialog(
-            onDismissRequest = { scheduleCandidate = emptyList() },
+            onDismissRequest = {
+                scheduleCandidate = emptyList()
+                scheduleOcrText = ""
+            },
             title = { Text("确认导入日程（${schedules.size} 条）") },
             text = {
                 LazyColumn(modifier = Modifier.heightIn(max = 360.dp)) {
@@ -407,13 +439,24 @@ fun ChatScreen(
                         ).show()
                     }
                     scheduleCandidate = emptyList()
+                    scheduleOcrText = ""
                     selectedImageBase64 = null
                     selectedImageMimeType = null
                     selectedImageBytes = null
                 }) { Text("导入") }
             },
             dismissButton = {
-                TextButton(onClick = { scheduleCandidate = emptyList() }) { Text("取消") }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (scheduleOcrText.isNotBlank()) {
+                        TextButton(onClick = { showScheduleOcrText = true }) {
+                            Text("查看 OCR 原文")
+                        }
+                    }
+                    TextButton(onClick = {
+                        scheduleCandidate = emptyList()
+                        scheduleOcrText = ""
+                    }) { Text("取消") }
+                }
             }
         )
     }
