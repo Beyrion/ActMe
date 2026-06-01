@@ -104,8 +104,8 @@ class MainActivity : ComponentActivity() {
                                 ChatScreen(
                                     messages = messages,
                                     onSend = { text, imgBase64, imgMime -> chatViewModel.sendMessage(text, imgBase64, imgMime) },
-                                    onImportSchedule = chatViewModel::importImageSchedule,
                                     onImportSchedules = chatViewModel::importImageSchedules,
+                                    onRefineImageSchedules = chatViewModel::refineImageSchedules,
                                     onImportTodos = chatViewModel::importImageTodos,
                                     sendingConversationId = sendingConversationId,
                                     isRecording = isRecording,

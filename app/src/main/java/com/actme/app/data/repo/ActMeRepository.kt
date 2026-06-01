@@ -622,6 +622,31 @@ class ActMeRepository(
         }
     }
 
+    suspend fun refineImageSchedulesFromLocal(
+        sourceText: String,
+        localCandidates: List<ScheduleSubAgentPlan>
+    ): Result<List<ScheduleSubAgentPlan>> = withContext(Dispatchers.IO) {
+        runCatching {
+            require(localCandidates.isNotEmpty()) { "本地模型没有提取出候选日程" }
+            val zone = ZoneId.systemDefault()
+            val zoneId = zone.id
+            val nowLocalIso = Instant.ofEpochMilli(System.currentTimeMillis()).atZone(zone).toString()
+            val batch = agent.refineImageScheduleCandidates(
+                sourceText = sourceText,
+                localCandidates = localCandidates,
+                timezoneId = zoneId,
+                nowLocalIso = nowLocalIso,
+                config = buildProviderConfig()
+            ) ?: error("云端未返回有效日程结果")
+            val schedules = batch.schedules.filter {
+                it.title.isNotBlank() && !it.reminderTime.isNullOrBlank()
+            }
+            require(schedules.isNotEmpty()) { "云端未生成可导入的日程" }
+            AppLogger.i(TAG, "image schedule refined by cloud: count=${schedules.size}")
+            schedules
+        }
+    }
+
     suspend fun addScheduleFromStructuredPlan(plan: ScheduleSubAgentPlan): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
             require(

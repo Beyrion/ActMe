@@ -115,8 +115,8 @@ import java.io.File
 fun ChatScreen(
     messages: List<ChatMessageEntity>,
     onSend: (String, String?, String?) -> Unit,
-    onImportSchedule: (ScheduleSubAgentPlan, (Result<Unit>) -> Unit) -> Unit,
     onImportSchedules: (List<ScheduleSubAgentPlan>, (Result<Int>) -> Unit) -> Unit,
+    onRefineImageSchedules: (String, List<ScheduleSubAgentPlan>, (Result<List<ScheduleSubAgentPlan>>) -> Unit) -> Unit,
     onImportTodos: (List<String>, (Result<Int>) -> Unit) -> Unit,
     sendingConversationId: Long? = null,
     isRecording: Boolean = false,
@@ -322,14 +322,30 @@ fun ChatScreen(
                 if (schedules.isEmpty()) {
                     Toast.makeText(context, "本地视觉模型未识别出足够的日程信息", Toast.LENGTH_SHORT).show()
                 } else {
-                    scheduleCandidate = plan.copy(schedules = schedules)
+                    onRefineImageSchedules(plan.sourceText, schedules) { result ->
+                        importBusy = false
+                        result.onSuccess { refined ->
+                            scheduleCandidate = ScheduleImportPlan(
+                                schedules = refined,
+                                sourceText = plan.sourceText
+                            )
+                        }.onFailure { error ->
+                            Toast.makeText(
+                                context,
+                                "云端整理日程失败: ${error.message}",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                    }
                 }
             } catch (e: Exception) {
                 AppLogger.e("ChatScreen", "local image schedule import failed", e)
                 Toast.makeText(context, "图片转日程失败: ${e.message}", Toast.LENGTH_LONG).show()
             } finally {
                 imageFile.delete()
-                importBusy = false
+                if (scheduleCandidate == null) {
+                    importBusy = false
+                }
             }
         }
     }

@@ -84,6 +84,11 @@ data class ScheduleSubAgentPlan(
     @SerialName("monthly_day") val monthlyDay: Int? = null
 )
 
+@Serializable
+data class ScheduleBatchPlan(
+    val schedules: List<ScheduleSubAgentPlan> = emptyList()
+)
+
 class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
     private val json = Json {
         ignoreUnknownKeys = true
@@ -451,6 +456,63 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
         val jsonPart = extractJson(raw)
         val parsed = runCatching { json.decodeFromString<ScheduleSubAgentPlan>(jsonPart) }.getOrNull()
         AppLogger.i(TAG, "schedule sub-agent parsed=${parsed != null}")
+        return parsed
+    }
+
+    suspend fun refineImageScheduleCandidates(
+        sourceText: String,
+        localCandidates: List<ScheduleSubAgentPlan>,
+        timezoneId: String,
+        nowLocalIso: String,
+        config: ProviderConfig
+    ): ScheduleBatchPlan? {
+        val candidatesJson = runCatching { json.encodeToString(localCandidates) }.getOrDefault("[]")
+        val prompt = """
+            你是 ActMe 的云端日程整理助手。你的任务不是看图片，而是基于“端侧图片模型提取出的原文摘要 + 粗候选日程”生成最终日程列表。
+            当前时区：$timezoneId
+            当前本地时间：$nowLocalIso
+
+            仅输出 JSON，格式：
+            {
+              "schedules":[
+                {
+                  "title":"日程标题",
+                  "detail":"补充说明",
+                  "repeat_type":"NONE|DAILY|WEEKLY|MONTHLY",
+                  "one_time_date":"yyyy-MM-dd",
+                  "reminder_time":"HH:mm",
+                  "weekly_days":[1,3,5],
+                  "monthly_day":15
+                }
+              ]
+            }
+
+            规则：
+            - 你可以调整端侧候选的标题、重复规则、日期、时间，并决定最终保留几条日程。
+            - 同一图片中多个事项要分别输出为多条 schedules。
+            - 没有明确 reminder_time 的事项不要输出。
+            - 如果端侧候选明显重复或冲突，你应合并、去重或修正。
+            - 不要输出无法支撑的猜测性事项。
+            - 最多输出 8 条。
+
+            端侧提取的原文摘要：
+            $sourceText
+
+            端侧粗候选日程：
+            $candidatesJson
+        """.trimIndent()
+
+        val raw = openAiClient.run(
+            listOf(
+                MessagePayload("system", "你是严谨的中文日程结构化助手。"),
+                MessagePayload("user", prompt)
+            ),
+            config = config
+        )
+        val parsed = runCatching {
+            json.decodeFromString<ScheduleBatchPlan>(extractJson(raw))
+        }.getOrNull()
+        AppLogger.i(TAG, "image schedule refine parsed=${parsed != null}, count=${parsed?.schedules?.size ?: 0}")
         return parsed
     }
 
