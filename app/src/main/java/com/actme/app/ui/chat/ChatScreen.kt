@@ -280,13 +280,16 @@ fun ChatScreen(
                 options.inJustDecodeBounds = false
                 val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
                 if (bitmap != null) {
-                    val outputStream = ByteArrayOutputStream()
-                    val format = if (mimeType.contains("png")) android.graphics.Bitmap.CompressFormat.PNG else android.graphics.Bitmap.CompressFormat.JPEG
-                    bitmap.compress(format, 85, outputStream)
-                    val compressed = outputStream.toByteArray()
-                    selectedImageBase64 = Base64.encodeToString(compressed, Base64.NO_WRAP)
-                    selectedImageMimeType = mimeType
-                    selectedImageBytes = compressed
+                    val normalizedBytes = if (mimeType.contains("png", ignoreCase = true)) {
+                        bytes
+                    } else {
+                        val outputStream = ByteArrayOutputStream()
+                        bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 98, outputStream)
+                        outputStream.toByteArray()
+                    }
+                    selectedImageBase64 = Base64.encodeToString(normalizedBytes, Base64.NO_WRAP)
+                    selectedImageMimeType = if (mimeType.contains("png", ignoreCase = true)) "image/png" else "image/jpeg"
+                    selectedImageBytes = normalizedBytes
                 }
             }
         }

@@ -45,7 +45,7 @@ class LocalImageImportManager(
             require(dir.exists()) { "本地视觉模型目录不存在：$modelDir" }
             require(File(dir, "config.json").exists()) { "未找到视觉模型 config.json：$modelDir" }
             session.init(modelDir, buildMergedConfig(dir))
-            session.setMaxNewTokens(512)
+            session.setMaxNewTokens(2048)
             initialized = true
             AppLogger.i(TAG, "local vision model initialized: $modelDir")
             true
@@ -59,17 +59,19 @@ class LocalImageImportManager(
         ensureReady()
         session.reset()
         val prompt = """
-            请读取这张图片中的文字内容，执行 OCR 与轻量整理。
+            请对这张图片执行严格 OCR。
             仅输出 JSON，不要解释，不要 Markdown。
             不要直接构建日程，不要输出重复规则判断，只提取图片里的文字信息。
             输出格式：
             {
-              "source_text":"尽可能完整、按阅读顺序整理后的图片文字。保留日期、时间、地点、课程名、事项名等关键信息。"
+              "source_text":"尽可能完整、逐字保留的图片文字。"
             }
             规则：
-            - source_text 要尽量保留原始信息，不要过度总结。
+            - 尽量完整逐字转写，不要总结，不要改写，不要补充解释。
+            - 保留日期、时间、地点、课程名、事项名、数字、换行顺序。
+            - 如果图片中存在多行课程表、海报、截图、表格文本，尽量全部保留。
             - 无法识别的部分可以省略，但不要编造。
-            - 如果图片中存在多行课程表/活动安排，尽量全部保留。
+            - 如果有重复内容，按图片中出现的顺序保留。
 
             <img>${imageFile.absolutePath}</img>
         """.trimIndent()
