@@ -24,7 +24,7 @@ object SystemSkillExecutor {
     private const val TAG = "SystemSkillExecutor"
     private const val MAX_SEARCH_RESULTS = 5
 
-    private val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    private val USER_AGENT = "Mozilla/5.0"
 
     private val cookieManager: CookieManager by lazy {
         CookieManager().apply { setCookiePolicy(CookiePolicy.ACCEPT_ALL) }
@@ -79,10 +79,16 @@ object SystemSkillExecutor {
     private data class SearchBackend(
         val name: String,
         val timeoutMs: Long,
-        val execute: suspend (String) -> List<Pair<String, String>>?
+        val execute: suspend (String) -> SearchResponse?
+    )
+
+    private data class SearchResponse(
+        val requestUrl: String,
+        val results: List<Pair<String, String>>
     )
 
     private val SEARCH_BACKENDS = listOf(
+        SearchBackend("Bing Gecko",    12_000) { q -> searchBingGecko(q) },
         SearchBackend("Bing",           8_000) { q -> searchBingHtml(q) },
         SearchBackend("DuckDuckGo API",  5_000) { q -> searchDuckDuckGoApi(q) },
         SearchBackend("DuckDuckGo HTML", 8_000) { q -> searchDuckDuckGoHtml(q) },
@@ -105,6 +111,7 @@ object SystemSkillExecutor {
         return when (call.type) {
             "get_current_time" -> executeGetCurrentTime()
             "web_search" -> executeWebSearch(call.query)
+            "browse_url", "web_browse", "open_url" -> executeBrowseUrl(call.url.ifBlank { call.query })
             else -> { AppLogger.w(TAG, "Unknown call: " + call.type); null }
         }
     }
@@ -119,6 +126,95 @@ object SystemSkillExecutor {
         val ts = now.atZone(zone).toInstant().toEpochMilli()
         AppLogger.i(TAG, "TIME: " + f + " (" + dow + ")")
         return "【当前时间】\n日期时间: " + f + " (" + dow + ")\n时区: " + zone.id + "\nUnix毫秒时间戳: " + ts
+    }
+
+    // ---- browse_url ----
+
+    private suspend fun executeBrowseUrl(rawUrl: String): String = withContext(Dispatchers.IO) {
+        val url = normalizeHttpUrl(rawUrl)
+            ?: return@withContext "[BROWSE_ERROR] Invalid URL; only http/https pages are supported."
+
+        AppLogger.i(TAG, "BROWSE-URL: $url")
+        val renderedText = GeckoSearchEngine.search(url, timeoutMs = 15_000L)
+        if (!renderedText.isNullOrBlank()) {
+            "[BROWSE_RESULT]\n$renderedText"
+        } else {
+            AppLogger.w(TAG, "BROWSE-GECKO-EMPTY: fallback to HTTP text extraction")
+            val httpText = fetchUrlText(url)
+            if (httpText.isNullOrBlank()) {
+                "[BROWSE_ERROR] The built-in browser and HTTP fallback could not read page content."
+            } else {
+                "[BROWSE_RESULT]\n$httpText"
+            }
+        }
+    }
+
+    private fun normalizeHttpUrl(rawUrl: String): String? {
+        val trimmed = rawUrl.trim()
+        if (trimmed.isBlank()) return null
+
+        val withScheme = if (
+            trimmed.startsWith("http://", ignoreCase = true) ||
+            trimmed.startsWith("https://", ignoreCase = true)
+        ) {
+            trimmed
+        } else {
+            "https://$trimmed"
+        }
+
+        val parsed = runCatching { URL(withScheme) }.getOrNull() ?: return null
+        val protocol = parsed.protocol.lowercase(Locale.US)
+        if (protocol != "http" && protocol != "https") return null
+        if (parsed.host.isNullOrBlank()) return null
+        return parsed.toString()
+    }
+
+    private fun fetchUrlText(url: String): String? {
+        return try {
+            val parsed = URL(url)
+            val conn = httpGet(parsed)
+            val code = conn.responseCode
+            val type = conn.contentType.orEmpty()
+            AppLogger.i(TAG, "BROWSE-HTTP-RESP: HTTP $code type=$type")
+            val body = try {
+                readResponseBody(conn)
+            } finally {
+                conn.disconnect()
+            }
+            val text = htmlToReadableText(body)
+            AppLogger.i(TAG, "BROWSE-HTTP-DONE: chars=${text.length}")
+            if (text.isBlank()) null else buildString {
+                appendLine("Page title: ${extractHtmlTitle(body)}")
+                appendLine("Page text:")
+                append(text.take(16_000))
+            }
+        } catch (e: Exception) {
+            AppLogger.w(TAG, "BROWSE-HTTP-ERROR: ${e.message}")
+            null
+        }
+    }
+
+    private fun extractHtmlTitle(html: String): String {
+        val title = Regex("<title[^>]*>([\\s\\S]*?)</title>", RegexOption.IGNORE_CASE)
+            .find(html)
+            ?.groupValues
+            ?.getOrNull(1)
+        return stripAll(title)
+    }
+
+    private fun htmlToReadableText(html: String): String {
+        val body = Regex("<body[^>]*>([\\s\\S]*?)</body>", RegexOption.IGNORE_CASE)
+            .find(html)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?: html
+        val cleaned = body
+            .replace(Regex("<script[\\s\\S]*?</script>", RegexOption.IGNORE_CASE), " ")
+            .replace(Regex("<style[\\s\\S]*?</style>", RegexOption.IGNORE_CASE), " ")
+            .replace(Regex("<noscript[\\s\\S]*?</noscript>", RegexOption.IGNORE_CASE), " ")
+            .replace(Regex("<br\\s*/?>", RegexOption.IGNORE_CASE), "\n")
+            .replace(Regex("</(p|div|li|tr|h[1-6]|section|article|table)>", RegexOption.IGNORE_CASE), "\n")
+        return stripAll(cleaned)
     }
 
     // ---- web_search ----
@@ -142,15 +238,16 @@ object SystemSkillExecutor {
                 AppLogger.w(TAG, "SEARCH-RESULT[" + (i + 1) + "]: " + backend.name + " -> NULL (timeout/exception) after " + elapsed + "ms")
                 continue
             }
-            if (raw.isEmpty()) {
+            if (raw.results.isEmpty()) {
                 AppLogger.w(TAG, "SEARCH-RESULT[" + (i + 1) + "]: " + backend.name + " -> EMPTY after " + elapsed + "ms")
                 continue
             }
-            AppLogger.i(TAG, "SEARCH-RESULT[" + (i + 1) + "]: " + backend.name + " -> " + raw.size + " hits in " + elapsed + "ms")
-            for ((j, pair) in raw.withIndex()) {
+            AppLogger.i(TAG, "SEARCH-RESULT[" + (i + 1) + "]: " + backend.name + " -> " + raw.results.size + " hits in " + elapsed + "ms")
+            for ((j, pair) in raw.results.withIndex()) {
                 AppLogger.i(TAG, "SEARCH-HIT[" + j + "]: " + pair.first + " | " + pair.second.take(100))
             }
-            return@withContext formatResults(query, backend.name, raw)
+            AppLogger.i(TAG, "SEARCH-URL[" + (i + 1) + "]: " + raw.requestUrl)
+            return@withContext formatResults(query, backend.name, raw.results)
         }
 
         AppLogger.e(TAG, "==================== WEB_SEARCH FAILED (all backends) ====================")
@@ -169,23 +266,25 @@ object SystemSkillExecutor {
 
     // ==================== Bing ====================
 
-    private suspend fun searchBingHtml(query: String): List<Pair<String, String>> = withContext(Dispatchers.IO) {
+    private suspend fun searchBingGecko(query: String): SearchResponse? = withContext(Dispatchers.IO) {
+        val url = buildBingUrl(query)
+        val renderedText = GeckoSearchEngine.search(url.toString())
+        if (renderedText.isNullOrBlank()) null else SearchResponse(
+            url.toString(),
+            listOf("Bing 渲染页面文本（交由模型抽取）" to renderedText)
+        )
+    }
+
+    private suspend fun searchBingHtml(query: String): SearchResponse = withContext(Dispatchers.IO) {
         ensureCookieHandler()
         warmUpBing()
 
-        val q = URLEncoder.encode(query, "UTF-8")
-        // form=QBRE tells Bing this is a real user search (not an API call).
-        // Without it, Bing may return poor results for Chinese queries.
-        // pq= encodes the same query as "previous query" for session continuity.
-        val pq = URLEncoder.encode(query.take(50), "UTF-8")
-        val url = URL("https://www.bing.com/search?q=" + q +
-            "&form=QBRE&pq=" + pq + "&qs=n&sp=-1&lq=0")
+        val url = buildBingUrl(query)
         AppLogger.i(TAG, "BING-REQ: GET " + url.toString())
 
         val conn = (url.openConnection() as HttpURLConnection).apply {
             connectTimeout = 5_000; readTimeout = 5_000
-            setBrowserHeaders()
-            setRequestProperty("Referer", "https://cn.bing.com/")
+            setBingSearchHeaders()
         }
 
         val code = conn.responseCode
@@ -211,7 +310,17 @@ object SystemSkillExecutor {
 
         val results = parseBingHtml(html)
         AppLogger.i(TAG, "BING-PARSE: " + results.size + " results")
-        results
+        SearchResponse(url.toString(), results)
+    }
+
+    private fun buildBingUrl(query: String): URL {
+        val q = URLEncoder.encode(query, "UTF-8")
+        // form=QBRE tells Bing this is a real user search (not an API call).
+        // pq= encodes the same query as "previous query" for session continuity.
+        val pq = URLEncoder.encode(query.take(50), "UTF-8")
+        val region = if (shouldUseChinaRegion(query)) "&cc=cn" else ""
+        return URL("https://www.bing.com/search?q=" + q +
+            "&form=QBRE&pq=" + pq + "&qs=n&sp=-1&lq=0" + region)
     }
 
     private fun parseBingHtml(html: String): List<Pair<String, String>> {
@@ -258,9 +367,16 @@ object SystemSkillExecutor {
         return r
     }
 
+    private fun shouldUseChinaRegion(query: String): Boolean {
+        return query.contains("积存金") ||
+            query.contains("银行黄金") ||
+            query.contains("银行金价") ||
+            query.contains("贵金属")
+    }
+
     // ==================== Baidu ====================
 
-    private fun searchBaiduHtml(query: String): List<Pair<String, String>> {
+    private fun searchBaiduHtml(query: String): SearchResponse {
         val q = URLEncoder.encode(query, "UTF-8")
         val url = URL("https://www.baidu.com/s?wd=" + q + "&ie=utf-8&rn=10")
         val conn = (url.openConnection() as HttpURLConnection).apply {
@@ -270,7 +386,7 @@ object SystemSkillExecutor {
         }
         val html = BufferedReader(InputStreamReader(conn.inputStream, "UTF-8")).use { it.readText() }
         conn.disconnect()
-        return parseBaiduHtml(html)
+        return SearchResponse(url.toString(), parseBaiduHtml(html))
     }
 
     private fun parseBaiduHtml(html: String): List<Pair<String, String>> {
@@ -307,7 +423,7 @@ object SystemSkillExecutor {
 
     // ==================== DuckDuckGo API ====================
 
-    private fun searchDuckDuckGoApi(query: String): List<Pair<String, String>> {
+    private fun searchDuckDuckGoApi(query: String): SearchResponse {
         val q = URLEncoder.encode(query, "UTF-8")
         val url = URL("https://api.duckduckgo.com/?q=" + q + "&format=json&no_html=1&skip_disambig=1")
         val conn = httpGet(url)
@@ -327,19 +443,19 @@ object SystemSkillExecutor {
             val tx = extractJsonString(r, "Text")
             if (!tx.isNullOrBlank()) results.add("搜索结果" to tx)
         }
-        return results
+        return SearchResponse(url.toString(), results)
     }
 
     // ==================== DuckDuckGo HTML ====================
 
-    private fun searchDuckDuckGoHtml(query: String): List<Pair<String, String>> {
+    private fun searchDuckDuckGoHtml(query: String): SearchResponse {
         val q = URLEncoder.encode(query, "UTF-8")
         val url = URL("https://html.duckduckgo.com/html/?q=" + q)
         val conn = httpGet(url)
         conn.setRequestProperty("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
         val html = BufferedReader(InputStreamReader(conn.inputStream, "UTF-8")).use { it.readText() }
         conn.disconnect()
-        return parseDdHtml(html)
+        return SearchResponse(url.toString(), parseDdHtml(html))
     }
 
     private fun parseDdHtml(html: String): List<Pair<String, String>> {
@@ -370,26 +486,27 @@ object SystemSkillExecutor {
         "https://priv.au",
     )
 
-    private suspend fun searchSearXngPublic(query: String): List<Pair<String, String>> {
+    private suspend fun searchSearXngPublic(query: String): SearchResponse {
         val q = URLEncoder.encode(query, "UTF-8")
         for (inst in SEARXNG_INSTANCES) {
             val r = trySearXngInstance(inst, q)
-            if (r != null && r.isNotEmpty()) return r
+            if (r != null && r.results.isNotEmpty()) return r
         }
-        return emptyList()
+        return SearchResponse("SearXNG: " + SEARXNG_INSTANCES.joinToString(", ") { it + "/search?q=" + q + "&format=json&language=zh-CN" }, emptyList())
     }
 
-    private suspend fun trySearXngInstance(inst: String, q: String): List<Pair<String, String>>? {
+    private suspend fun trySearXngInstance(inst: String, q: String): SearchResponse? {
         return try {
             val url = URL(inst + "/search?q=" + q + "&format=json&language=zh-CN")
             val conn = httpGet(url)
             conn.setRequestProperty("Accept", "application/json")
             val json = BufferedReader(InputStreamReader(conn.inputStream, "UTF-8")).use { it.readText() }
             conn.disconnect()
-            extractJsonArray(json, "results").mapNotNull { r ->
+            val results = extractJsonArray(json, "results").mapNotNull { r ->
                 val t = extractJsonString(r, "title") ?: return@mapNotNull null
                 t to extractJsonString(r, "content").orEmpty()
             }.take(MAX_SEARCH_RESULTS)
+            SearchResponse(url.toString(), results)
         } catch (e: Exception) {
             AppLogger.w(TAG, "SEARXNG: " + inst + " " + e.message)
             null
@@ -556,6 +673,11 @@ object SystemSkillExecutor {
         setRequestProperty("Sec-Fetch-Site", "none")
         setRequestProperty("Sec-Fetch-User", "?1")
         setRequestProperty("Upgrade-Insecure-Requests", "1")
+    }
+
+    private fun HttpURLConnection.setBingSearchHeaders() {
+        setRequestProperty("User-Agent", USER_AGENT)
+        setRequestProperty("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
     }
 
     private fun httpGet(url: URL): HttpURLConnection {

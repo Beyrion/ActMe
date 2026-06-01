@@ -18,10 +18,15 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonPrimitive
 
 @Serializable
 data class AgentResult(
-    val reply: String,
+    val reply: String = "",
     @SerialName("memory_updates") val memoryUpdates: List<MemoryUpdate> = emptyList(),
     @SerialName("schedule_updates") val scheduleUpdates: List<ScheduleUpdate> = emptyList(),
     @SerialName("skill_updates") val skillUpdates: List<SkillUpdate> = emptyList(),
@@ -31,7 +36,8 @@ data class AgentResult(
 @Serializable
 data class SystemCall(
     val type: String,
-    val query: String = ""
+    val query: String = "",
+    val url: String = ""
 )
 
 @Serializable
@@ -120,8 +126,87 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
 
     fun parseRaw(raw: String): AgentResult {
         val jsonPart = extractJson(raw)
-        return runCatching { json.decodeFromString<AgentResult>(jsonPart) }.getOrNull()
+        return runCatching { json.decodeFromString<AgentResult>(jsonPart) }
+            .onFailure { AppLogger.w(TAG, "parseRaw strict failed: ${it.message}; raw=${raw.take(300)}") }
+            .getOrNull()
+            ?: parseLooseSystemCalls(raw, jsonPart)
             ?: AgentResult(reply = raw)
+    }
+
+    private fun parseLooseSystemCalls(raw: String, jsonPart: String): AgentResult? {
+        val candidates = buildList {
+            add(jsonPart)
+            add(raw.trim())
+            extractCodeFence(raw)?.let { add(it) }
+        }.distinct()
+
+        for (candidate in candidates) {
+            val parsed = parseLooseJsonCandidate(candidate)
+            if (parsed != null) {
+                AppLogger.i(TAG, "parseRaw loose system_calls=${parsed.systemCalls.size}")
+                return parsed
+            }
+        }
+        return null
+    }
+
+    private fun parseLooseJsonCandidate(text: String): AgentResult? {
+        val element = runCatching { json.parseToJsonElement(extractJson(text)) }.getOrNull() ?: return null
+        val obj = element as? JsonObject ?: return null
+        val calls = extractSystemCalls(obj)
+        if (calls.isEmpty()) return null
+        val reply = obj["reply"]?.jsonPrimitive?.contentOrNull.orEmpty()
+        return AgentResult(reply = reply, systemCalls = calls)
+    }
+
+    private fun extractSystemCalls(obj: JsonObject): List<SystemCall> {
+        val callsElement = obj["system_calls"]
+            ?: obj["system_call"]
+            ?: obj["tool_calls"]
+            ?: obj["tool_call"]
+            ?: obj["calls"]
+
+        val normalized = when (callsElement) {
+            is JsonArray -> callsElement
+            is JsonObject -> JsonArray(listOf(callsElement))
+            else -> return emptyList()
+        }
+
+        return normalized.mapNotNull { callElement ->
+            val callObj = callElement as? JsonObject ?: return@mapNotNull null
+            val functionObj = callObj["function"] as? JsonObject
+            val argumentsObj = callObj.argumentsObject()
+                ?: functionObj?.argumentsObject()
+            val type = callObj.stringValue("type")
+                ?: callObj.stringValue("name")
+                ?: callObj.stringValue("tool")
+                ?: callObj.stringValue("function")
+                ?: functionObj?.stringValue("name")
+                ?: return@mapNotNull null
+            val query = callObj.stringValue("query")
+                ?: argumentsObj?.stringValue("query")
+                ?: ""
+            val url = callObj.stringValue("url")
+                ?: argumentsObj?.stringValue("url")
+                ?: ""
+            SystemCall(type = type, query = query, url = url)
+        }
+    }
+
+    private fun JsonObject.stringValue(key: String): String? {
+        return (this[key] as? JsonPrimitive)?.contentOrNull
+    }
+
+    private fun JsonObject.argumentsObject(): JsonObject? {
+        val direct = this["arguments"] as? JsonObject
+        if (direct != null) return direct
+        val encoded = stringValue("arguments") ?: return null
+        return runCatching { json.parseToJsonElement(encoded) as? JsonObject }.getOrNull()
+    }
+
+    private fun extractCodeFence(raw: String): String? {
+        val match = Regex("```(?:json)?\\s*([\\s\\S]*?)```", RegexOption.IGNORE_CASE).find(raw)
+        return match?.groupValues?.getOrNull(1)?.trim()
     }
 
     private fun buildMessages(
@@ -250,6 +335,12 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
             "当前轮未开启联网查询，请仅基于已有信息回复。"
         }
 
+        val browseUrlHint = if (enableWebSearch) {
+            "已有明确网页 URL 需要打开读取时，在 system_calls 中添加 {\"type\":\"browse_url\",\"url\":\"https://example.com\"}。该技能会调用内置浏览器并返回渲染后的页面文本。"
+        } else {
+            ""
+        }
+
         val searchResultsSection = if (!webSearchResults.isNullOrBlank()) {
             "\n联网搜索结果：\n$webSearchResults\n"
         } else ""
@@ -261,6 +352,7 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
             你可以在每次对话中判断是否需要写入 memory_updates 或 schedule_updates。
             若用户提出可复用策略，可以写入 skill_updates。
             $webSearchHint
+            $browseUrlHint
             【关于本 App】
             $systemMemoryText
 

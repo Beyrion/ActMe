@@ -2,6 +2,7 @@ package com.actme.app.di
 
 import android.content.Context
 import com.actme.app.data.agent.ActMeAgent
+import com.actme.app.data.agent.GeckoSearchEngine
 import com.actme.app.data.local.ActMeDatabase
 import com.actme.app.data.remote.OpenAiResponsesClient
 import com.actme.app.data.remote.ProviderManager
@@ -10,6 +11,10 @@ import com.actme.app.notifications.ReminderScheduler
 
 class AppContainer(context: Context) {
     private val appContext = context.applicationContext
+
+    init {
+        GeckoSearchEngine.initialize(appContext)
+    }
 
     val database: ActMeDatabase = ActMeDatabase.getInstance(appContext)
     val providerManager = ProviderManager(appContext, database.providerDao())

@@ -174,7 +174,11 @@ class ActMeRepository(
             if (result.systemCalls.isEmpty()) break
 
             val hasWebSearch = result.systemCalls.any { it.type == "web_search" }
-            if (hasWebSearch) {
+            val hasBrowseUrl = result.systemCalls.any {
+                it.type == "browse_url" || it.type == "web_browse" || it.type == "open_url"
+            }
+            val hasNetworkCall = hasWebSearch || hasBrowseUrl
+            if (hasNetworkCall) {
                 chatDao.updateContent(streamingMsgId, displayBuilder.toString() + "\n\n🔍 正在联网搜索...")
             }
 
@@ -183,6 +187,13 @@ class ActMeRepository(
             searchResults = if (searchResults != null) "$searchResults\n$executedResults" else executedResults
 
             // Check if search actually returned useful results
+            if (hasBrowseUrl && executedResults.contains("[BROWSE_RESULT]")) {
+                searchSucceeded = true
+                chatDao.updateContent(streamingMsgId, displayBuilder.toString() + "\n\n✅ 已获取网页内容，正在整理...")
+            } else if (hasBrowseUrl && executedResults.contains("[BROWSE_ERROR]")) {
+                searchFailed = true
+                chatDao.updateContent(streamingMsgId, displayBuilder.toString() + "\n\n⚠️ 网页浏览失败，基于已有知识回复...")
+            }
             if (hasWebSearch) {
                 if (executedResults.contains("【联网搜索结果")) {
                     searchSucceeded = true

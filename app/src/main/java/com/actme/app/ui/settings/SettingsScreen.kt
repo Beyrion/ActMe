@@ -1,5 +1,6 @@
 package com.actme.app.ui.settings
 
+import android.content.Intent
 import android.content.pm.PackageManager
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -22,6 +23,7 @@ import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Info
 import com.actme.app.data.local.ProviderEntity
+import com.actme.app.ui.GeckoDebugActivity
 import androidx.compose.material.icons.outlined.Api
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
@@ -414,6 +416,19 @@ fun SettingsScreen(
                     Icon(Icons.Outlined.DeleteOutline, null, Modifier.size(24.dp))
                 },
                 modifier = Modifier.clickable { showClearDialog = true }
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+
+            ListItem(
+                headlineContent = { Text("内置浏览器") },
+                supportingContent = { Text("使用 GeckoView 打开网页") },
+                leadingContent = {
+                    Icon(Icons.Outlined.Info, null, Modifier.size(24.dp))
+                },
+                modifier = Modifier.clickable {
+                    context.startActivity(Intent(context, GeckoDebugActivity::class.java))
+                }
             )
         }
 

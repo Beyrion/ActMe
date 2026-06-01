@@ -130,6 +130,8 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
 
+    implementation("org.mozilla.geckoview:geckoview:114.0.20230608214645")
+
     implementation("com.mikepenz:multiplatform-markdown-renderer-m3:0.27.0")
 
     debugImplementation("androidx.compose.ui:ui-tooling")

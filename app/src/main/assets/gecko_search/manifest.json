@@ -1,0 +1,25 @@
+{
+  "manifest_version": 2,
+  "name": "ActMe Gecko Search",
+  "version": "1.1",
+  "description": "Extract search results from rendered search pages.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "gecko-search@actme.local"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": ["search.js"]
+    }
+  ],
+  "permissions": [
+    "nativeMessaging",
+    "nativeMessagingFromContent",
+    "geckoViewAddons"
+  ]
+}
