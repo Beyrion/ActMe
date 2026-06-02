@@ -192,6 +192,7 @@ class ChatViewModel(
     }
 
     fun createNewConversation() {
+        if (messages.value.isEmpty()) return
         viewModelScope.launch {
             val id = repository.createConversation()
             currentConversationIdMutable.value = id
