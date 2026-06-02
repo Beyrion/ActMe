@@ -1,19 +1,19 @@
 # ActMe Agent 设计说明
 
-本文档描述 ActMe Agent 的目标、输入输出协议、工具执行、多步工作流、联网搜索、网页浏览、JSON 解析兜底、token usage 统计和 UI 展示策略。
+本文档描述 ActMe Agent 的目标、输入输出协议、系统工具、多步执行、Python 沙箱、Excel 工作流、联网搜索、网页阅读、JSON 解析兜底、token usage 和 UI 展示策略。
 
 ## 目标
 
 ActMe Agent 是 App 内置的行动型中文 Agent。它不是单纯聊天机器人，而是连接以下能力的中枢：
 
-- 和用户自然语言对话。
+- 与用户自然语言对话。
 - 读取用户记忆、系统记忆、当前日程和启用的 Skills。
 - 判断是否需要写入记忆。
 - 判断是否需要创建日程。
 - 判断是否需要新增本地 Skill。
-- 按需调用系统工具，例如搜索、浏览网页、获取当前时间。
+- 按需调用系统工具，例如搜索、浏览网页、获取当前时间、运行 Python、读写 Excel。
 - 在一次回复中多轮执行工具，并把每一步展示给用户。
-- 在工具失败、JSON 不标准、网页无法读取等情况下尽量降级处理，而不是把内部结构暴露给用户。
+- 在工具失败、JSON 不标准、网页无法读取、Python 报错等情况下尽量降级处理，而不是把内部结构暴露给用户。
 
 ## 主要代码位置
 
@@ -22,10 +22,16 @@ app/src/main/java/com/actme/app/data/agent/ActMeAgent.kt
   构造系统提示、组装 LLM messages、解析 Agent JSON、流式抽取 reply。
 
 app/src/main/java/com/actme/app/data/agent/SystemSkillExecutor.kt
-  执行 system_calls，包括 get_current_time、web_search、browse_url。
+  执行 system_calls，包括 get_current_time、web_search、browse_url、python_exec。
 
 app/src/main/java/com/actme/app/data/agent/GeckoSearchEngine.kt
   使用 GeckoView + WebExtension 读取渲染后的页面文本。
+
+app/src/main/java/com/actme/app/data/agent/PythonSkillEngine.kt
+  初始化 Chaquopy Python runtime，调用 Python 沙箱。
+
+app/src/main/python/agent_python.py
+  Python 沙箱、Excel 读写、运行期脚本保存/编译/执行。
 
 app/src/main/java/com/actme/app/data/remote/OpenAiResponsesClient.kt
   OpenAI-compatible / Anthropic-compatible API 客户端，支持 streaming 和 token usage。
@@ -34,7 +40,7 @@ app/src/main/java/com/actme/app/data/repo/ActMeRepository.kt
   对话主流程、多步工具循环、可见执行步骤、取消控制、结果落库。
 
 app/src/main/java/com/actme/app/ui/chat/ChatScreen.kt
-  聊天 UI、消息气泡、资料展开面板、token 展示、停止按钮。
+  聊天 UI、消息气泡、Excel 附件、生成文件按钮、资料展开面板、token 显示、停止按钮。
 ```
 
 ## Agent 输入上下文
@@ -49,11 +55,11 @@ app/src/main/java/com/actme/app/ui/chat/ChatScreen.kt
 - 系统记忆
 - 当前日程
 - 启用 Skills
-- 已执行的联网搜索/网页浏览结果
+- 已执行的联网搜索/网页浏览/Python 结果
 
-历史消息在进入模型前会做清洗：
+历史消息进入模型前会清洗：
 
-- assistant 消息中的“执行过程”只保留最终回复部分。
+- assistant 消息中的“执行过程”只保留最终回答部分。
 - 去掉“展开搜索结果 / 展开网页阅读内容 / 展开联网资料”的内部链接。
 - 避免上一轮 UI 过程日志污染下一轮 Agent 判断。
 
@@ -113,8 +119,6 @@ Agent 被要求只输出 JSON：
 
 获取设备当前时间、时区、星期和 Unix 毫秒时间戳。
 
-示例：
-
 ```json
 {
   "type": "get_current_time"
@@ -125,12 +129,10 @@ Agent 被要求只输出 JSON：
 
 联网搜索最新信息。
 
-示例：
-
 ```json
 {
   "type": "web_search",
-  "query": "中国银行积存金价格 2026年6月1日"
+  "query": "中国银行积存金价格 2026年6月"
 }
 ```
 
@@ -149,8 +151,6 @@ Bing Gecko 会使用内置 GeckoView 打开 Bing 搜索页并返回渲染文本�
 
 用内置浏览器打开指定 URL，并读取渲染后的页面文本。
 
-示例：
-
 ```json
 {
   "type": "browse_url",
@@ -164,7 +164,128 @@ Bing Gecko 会使用内置 GeckoView 打开 Bing 搜索页并返回渲染文本�
 - `web_browse`
 - `open_url`
 
-`browser_url` 是为模型可能产生的命名偏差预留的别名，执行逻辑与 `browse_url` 相同。
+### python_exec
+
+运行内置 Python 沙箱。
+
+```json
+{
+  "type": "python_exec",
+  "code": "import json\nvalues = input_json\nemit({'sum': sum(values)})",
+  "input": "[1,2,3]",
+  "timeout_ms": 3000
+}
+```
+
+`python_exec` 适合：
+
+- 计算、统计、排序、去重。
+- JSON / CSV / 表格文本处理。
+- 正则提取和文本清洗。
+- Excel 读取、分析、生成。
+- 复杂但确定性的中间处理。
+- 保存可复用 Python 工具脚本。
+
+沙箱暴露：
+
+- `input_text`
+- `input_json`
+- `emit(value)`
+- `set_result(value)`
+- `result`
+- `workspace_dir`
+- `read_excel(path, max_rows=200, max_sheets=10)`
+- `write_excel(filename, sheets)`
+- `save_script(name, source)`
+- `load_script(name)`
+- `list_scripts()`
+- `compile_script(name)`
+- `run_script(name)`
+
+限制：
+
+- 无网络访问。
+- 只能访问 `agent_workspace` 工作区。
+- 不允许 `os`、`socket`、`subprocess`、`ctypes` 等系统/进程/网络能力。
+- 联网应通过 `web_search` / `browse_url` 完成，再把结果交给 Python 处理。
+
+## Python 原生工作流
+
+系统提示会要求 Agent 按以下方式使用 Python：
+
+1. 对一次性任务，直接在 `python_exec.code` 中写 Python，并用 `emit(value)` 返回结构化结果。
+2. 对可复用或较复杂逻辑，先用 `save_script("tools/name.py", source)` 保存脚本。
+3. 保存后调用 `compile_script("tools/name.py")`。
+4. 如果 `compile_script` 返回 `ok=false`，读取 `error`，修正源码，再次 `save_script` 和 `compile_script`。
+5. 编译通过后使用 `run_script("tools/name.py")`。
+6. 脚本与 `python_exec` 共享同一套全局变量和 helper，因此脚本中也能读取 `input_text` / `input_json`、调用 `read_excel` / `write_excel`，并通过 `emit(value)` 返回结果。
+
+示例：
+
+```python
+source = """
+values = input_json
+emit({
+    "sum": sum(values),
+    "avg": sum(values) / len(values),
+    "max": max(values)
+})
+"""
+save_script("tools/stats.py", source)
+check = compile_script("tools/stats.py")
+if not check["ok"]:
+    emit(check)
+else:
+    emit(run_script("tools/stats.py"))
+```
+
+## Excel 工作流
+
+### 读取 Excel
+
+用户可以在聊天输入区选择 `.xlsx/.xlsm`，也可以从系统文件管理器或其他 App 中“用 ActMe 打开/分享” Excel 文件。App 会把文件复制到：
+
+```text
+files/agent_workspace/excel/
+```
+
+用户发送问题后，Agent 会收到工作区路径，并可调用：
+
+```python
+data = read_excel(path, max_rows=200, max_sheets=10)
+emit(data)
+```
+
+返回结构包含：
+
+- workbook path
+- sheet count
+- sheet name
+- max row / max column
+- returned rows
+
+### 生成 Excel
+
+Agent 可以调用：
+
+```python
+result = write_excel("report.xlsx", {
+    "Summary": [
+        ["category", "amount"],
+        ["A", 120],
+        ["B", 300]
+    ]
+})
+emit(result)
+```
+
+生成文件会写入 `agent_workspace`。Repository 会从工具结果中提取 `.xlsx/.xlsm` 路径并附加到最终回复；聊天 UI 会显示可点击文件按钮，通过 FileProvider 交给系统 Excel/WPS 等应用打开。
+
+### 支持范围
+
+- 支持 `.xlsx`
+- 支持 `.xlsm`
+- 旧 `.xls` 暂不保证可读
 
 ## 内置浏览器读取机制
 
@@ -181,8 +302,7 @@ Bing Gecko 会使用内置 GeckoView 打开 Bing 搜索页并返回渲染文本�
 ```text
 [BROWSE_RESULT]
 页面标题：...
-页面文本：
-...
+页面文本：...
 ```
 
 失败时返回：
@@ -198,15 +318,15 @@ Bing Gecko 会使用内置 GeckoView 打开 Bing 搜索页并返回渲染文本�
 一次用户回复可能包含多轮：
 
 1. LLM 先生成 `system_calls`。
-2. Repository 展示“Agent planning pass N”。
+2. Repository 显示 “Agent planning pass N”。
 3. SystemSkillExecutor 执行工具。
 4. 每个工具发出可见 step event：
    - `STARTED`
    - `FINISHED`
    - `FAILED`
-5. Repository 将工具结果追加为 `searchResults`。
+5. Repository 将工具结果追加为当前轮资料。
 6. Repository 把工具结果作为 continuation 输入，再次调用 Agent。
-7. Agent 可继续请求更多工具，也可生成最终 reply。
+7. Agent 可继续请求更多工具，也可生成最终 `reply`。
 8. 工具预算耗尽或模型不再请求工具时结束。
 
 当前预算：
@@ -225,12 +345,12 @@ Bing Gecko 会使用内置 GeckoView 打开 Bing 搜索页并返回渲染文本�
 ```text
 执行过程：
 1. [OK] Agent planning pass 1 - 2 tool call(s) requested
-2. [OK] 联网搜索 - 搜索完成，...
-3. [OK] 打开网页 - 网页内容已读取，...
+2. [OK] Web search - ...
+3. [OK] Run Python - ...
 4. [OK] Agent observes results - reply=..., next tools=...
 
 ---
-最终回复...
+最终回答...
 ```
 
 控制策略：
@@ -238,16 +358,18 @@ Bing Gecko 会使用内置 GeckoView 打开 Bing 搜索页并返回渲染文本�
 - 发送中按钮变成停止按钮。
 - 点击停止会 cancel 当前 coroutine job。
 - 工具执行循环检查 cancellation。
-- 被取消时消息显示“已中止。”。
-- 若预算耗尽但仍有后续工具请求，消息显示暂停原因，并提示用户可发送“继续”。
+- 被取消时消息显示“已中止”。
+- 预算耗尽但仍有后续工具请求时，消息显示暂停原因，并提示用户可发送“继续”。
 
 ## 工具调用自由度
 
 Agent 有较高自由度：
 
 - 可以决定是否搜索。
-- 可以决定是否继续浏览网页。
-- 可以决定调用几个工具、按什么顺序调用。
+- 可以决定是否浏览网页。
+- 可以决定是否运行 Python。
+- 可以决定是否生成 Excel。
+- 可以决定工具调用顺序。
 - 简单问题可以直接回答。
 - 复杂、近期、不确定或需要来源支撑的问题，可以多次搜索和浏览多个不重复页面。
 
@@ -257,14 +379,14 @@ Agent 有较高自由度：
 
 工具结果会存入 `chat_messages.searchResult`，UI 根据内容类型显示不同入口：
 
-- 只有搜索：`🔍 展开搜索结果`
-- 只有网页阅读：`📖 展开网页阅读内容`
-- 搜索和网页阅读都有：`🌐 展开联网资料`
+- 只有搜索：展开搜索结果
+- 只有网页阅读：展开网页阅读内容
+- 搜索和网页阅读都有：展开联网资料
 
 弹窗中会将内部标记转换为用户可读标题：
 
-- `[BROWSE_RESULT]` -> `【网页阅读内容】`
-- `[BROWSE_ERROR]` -> `【网页阅读失败】`
+- `[BROWSE_RESULT]` -> 网页阅读内容
+- `[BROWSE_ERROR]` -> 网页阅读失败
 
 ## JSON 解析兜底
 
@@ -314,7 +436,7 @@ Agent 可通过 `memory_updates` 写入个人记忆。记忆分类来自 `Memory
 - 长期目标
 - 个人焦虑
 - 近期烦恼
-- 个人喜好
+- 个人偏好
 - 人际关系
 - 健康状态
 - 学习工作
@@ -345,10 +467,11 @@ Skills 会作为上下文注入 Agent，帮助它形成可复用行为。
 
 ## 失败和降级策略
 
-- 单个工具失败不会直接终止整轮 Agent，而是返回 `[TOOL_ERROR]` 或 `[BROWSE_ERROR]`，让模型基于已有信息继续。
+- 单个工具失败不会直接终止整轮 Agent，而是返回 `[TOOL_ERROR]`、`[BROWSE_ERROR]` 或 `[PYTHON_ERROR]`，让模型基于已有信息继续。
 - 网页读取失败会尝试 HTTP fallback。
 - 搜索后端按顺序尝试，前一个不可用时尝试后一个。
 - JSON 解析失败会进行宽松解析。
+- Python 可通过 `compile_script` 检查并修复脚本。
 - usage 获取失败不会影响聊天。
 
 ## 调试
@@ -356,21 +479,24 @@ Skills 会作为上下文注入 Agent，帮助它形成可复用行为。
 常用 logcat 过滤：
 
 ```powershell
-adb logcat -v time | Select-String -Pattern "ActMe|SystemSkillExecutor|GeckoSearchEngine|BROWSE|SEARCH|system_calls|parseRaw"
+adb logcat -v time | Select-String -Pattern "ActMe|SystemSkillExecutor|GeckoSearchEngine|PythonSkillEngine|BROWSE|SEARCH|PYTHON|system_calls|parseRaw"
 ```
 
 重点日志：
 
-- `ActMeRepository`: 对话开始、Agent 结果、pass 结果、任务完成。
-- `ActMeAgent`: JSON 解析失败、宽松解析。
-- `SystemSkillExecutor`: 工具执行、搜索后端、浏览 URL。
-- `GeckoSearchEngine`: GeckoView 加载、扩展消息、渲染文本长度。
-- `ActMeLlmClient`: LLM 请求、stream usage fallback。
+- `ActMeRepository`：对话开始、Agent 结果、pass 结果、任务完成。
+- `ActMeAgent`：JSON 解析失败、宽松解析。
+- `SystemSkillExecutor`：工具执行、搜索后端、浏览 URL、Python 调用。
+- `PythonSkillEngine`：Python runtime 初始化和执行失败。
+- `GeckoSearchEngine`：GeckoView 加载、扩展消息、渲染文本长度。
+- `ActMeLlmClient`：LLM 请求、stream usage fallback。
 
 ## 已知限制
 
 - 一些网站要求登录、App 内访问或强风控，公开网页无法读取完整内容。
 - Bing Gecko 返回的是搜索页渲染文本，模型需要自行抽取链接或还原面包屑 URL。
+- Python 沙箱没有网络和系统命令能力。
+- Excel 第一版主要支持 `.xlsx/.xlsm`，旧 `.xls` 不保证可读。
 - OpenAI-compatible 网关不一定支持 streaming usage，App 会自动重试但无法拿到精确 token。
 - 当前工具预算是静态配置，尚未按任务复杂度动态调整。
 - Agent 仍依赖模型遵循 JSON 协议，尽管已有多层解析兜底。

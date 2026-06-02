@@ -1,5 +1,37 @@
 # Release Notes
 
+## 1.1.0 - 2026-06-02
+
+### Agent
+
+- Added a native Python workflow for the Agent through `python_exec`.
+- Updated the Agent prompt so it knows when to write Python, how to save reusable scripts, run `compile_script`, fix syntax errors, and execute scripts with `run_script`.
+- Added runtime-maintained Python helper scripts under the app workspace.
+- Added Python tool result visibility in the existing multi-step execution UI.
+
+### Python Sandbox
+
+- Added Chaquopy-based Python 3.11 runtime.
+- Added sandbox helpers: `input_text`, `input_json`, `emit`, `set_result`, `workspace_dir`, and `result`.
+- Added workspace-only file access and kept network/process/system access disabled.
+- Added script helpers: `save_script`, `load_script`, `list_scripts`, `compile_script`, and `run_script`.
+- Added `py_compile`-based syntax checking on-device through `compile_script`.
+
+### Excel
+
+- Added `openpyxl` support for Excel reading and writing.
+- Added `read_excel(path, max_rows=200, max_sheets=10)` for uploaded `.xlsx/.xlsm` workbooks.
+- Added `write_excel(filename, sheets)` so the Agent can generate Excel files.
+- Added chat input support for selecting Excel files.
+- Registered ActMe as an Android target for opening or sharing Excel files from other apps.
+- Added generated Excel file buttons in chat, opened through a FileProvider.
+
+### UI And Files
+
+- Added Excel attachment preview in the chat input area.
+- Added workspace file handling for incoming and generated Excel files.
+- Added `agent_workspace` FileProvider paths for safely opening generated files in external apps.
+
 ## 1.0.1 - 2026-06-01
 
 ### Agent
