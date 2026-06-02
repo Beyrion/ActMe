@@ -25,6 +25,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 @Serializable
@@ -140,10 +141,12 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
         historyMessages: List<ChatMessageEntity> = emptyList(),
         webSearchResults: String? = null
     ): AgentTurnResult {
+        val responseFormat = if (config.providerFormat == "openai") agentResultResponseFormat else null
         val llmResult = openAiClient.runWithUsage(
             buildMessages(userInput, memories, systemMemories, schedules, skills, enableWebSearch, imageBase64, imageMimeType, historyMessages, webSearchResults),
             config = config,
-            enableWebSearch = enableWebSearch
+            enableWebSearch = enableWebSearch,
+            responseFormat = responseFormat
         )
         return AgentTurnResult(parseRaw(llmResult.text), llmResult.usage)
     }
@@ -181,20 +184,39 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
         historyMessages: List<ChatMessageEntity> = emptyList(),
         webSearchResults: String? = null
     ): Flow<LlmStreamChunk> {
+        val responseFormat = if (config.providerFormat == "openai") agentResultResponseFormat else null
         return openAiClient.runStreamingWithUsage(
             buildMessages(userInput, memories, systemMemories, schedules, skills, enableWebSearch, imageBase64, imageMimeType, historyMessages, webSearchResults),
             config = config,
-            enableWebSearch = enableWebSearch
+            enableWebSearch = enableWebSearch,
+            responseFormat = responseFormat
         )
     }
 
     fun parseRaw(raw: String): AgentResult {
         val jsonPart = extractJson(raw)
-        return runCatching { json.decodeFromString<AgentResult>(jsonPart) }
+        val result = runCatching { json.decodeFromString<AgentResult>(jsonPart) }
             .onFailure { AppLogger.w(TAG, "parseRaw strict failed: ${it.message}; raw=${raw.take(300)}") }
             .getOrNull()
             ?: parseLooseAgentResult(raw, jsonPart)
             ?: AgentResult(reply = raw.trim())
+        return unwrapNestedReply(result)
+    }
+
+    // Guard against the model wrapping the entire tool-call JSON inside the reply field.
+    // When outer system_calls is empty but reply itself parses as a valid AgentResult with
+    // tool calls, use the inner result instead.
+    private fun unwrapNestedReply(result: AgentResult): AgentResult {
+        if (result.systemCalls.isNotEmpty()) return result
+        val reply = result.reply.trim()
+        if (!reply.startsWith("{") || !reply.endsWith("}")) return result
+        val nested = runCatching { json.decodeFromString<AgentResult>(reply) }.getOrNull()
+            ?: parseLooseAgentResult(reply, extractJson(reply))
+        if (nested != null && nested.systemCalls.isNotEmpty()) {
+            AppLogger.w(TAG, "unwrapNestedReply: model nested JSON in reply; systemCalls=${nested.systemCalls.size}")
+            return nested
+        }
+        return result
     }
 
     private fun parseLooseAgentResult(raw: String, jsonPart: String): AgentResult? {
@@ -661,6 +683,16 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
 
     companion object {
         private const val TAG = "ActMeAgent"
+
+        // response_format injected for OpenAI-compatible providers that support json_schema.
+        // Enforces output structure at the token level, preventing the model from nesting
+        // tool-call JSON inside the reply field. Unsupported providers fall back gracefully
+        // via shouldRetryWithoutResponseFormat in OpenAiResponsesClient.
+        val agentResultResponseFormat: JsonObject by lazy {
+            Json.parseToJsonElement(
+                """{"type":"json_schema","json_schema":{"name":"agent_result","strict":true,"schema":{"type":"object","properties":{"reply":{"type":"string"},"system_calls":{"type":"array","items":{"type":"object","properties":{"type":{"type":"string"},"query":{"type":"string"},"url":{"type":"string"},"code":{"type":"string"},"input":{"type":"string"},"timeout_ms":{"type":"number"}},"required":["type","query","url","code","input","timeout_ms"],"additionalProperties":false}},"memory_updates":{"type":"array","items":{"type":"object","properties":{"category":{"type":"string"},"content":{"type":"string"}},"required":["category","content"],"additionalProperties":false}},"schedule_updates":{"type":"array","items":{"type":"object","properties":{"title":{"type":"string"},"detail":{"type":"string"},"start_at":{"anyOf":[{"type":"integer"},{"type":"null"}]},"reminder_at":{"anyOf":[{"type":"integer"},{"type":"null"}]},"repeat_type":{"anyOf":[{"type":"string"},{"type":"null"}]},"repeat_days_of_week":{"type":"array","items":{"type":"integer"}},"repeat_day_of_month":{"anyOf":[{"type":"integer"},{"type":"null"}]},"reminder_time":{"anyOf":[{"type":"string"},{"type":"null"}]}},"required":["title","detail","start_at","reminder_at","repeat_type","repeat_days_of_week","repeat_day_of_month","reminder_time"],"additionalProperties":false}},"skill_updates":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"description":{"type":"string"},"trigger_keywords":{"type":"array","items":{"type":"string"}},"action_template":{"type":"string"}},"required":["name","description","trigger_keywords","action_template"],"additionalProperties":false}}},"required":["reply","system_calls","memory_updates","schedule_updates","skill_updates"],"additionalProperties":false}}}"""
+            ).jsonObject
+        }
     }
 }
 

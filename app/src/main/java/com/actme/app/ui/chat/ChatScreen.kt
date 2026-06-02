@@ -67,7 +67,6 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.remember
@@ -105,12 +104,19 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.draw.shadow
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.ui.text.style.TextOverflow
 
 import androidx.compose.ui.unit.sp
 import com.mikepenz.markdown.m3.Markdown
@@ -660,35 +666,15 @@ fun ChatScreen(
                 }
             }
 
-            // In-memory scroll position cache (resets on app restart)
-            val scrollPositions = remember { mutableStateMapOf<Long, Int>() }
-
-            // Continuously track scroll position for the current conversation
             val activeConversationId = messages.firstOrNull()?.conversationId
-            LaunchedEffect(Unit) {
-                snapshotFlow {
-                    messages.firstOrNull()?.conversationId to
-                        listState.layoutInfo.visibleItemsInfo.firstOrNull()?.index
-                }
-                .collect { (convId, firstVisible) ->
-                    if (convId != null && firstVisible != null) {
-                        scrollPositions[convId] = firstVisible
-                    }
-                }
-            }
 
-            // On session change: restore cached position or scroll to bottom
+            // On session change: scroll to bottom
             LaunchedEffect(activeConversationId) {
-                val savedPos = activeConversationId?.let { scrollPositions[it] }
                 snapshotFlow { listState.layoutInfo.totalItemsCount }
                     .first { it > 0 }
-                if (savedPos != null && savedPos < listState.layoutInfo.totalItemsCount) {
-                    listState.scrollToItem(savedPos)
-                } else {
-                    val targetIndex = listState.layoutInfo.totalItemsCount - 1
-                    if (targetIndex >= 0) {
-                        listState.scrollToItem(targetIndex)
-                    }
+                val targetIndex = listState.layoutInfo.totalItemsCount - 1
+                if (targetIndex >= 0) {
+                    listState.scrollToItem(targetIndex)
                 }
             }
 
@@ -703,7 +689,7 @@ fun ChatScreen(
             }
 
             // Follow streaming content as last assistant message grows
-            val lastMsgContentLen = messages.lastOrNull()?.content?.length ?: 0
+            val lastMsgContentLen = messages.lastOrNull { it.role == "assistant" || it.role == "tool_execution" }?.content?.length ?: 0
             LaunchedEffect(lastMsgContentLen) {
                 if (sending && isAtBottom) {
                     val targetIndex = listState.layoutInfo.totalItemsCount - 1
@@ -736,11 +722,15 @@ fun ChatScreen(
                     }
                 }
                 items(messages, key = { it.id }) { msg ->
-                    MessageBubble(msg)
+                    when (msg.role) {
+                        "tool_execution" -> ToolExecutionBubble(msg)
+                        else -> MessageBubble(msg)
+                    }
                 }
-                val showSkeleton = sending && (messages.isEmpty() ||
-                    messages.last().role != "assistant" ||
-                    messages.last().content.isBlank())
+                val lastAssistantMsg = messages.lastOrNull { it.role == "assistant" }
+                val hasActiveToolFeedback = messages.any { it.role == "tool_execution" && it.content.isNotBlank() }
+                val showSkeleton = sending && !hasActiveToolFeedback &&
+                    (lastAssistantMsg == null || lastAssistantMsg.content.isBlank())
                 if (showSkeleton) {
                     item(key = "skeleton") {
                         SkeletonBubble()
@@ -1058,6 +1048,123 @@ fun ChatScreen(
                     }
                 }
             }
+            }
+        }
+    }
+}
+
+// ---- Tool execution bubble ----
+
+@Composable
+private fun ToolExecutionBubble(msg: ChatMessageEntity) {
+    if (msg.content.isBlank()) return
+
+    val isDone = msg.content == "执行完成" || msg.content == "已中止"
+    val isCancelled = msg.content == "已中止"
+    val hasLog = !msg.searchResult.isNullOrBlank()
+    var expanded by remember(msg.id) { mutableStateOf(false) }
+
+    if (expanded && hasLog) {
+        AlertDialog(
+            onDismissRequest = { expanded = false },
+            title = { Text("执行过程", fontWeight = FontWeight.Bold) },
+            text = {
+                LazyColumn(modifier = Modifier.heightIn(max = 400.dp)) {
+                    item {
+                        SelectionContainer {
+                            Text(
+                                text = msg.searchResult!!,
+                                style = MaterialTheme.typography.bodySmall,
+                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { expanded = false }) { Text("关闭") }
+            }
+        )
+    }
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = Alignment.Start
+    ) {
+        Column(
+            modifier = Modifier
+                .widthIn(max = 300.dp)
+                .background(
+                    MaterialTheme.colorScheme.primaryContainer,
+                    shape = RoundedCornerShape(
+                        topStart = 12.dp, topEnd = 12.dp,
+                        bottomStart = 4.dp, bottomEnd = 12.dp
+                    )
+                )
+                .then(if (isDone && hasLog) Modifier.clickable { expanded = true } else Modifier)
+                .padding(horizontal = 12.dp, vertical = 8.dp)
+        ) {
+            // ActMe label
+            Text(
+                "ActMe",
+                fontWeight = FontWeight.SemiBold,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            // Line 1: status title (bodyMedium)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                if (!isDone) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(12.dp),
+                        strokeWidth = 1.5.dp,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+                Text(
+                    text = when {
+                        isCancelled -> "命令执行中止"
+                        isDone -> "命令执行成功"
+                        else -> "命令执行中"
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                    color = when {
+                        isCancelled -> MaterialTheme.colorScheme.error
+                        else -> MaterialTheme.colorScheme.onPrimaryContainer
+                    }
+                )
+            }
+            Spacer(modifier = Modifier.height(2.dp))
+            // Line 2: animated log line or "点击展开" (labelSmall)
+            if (isDone) {
+                if (hasLog) {
+                    Text(
+                        "点击展开执行过程",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.6f)
+                    )
+                }
+            } else {
+                AnimatedContent(
+                    targetState = msg.content,
+                    transitionSpec = {
+                        (slideInVertically { h -> h } + fadeIn(tween(180))) togetherWith
+                            (slideOutVertically { h -> -h } + fadeOut(tween(120)))
+                    },
+                    label = "log-line"
+                ) { logLine ->
+                    Text(
+                        text = logLine,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
         }
     }

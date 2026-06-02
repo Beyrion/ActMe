@@ -94,7 +94,8 @@ class OpenAiResponsesClient {
     suspend fun runWithUsage(
         messages: List<MessagePayload>,
         config: ProviderConfig,
-        enableWebSearch: Boolean = false
+        enableWebSearch: Boolean = false,
+        responseFormat: JsonObject? = null
     ): LlmResult {
         if (config.sk.isBlank()) {
             AppLogger.i(TAG, "run aborted: api key is blank")
@@ -106,18 +107,24 @@ class OpenAiResponsesClient {
         }
         AppLogger.i(
             TAG,
-            "run request: url=$url, model=${config.model}, messages=${messages.size}"
+            "run request: url=$url, model=${config.model}, messages=${messages.size}, hasSchema=${responseFormat != null}"
         )
 
         val request = when (config.providerFormat) {
             "anthropic" -> buildAnthropicRequest(messages, config, enableWebSearch)
-            else -> buildOpenAiRequest(messages, config, enableWebSearch)
+            else -> buildOpenAiRequest(messages, config, enableWebSearch, responseFormat = responseFormat)
         }
 
         var response = okHttp.newCall(request).execute()
         var body = response.body?.string().orEmpty()
         if (!response.isSuccessful && shouldRetryWithoutOpenAiUsage(config, body)) {
             AppLogger.w(TAG, "run retry without stream_options.include_usage")
+            response.close()
+            response = okHttp.newCall(buildOpenAiRequest(messages, config, enableWebSearch, includeUsage = false, responseFormat = responseFormat)).execute()
+            body = response.body?.string().orEmpty()
+        }
+        if (!response.isSuccessful && responseFormat != null && shouldRetryWithoutResponseFormat(body)) {
+            AppLogger.w(TAG, "run retry without response_format")
             response.close()
             response = okHttp.newCall(buildOpenAiRequest(messages, config, enableWebSearch, includeUsage = false)).execute()
             body = response.body?.string().orEmpty()
@@ -143,7 +150,8 @@ class OpenAiResponsesClient {
     fun runStreamingWithUsage(
         messages: List<MessagePayload>,
         config: ProviderConfig,
-        enableWebSearch: Boolean = false
+        enableWebSearch: Boolean = false,
+        responseFormat: JsonObject? = null
     ): Flow<LlmStreamChunk> = flow {
         if (config.sk.isBlank()) {
             emit(LlmStreamChunk(text = "当前未配置 API Key，请在设置中添加提供商。"))
@@ -151,16 +159,19 @@ class OpenAiResponsesClient {
         }
         val request = when (config.providerFormat) {
             "anthropic" -> buildAnthropicRequest(messages, config, enableWebSearch)
-            else -> buildOpenAiRequest(messages, config, enableWebSearch)
+            else -> buildOpenAiRequest(messages, config, enableWebSearch, responseFormat = responseFormat)
         }
         val call = okHttp.newCall(request)
         try {
             val response = call.execute()
             if (!response.isSuccessful) {
                 val body = response.body?.string().orEmpty()
-                if (shouldRetryWithoutOpenAiUsage(config, body)) {
-                    AppLogger.w(TAG, "stream retry without stream_options.include_usage")
+                val retryWithoutUsage = shouldRetryWithoutOpenAiUsage(config, body)
+                val retryWithoutSchema = responseFormat != null && shouldRetryWithoutResponseFormat(body)
+                if (retryWithoutUsage || retryWithoutSchema) {
+                    AppLogger.w(TAG, "stream retry: withoutUsage=$retryWithoutUsage, withoutSchema=$retryWithoutSchema")
                     response.close()
+                    // Strip both stream_options and response_format — safest fallback for compat providers
                     val fallback = okHttp.newCall(buildOpenAiRequest(messages, config, enableWebSearch, includeUsage = false))
                     try {
                         val fallbackResponse = fallback.execute()
@@ -231,7 +242,8 @@ class OpenAiResponsesClient {
         messages: List<MessagePayload>,
         config: ProviderConfig,
         enableWebSearch: Boolean,
-        includeUsage: Boolean = true
+        includeUsage: Boolean = true,
+        responseFormat: JsonObject? = null
     ): Request {
         val payload = buildJsonObject {
             put("model", config.model)
@@ -241,6 +253,7 @@ class OpenAiResponsesClient {
                     put("include_usage", true)
                 }
             }
+            responseFormat?.let { put("response_format", it) }
             putJsonArray("messages") {
                 messages.forEach { msg ->
                     add(
@@ -443,6 +456,13 @@ class OpenAiResponsesClient {
         val output = usageObj["output_tokens"]?.jsonPrimitive?.intOrNull ?: 0
         if (input == 0 && output == 0) return null
         return TokenUsage(inputTokens = input, outputTokens = output, totalTokens = input + output)
+    }
+
+    private fun shouldRetryWithoutResponseFormat(body: String): Boolean {
+        val lower = body.lowercase()
+        return lower.contains("response_format") ||
+            lower.contains("json_schema") ||
+            lower.contains("structured")
     }
 
     private fun shouldRetryWithoutOpenAiUsage(config: ProviderConfig, body: String): Boolean {
