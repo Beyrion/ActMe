@@ -19,6 +19,7 @@ import com.actme.app.data.local.ScheduleDao
 import com.actme.app.data.local.ScheduleEntity
 import com.actme.app.data.local.SkillDao
 import com.actme.app.data.local.SkillEntity
+import com.actme.app.data.remote.MessagePayload
 import com.actme.app.data.remote.OpenAiResponsesClient
 import com.actme.app.data.remote.ProviderConfig
 import com.actme.app.data.remote.ProviderManager
@@ -1024,6 +1025,42 @@ class ActMeRepository(
         val provider = providerManager.getActiveProvider() ?: return emptyList()
         val sk = providerManager.getSk(provider.id)
         return openAiClient.fetchModels(provider.endpoint, sk, provider.providerFormat)
+    }
+
+    suspend fun generatePresetQuestions(): List<String> = withContext(Dispatchers.IO) {
+        val config = buildProviderConfig()
+        if (config.sk.isBlank()) return@withContext emptyList()
+        val memories = memoryDao.getUserMemories().take(10)
+        val lastSession = chatDao.getLatestSession()
+        val recentMessages = lastSession?.let { chatDao.getByConversation(it.id).takeLast(4) } ?: emptyList()
+        val memorySummary = memories.joinToString("\n") { "- ${it.category}: ${it.content.take(60)}" }
+        val recentSummary = recentMessages.joinToString("\n") { "${it.role}: ${it.content.take(80)}" }
+        val systemPrompt = """你的任务是生成3条用户会对AI说的对话开场白，以JSON字符串数组返回，只输出JSON，不要任何其他文字。
+每条是用户的提问或请求（≤18字），语气是用户问AI的口吻，绝对不能是AI说的话。
+示例输出：["今天天气怎么样？","帮我规划明天的行程","讲一个火星探测的故事"]
+规则：第1条与最近对话内容相关（若无历史则结合用户记忆）；第2条挖掘用户潜在需求（结合记忆）；第3条是探索性提问（科学/历史/地理/新闻/角色扮演等）。"""
+        val userContent = buildString {
+            if (memorySummary.isNotBlank()) appendLine("用户记忆：\n$memorySummary")
+            if (recentSummary.isNotBlank()) appendLine("近期对话：\n$recentSummary")
+        }.ifBlank { "新用户，无历史记录" }
+        try {
+            val result = openAiClient.runWithUsage(
+                messages = listOf(
+                    MessagePayload("system", systemPrompt),
+                    MessagePayload("user", userContent)
+                ),
+                config = config
+            )
+            val raw = result.text.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
+            val badPatterns = listOf("我会", "我将", "我可以", "以下是", "好的", "当然", "回复", "如下")
+            Json.parseToJsonElement(raw).jsonArray
+                .mapNotNull { it.jsonPrimitive.content.trim().takeIf { s -> s.isNotBlank() } }
+                .filter { q -> badPatterns.none { q.contains(it) } }
+                .take(3)
+        } catch (e: Exception) {
+            AppLogger.w(TAG, "generatePresetQuestions failed: ${e.message}")
+            emptyList()
+        }
     }
 
     companion object {

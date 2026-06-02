@@ -45,6 +45,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Close
@@ -96,6 +97,21 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.draw.shadow
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+
 import androidx.compose.ui.unit.sp
 import com.mikepenz.markdown.m3.Markdown
 import com.mikepenz.markdown.m3.markdownColor
@@ -114,6 +130,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import java.io.ByteArrayOutputStream
 import java.io.File
+import kotlin.math.sin
+import kotlin.math.cos
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -136,7 +154,9 @@ fun ChatScreen(
     localVisionModelDir: String = "",
     pendingWorkbook: PendingWorkbookAttachment? = null,
     onWorkbookConsumed: () -> Unit = {},
-    onNavigateToMenu: () -> Unit = {}
+    onNavigateToMenu: () -> Unit = {},
+    onCreateConversation: () -> Unit = {},
+    presetQuestions: List<String> = emptyList()
 ) {
     val scope = rememberCoroutineScope()
     var input by rememberSaveable { mutableStateOf("") }
@@ -608,6 +628,15 @@ fun ChatScreen(
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier.align(Alignment.Center)
                 )
+                IconButton(
+                    onClick = {
+                        focusManager.clearFocus()
+                        onCreateConversation()
+                    },
+                    modifier = Modifier.align(Alignment.CenterEnd)
+                ) {
+                    Icon(Icons.Filled.Add, contentDescription = "新建会话")
+                }
             }
 
             // ---- Content area (shifts with keyboard) ----
@@ -698,6 +727,14 @@ fun ChatScreen(
                     .padding(top = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                if (messages.isEmpty() && !sending) {
+                    item(key = "welcome") {
+                        WelcomeCard(
+                            presetQuestions = presetQuestions,
+                            onTagClick = { question -> onSend(question, null, null) }
+                        )
+                    }
+                }
                 items(messages, key = { it.id }) { msg ->
                     MessageBubble(msg)
                 }
@@ -1369,6 +1406,126 @@ private fun isCjk(ch: Char): Boolean {
         code in 0x4E00..0x9FFF ||
         code in 0xF900..0xFAFF
 }
+
+// ---- Welcome card (empty state) ----
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun WelcomeCard(
+    presetQuestions: List<String>,
+    onTagClick: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val hour = remember { java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY) }
+    val timeGreeting = when {
+        hour < 6 -> "晚上好"; hour < 9 -> "早上好"; hour < 11 -> "上午好"
+        hour < 13 -> "中午好"; hour < 18 -> "下午好"; else -> "晚上好"
+    }
+    val isDark = isSystemInDarkTheme()
+
+    // Three independent linear phases → converted to sin/cos in draw → organic Lissajous paths
+    val anim = rememberInfiniteTransition(label = "aura")
+    val p1 by anim.animateFloat(0f, 1f,
+        infiniteRepeatable(tween(5300, easing = androidx.compose.animation.core.LinearEasing), RepeatMode.Restart), "p1")
+    val p2 by anim.animateFloat(0f, 1f,
+        infiniteRepeatable(tween(7900, easing = androidx.compose.animation.core.LinearEasing), RepeatMode.Restart), "p2")
+    val p3 by anim.animateFloat(0f, 1f,
+        infiniteRepeatable(tween(6100, easing = androidx.compose.animation.core.LinearEasing), RepeatMode.Restart), "p3")
+
+    val textPrimary   = if (isDark) Color(0xFFE0E8FF) else Color(0xFF172050)
+    val textSecondary = if (isDark) Color(0xFF9AAABF) else Color(0xFF4A5B8A)
+    val tagBg   = if (isDark) Color(0xFF1C3A62) else Color(0xFFE8F3FF)
+    val tagText = if (isDark) Color(0xFFAAD4FF) else Color(0xFF1A5BAE)
+
+    val questions = presetQuestions.ifEmpty {
+        listOf("帮我创建一个日程提醒", "查一查最近的科技新闻", "讲一个有趣的地理知识")
+    }
+
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(vertical = 20.dp)
+            .shadow(elevation = 3.dp, shape = RoundedCornerShape(20.dp))
+            .clip(RoundedCornerShape(20.dp))
+            .drawBehind { drawAuraBackground(isDark, p1, p2, p3) }
+            .padding(20.dp)
+    ) {
+        Column {
+            Text("Hi，${timeGreeting}～",
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold, color = textPrimary)
+            Spacer(Modifier.height(6.dp))
+            Text("你可以问我任何问题、或者告诉我现在想做什么。",
+                style = MaterialTheme.typography.bodyMedium, color = textSecondary)
+            Spacer(Modifier.height(16.dp))
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                questions.forEach { q ->
+                    Surface(onClick = { onTagClick(q) },
+                        shape = RoundedCornerShape(20.dp), color = tagBg) {
+                        Text(q,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                            style = MaterialTheme.typography.bodySmall, color = tagText)
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Radial aura blobs + linear fade-to-white mask at bottom
+private fun DrawScope.drawAuraBackground(isDark: Boolean, p1: Float, p2: Float, p3: Float) {
+    val w = size.width
+    val h = size.height
+    val TAU = (2.0 * Math.PI).toFloat()
+
+    // Base
+    drawRect(if (isDark) Color(0xFF090E1E) else Color(0xFFFFFFFF))
+
+    // Each blob's center moves on a Lissajous-like path using different phase combos.
+    // Using sin/cos of independent linear phases → organic, non-looping feel.
+
+    // ── Blue (dominant) ──
+    val bx = w * (0.18f + 0.13f * sin(p1 * TAU))
+    val by = h * (0.22f + 0.11f * cos(p2 * TAU + 0.8f))
+    val br = w * (0.60f + 0.09f * sin(p3 * TAU + 1.1f))
+    val ba = (if (isDark) 0.30f else 0.20f) + 0.07f * sin(p1 * TAU + 0.3f)
+    drawRect(Brush.radialGradient(
+        listOf(Color(0xFF1F82FF).copy(alpha = ba.coerceIn(0.05f, 1f)), Color.Transparent),
+        center = Offset(bx, by), radius = br
+    ))
+
+    // ── Purple ──
+    val px = w * (0.78f + 0.10f * cos(p2 * TAU + 1.5f))
+    val py = h * (0.18f + 0.09f * sin(p3 * TAU + 0.5f))
+    val pr = w * (0.50f + 0.08f * cos(p1 * TAU + 2.0f))
+    val pa = (if (isDark) 0.24f else 0.16f) + 0.06f * cos(p2 * TAU + 1.0f)
+    drawRect(Brush.radialGradient(
+        listOf(Color(0xFF9050EE).copy(alpha = pa.coerceIn(0.05f, 1f)), Color.Transparent),
+        center = Offset(px, py), radius = pr
+    ))
+
+    // ── Orange accent ──
+    val ox = w * (0.52f + 0.09f * sin(p3 * TAU + 2.3f))
+    val oy = h * (0.30f + 0.10f * cos(p1 * TAU + 1.7f))
+    val or_ = w * (0.38f + 0.07f * sin(p2 * TAU + 0.9f))
+    val oa = (if (isDark) 0.18f else 0.12f) + 0.05f * sin(p3 * TAU + 0.4f)
+    drawRect(Brush.radialGradient(
+        listOf(Color(0xFFFF7A30).copy(alpha = oa.coerceIn(0.05f, 1f)), Color.Transparent),
+        center = Offset(ox, oy), radius = or_
+    ))
+
+    // ── Linear fade-to-white mask over bottom 70% ──
+    val maskColor = if (isDark) Color(0xFF090E1E) else Color.White
+    drawRect(Brush.verticalGradient(
+        colors = listOf(Color.Transparent, maskColor),
+        startY = h * 0.30f,
+        endY = h
+    ))
+}
+
 
 // ---- Skeleton placeholder ----
 

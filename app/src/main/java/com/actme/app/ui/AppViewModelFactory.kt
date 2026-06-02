@@ -16,7 +16,7 @@ class AppViewModelFactory(
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         return when {
-            modelClass.isAssignableFrom(ChatViewModel::class.java) -> ChatViewModel(repository) as T
+            modelClass.isAssignableFrom(ChatViewModel::class.java) -> ChatViewModel(repository, application) as T
             modelClass.isAssignableFrom(MemoryViewModel::class.java) -> MemoryViewModel(repository) as T
             modelClass.isAssignableFrom(ScheduleViewModel::class.java) -> ScheduleViewModel(repository) as T
             modelClass.isAssignableFrom(SettingsViewModel::class.java) -> SettingsViewModel(application, repository) as T

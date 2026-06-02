@@ -1,5 +1,7 @@
 package com.actme.app.ui.chat
 
+import android.app.Application
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.actme.app.data.agent.ScheduleSubAgentPlan
@@ -25,7 +27,43 @@ data class PendingWorkbookAttachment(
     val name: String
 )
 
-class ChatViewModel(private val repository: ActMeRepository) : ViewModel() {
+class ChatViewModel(
+    private val repository: ActMeRepository,
+    private val application: Application
+) : ViewModel() {
+
+    private val prefs get() = application.getSharedPreferences("actme_ui", Context.MODE_PRIVATE)
+
+    private val defaultPresets = listOf(
+        "帮我创建一个日程提醒",
+        "查一查最近的科技新闻",
+        "讲一个有趣的地理知识"
+    )
+
+    private val _presetQuestions = MutableStateFlow(loadSavedPresets())
+    val presetQuestions: StateFlow<List<String>> = _presetQuestions
+
+    private fun loadSavedPresets(): List<String> {
+        val raw = prefs.getString("preset_questions", null) ?: return defaultPresets
+        val parts = raw.split("|||").map { it.trim() }.filter { it.isNotBlank() }
+        return if (parts.size == 3) parts else defaultPresets
+    }
+
+    private fun refreshPresetsIfNeeded() {
+        val lastRefresh = prefs.getLong("preset_questions_ts", 0L)
+        val eightHours = 8 * 60 * 60 * 1000L
+        if (System.currentTimeMillis() - lastRefresh < eightHours) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val questions = repository.generatePresetQuestions()
+            if (questions.size == 3) {
+                _presetQuestions.value = questions
+                prefs.edit()
+                    .putString("preset_questions", questions.joinToString("|||"))
+                    .putLong("preset_questions_ts", System.currentTimeMillis())
+                    .apply()
+            }
+        }
+    }
     private val currentConversationIdMutable = MutableStateFlow<Long?>(null)
     val currentConversationId: StateFlow<Long?> = currentConversationIdMutable
 
@@ -74,6 +112,7 @@ class ChatViewModel(private val repository: ActMeRepository) : ViewModel() {
             currentConversationIdMutable.value = repository.ensureActiveConversationId()
         }
         refreshModelState()
+        refreshPresetsIfNeeded()
         // Re-fetch models whenever the provider list changes (e.g. user adds a new one)
         viewModelScope.launch {
             repository.providers.collect { providers ->
