@@ -189,10 +189,7 @@ fun ChatScreen(
             selectedImageBytes = null
             selectedWorkbookPath = null
             selectedWorkbookName = null
-            scope.launch {
-                kotlinx.coroutines.delay(100)
-                focusRequester.requestFocus()
-            }
+            focusManager.clearFocus()
         }
     }
 
