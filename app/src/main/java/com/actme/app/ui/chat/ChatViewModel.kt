@@ -20,6 +20,11 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
+data class PendingWorkbookAttachment(
+    val path: String,
+    val name: String
+)
+
 class ChatViewModel(private val repository: ActMeRepository) : ViewModel() {
     private val currentConversationIdMutable = MutableStateFlow<Long?>(null)
     val currentConversationId: StateFlow<Long?> = currentConversationIdMutable
@@ -53,6 +58,7 @@ class ChatViewModel(private val repository: ActMeRepository) : ViewModel() {
     private var sendingJob: Job? = null
     val isRecording = MutableStateFlow(false)
     val transcribedText = MutableStateFlow<String?>(null)
+    val pendingWorkbookAttachment = MutableStateFlow<PendingWorkbookAttachment?>(null)
 
     // Model selection state
     private val _availableModels = MutableStateFlow<List<String>>(emptyList())
@@ -136,6 +142,14 @@ class ChatViewModel(private val repository: ActMeRepository) : ViewModel() {
 
     fun clearTranscribedText() {
         transcribedText.value = null
+    }
+
+    fun attachWorkbook(path: String, name: String) {
+        pendingWorkbookAttachment.value = PendingWorkbookAttachment(path, name)
+    }
+
+    fun consumeWorkbookAttachment() {
+        pendingWorkbookAttachment.value = null
     }
 
     fun createNewConversation() {

@@ -3,6 +3,7 @@ package com.actme.app.di
 import android.content.Context
 import com.actme.app.data.agent.ActMeAgent
 import com.actme.app.data.agent.GeckoSearchEngine
+import com.actme.app.data.agent.PythonSkillEngine
 import com.actme.app.data.local.ActMeDatabase
 import com.actme.app.data.remote.OpenAiResponsesClient
 import com.actme.app.data.remote.ProviderManager
@@ -14,6 +15,7 @@ class AppContainer(context: Context) {
 
     init {
         GeckoSearchEngine.initialize(appContext)
+        PythonSkillEngine.initialize(appContext)
     }
 
     val database: ActMeDatabase = ActMeDatabase.getInstance(appContext)

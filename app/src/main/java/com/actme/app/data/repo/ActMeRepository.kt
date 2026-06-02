@@ -289,9 +289,11 @@ class ActMeRepository(
                 val type = call.type
                 val isSearch = type == "web_search"
                 val isBrowse = type == "browse_url" || type == "browser_url" || type == "web_browse" || type == "open_url"
+                val isPython = type == "python_exec" || type == "run_python" || type == "python"
                 val key = when {
                     isSearch -> call.query.trim().lowercase()
                     isBrowse -> call.url.ifBlank { call.query }.trim().lowercase()
+                    isPython -> type + ":" + call.code.take(500) + ":" + call.input.take(500)
                     else -> type + ":" + call.query + ":" + call.url
                 }
                 val duplicate = (isSearch && key in searchedQueries) || (isBrowse && key in visitedUrls)
@@ -409,6 +411,10 @@ class ActMeRepository(
         var finalReply = if (localSkillHints.isBlank()) result.reply else "${result.reply}\n\n$localSkillHints"
         if (toolLoopPausedReason != null && result.systemCalls.isNotEmpty()) {
             finalReply += "\n\n---\n执行已暂停：$toolLoopPausedReason。可以发送“继续”让我接着执行后续步骤。"
+        }
+        val generatedExcelPaths = extractWorkspaceExcelPaths(searchResults.orEmpty())
+        if (generatedExcelPaths.isNotEmpty() && generatedExcelPaths.none { finalReply.contains(it) }) {
+            finalReply += "\n\n---\n生成的 Excel 文件：\n" + generatedExcelPaths.joinToString("\n")
         }
         // Append search status footer if search was attempted
         if (searchFailed) {
@@ -955,6 +961,12 @@ class ActMeRepository(
             hasBrowse -> "📖 [展开网页阅读内容](search://result)"
             else -> "🔍 [展开搜索结果](search://result)"
         }
+    }
+
+    private fun extractWorkspaceExcelPaths(text: String): List<String> {
+        if (text.isBlank()) return emptyList()
+        val regex = Regex("""(?:[A-Za-z]:)?[/\\][^\s"'`，。；）)]+agent_workspace[/\\][^\s"'`，。；）)]+\.(?:xlsx|xlsm)""")
+        return regex.findAll(text).map { it.value }.distinct().toList()
     }
 
     // ---- Provider management ----

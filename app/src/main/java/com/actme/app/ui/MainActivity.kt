@@ -1,9 +1,11 @@
 package com.actme.app.ui
 
 import android.Manifest
+import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -37,6 +39,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.actme.app.ActMeApp
+import com.actme.app.data.agent.PythonSkillEngine
+import com.actme.app.util.AppLogger
 import com.actme.app.ui.chat.ChatScreen
 import com.actme.app.ui.chat.ChatViewModel
 import com.actme.app.ui.chat.MenuScreen
@@ -50,6 +54,7 @@ import com.actme.app.ui.settings.SettingsScreen
 import com.actme.app.mnn.DownloadState
 import com.actme.app.ui.settings.SettingsViewModel
 import com.actme.app.ui.theme.AppTheme
+import java.io.File
 
 class MainActivity : ComponentActivity() {
     private val viewModelFactory by lazy {
@@ -93,6 +98,7 @@ class MainActivity : ComponentActivity() {
                             val localVisionModelDir by settingsViewModel.localVisionModelDir.collectAsStateWithLifecycle("")
                             val sessionInfos by chatViewModel.sessionInfos.collectAsStateWithLifecycle(emptyList())
                             val currentConversationId by chatViewModel.currentConversationId.collectAsStateWithLifecycle(null)
+                            val pendingWorkbook by chatViewModel.pendingWorkbookAttachment.collectAsStateWithLifecycle(null)
 
                             var showMenu by remember { mutableStateOf(false) }
 
@@ -118,6 +124,8 @@ class MainActivity : ComponentActivity() {
                                     isModelReady = isModelReady,
                                     onStopSending = chatViewModel::stopSending,
                                     localVisionModelDir = localVisionModelDir,
+                                    pendingWorkbook = pendingWorkbook,
+                                    onWorkbookConsumed = chatViewModel::consumeWorkbookAttachment,
                                     onNavigateToMenu = { showMenu = true }
                                 )
 
@@ -276,11 +284,56 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+        handleIncomingExcelIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIncomingExcelIntent(intent)
     }
 
     private fun requestNotificationPermissionIfNeeded() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
+    }
+
+    private fun handleIncomingExcelIntent(intent: Intent?) {
+        if (intent?.action != Intent.ACTION_VIEW && intent?.action != Intent.ACTION_SEND) return
+        val uri = intent.data ?: intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM) ?: return
+        runCatching {
+            val displayName = displayNameForUri(uri)
+            val targetDir = File(PythonSkillEngine.workspaceDir(this), "excel").apply { mkdirs() }
+            val targetFile = File(targetDir, "${System.currentTimeMillis()}_${safeWorkbookFileName(displayName)}")
+            contentResolver.openInputStream(uri)?.use { input ->
+                targetFile.outputStream().use { output ->
+                    input.copyTo(output)
+                }
+            } ?: error("cannot open input stream")
+            chatViewModel.attachWorkbook(targetFile.absolutePath, displayName)
+            AppLogger.i(TAG, "external workbook attached: ${targetFile.absolutePath}")
+        }.onFailure { e ->
+            AppLogger.e(TAG, "external workbook import failed", e)
+        }
+    }
+
+    private fun displayNameForUri(uri: Uri): String {
+        contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+            val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            if (idx >= 0 && cursor.moveToFirst()) {
+                return cursor.getString(idx)
+            }
+        }
+        return uri.lastPathSegment?.substringAfterLast('/') ?: "workbook.xlsx"
+    }
+
+    private fun safeWorkbookFileName(name: String): String {
+        val cleaned = name.replace(Regex("[^A-Za-z0-9._-]"), "_").take(80).ifBlank { "workbook.xlsx" }
+        return if (cleaned.endsWith(".xlsx", true) || cleaned.endsWith(".xlsm", true)) cleaned else "$cleaned.xlsx"
+    }
+
+    companion object {
+        private const val TAG = "MainActivity"
     }
 }

@@ -135,6 +135,7 @@ object SystemSkillExecutor {
                 "get_current_time" -> executeGetCurrentTime()
                 "web_search" -> executeWebSearch(call.query)
                 "browse_url", "browser_url", "web_browse", "open_url" -> executeBrowseUrl(call.url.ifBlank { call.query })
+                "python_exec", "run_python", "python" -> executePython(call)
                 else -> {
                     AppLogger.w(TAG, "Unknown call: " + call.type)
                     "[TOOL_ERROR] Unknown system call: ${call.type}"
@@ -152,6 +153,9 @@ object SystemSkillExecutor {
     }
 
     private fun toolTitle(call: SystemCall): String {
+        if (call.type == "python_exec" || call.type == "run_python" || call.type == "python") {
+            return "Run Python"
+        }
         return when (call.type) {
             "get_current_time" -> "获取当前时间"
             "web_search" -> "联网搜索"
@@ -161,6 +165,9 @@ object SystemSkillExecutor {
     }
 
     private fun toolDetail(call: SystemCall): String {
+        if (call.type == "python_exec" || call.type == "run_python" || call.type == "python") {
+            return call.code.lineSequence().firstOrNull()?.trim().orEmpty().ifBlank { "python_exec" }.take(240)
+        }
         return when (call.type) {
             "web_search" -> call.query
             "browse_url", "browser_url", "web_browse", "open_url" -> call.url.ifBlank { call.query }
@@ -169,6 +176,8 @@ object SystemSkillExecutor {
     }
 
     private fun summarizeToolResult(result: String): String {
+        if (result.contains("[PYTHON_RESULT]")) return "Python completed, ${result.length} chars"
+        if (result.contains("[PYTHON_ERROR]")) return "Python failed"
         return when {
             result.contains("[BROWSE_RESULT]") -> "网页内容已读取，${result.length} 字符"
             result.contains("[BROWSE_ERROR]") -> "网页读取失败"
@@ -188,6 +197,35 @@ object SystemSkillExecutor {
         val ts = now.atZone(zone).toInstant().toEpochMilli()
         AppLogger.i(TAG, "TIME: " + f + " (" + dow + ")")
         return "【当前时间】\n日期时间: " + f + " (" + dow + ")\n时区: " + zone.id + "\nUnix毫秒时间戳: " + ts
+    }
+
+    // ---- python_exec ----
+
+    private suspend fun executePython(call: SystemCall): String {
+        val code = call.code.ifBlank { call.query }
+        if (code.isBlank()) return "[PYTHON_ERROR] Empty Python code."
+        AppLogger.i(TAG, "PYTHON-EXEC: chars=${code.length}, inputChars=${call.input.length}, timeoutMs=${call.timeoutMs}")
+        val result = PythonSkillEngine.execute(code, call.input, call.timeoutMs)
+        return buildString {
+            appendLine(if (result.ok) "[PYTHON_RESULT]" else "[PYTHON_ERROR]")
+            appendLine("elapsed_ms: ${result.elapsed_ms}")
+            if (result.stdout.isNotBlank()) {
+                appendLine("stdout:")
+                appendLine(result.stdout.trimEnd())
+            }
+            if (result.result != null) {
+                appendLine("result:")
+                appendLine(result.result.toString())
+            }
+            if (result.stderr.isNotBlank()) {
+                appendLine("stderr:")
+                appendLine(result.stderr.trimEnd())
+            }
+            if (result.error.isNotBlank()) {
+                appendLine("error:")
+                appendLine(result.error.trimEnd())
+            }
+        }.trim()
     }
 
     // ---- browse_url ----

@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.provider.OpenableColumns
 import android.util.Base64
 import com.actme.app.util.AppLogger
 import android.widget.Toast
@@ -45,6 +46,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Image
@@ -97,10 +99,12 @@ import com.mikepenz.markdown.m3.Markdown
 import com.mikepenz.markdown.m3.markdownColor
 import com.mikepenz.markdown.m3.markdownTypography
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import com.actme.app.audio.AsrManager
 import com.actme.app.ui.theme.MarqueeBorder
 import com.actme.app.audio.AudioRecorderManager
 import com.actme.app.data.agent.ScheduleSubAgentPlan
+import com.actme.app.data.agent.PythonSkillEngine
 import com.actme.app.data.local.ChatMessageEntity
 import com.actme.app.image.LocalImageImportManager
 import com.actme.app.image.TodoImportPlan
@@ -128,6 +132,8 @@ fun ChatScreen(
     isModelReady: Boolean = false,
     onStopSending: () -> Unit = {},
     localVisionModelDir: String = "",
+    pendingWorkbook: PendingWorkbookAttachment? = null,
+    onWorkbookConsumed: () -> Unit = {},
     onNavigateToMenu: () -> Unit = {}
 ) {
     val scope = rememberCoroutineScope()
@@ -139,6 +145,8 @@ fun ChatScreen(
     var selectedImageBase64 by remember { mutableStateOf<String?>(null) }
     var selectedImageMimeType by remember { mutableStateOf<String?>(null) }
     var selectedImageBytes by remember { mutableStateOf<ByteArray?>(null) }
+    var selectedWorkbookPath by remember { mutableStateOf<String?>(null) }
+    var selectedWorkbookName by remember { mutableStateOf<String?>(null) }
     var showModelMenu by remember { mutableStateOf(false) }
     var importBusy by remember { mutableStateOf(false) }
     var scheduleCandidate by remember { mutableStateOf<List<ScheduleSubAgentPlan>>(emptyList()) }
@@ -146,14 +154,41 @@ fun ChatScreen(
     var showScheduleOcrText by remember { mutableStateOf(false) }
     var todoCandidate by remember { mutableStateOf<TodoImportPlan?>(null) }
 
+    LaunchedEffect(pendingWorkbook) {
+        val workbook = pendingWorkbook ?: return@LaunchedEffect
+        selectedWorkbookPath = workbook.path
+        selectedWorkbookName = workbook.name
+        onWorkbookConsumed()
+    }
+
     fun doSend() {
         val text = input.trim()
-        if (text.isNotBlank() || selectedImageBase64 != null) {
-            onSend(text, selectedImageBase64, selectedImageMimeType)
+        val workbookPath = selectedWorkbookPath
+        val workbookName = selectedWorkbookName
+        if (text.isNotBlank() || selectedImageBase64 != null || workbookPath != null) {
+            val finalText = if (workbookPath != null) {
+                buildString {
+                    if (text.isNotBlank()) appendLine(text)
+                    appendLine()
+                    appendLine("Excel file attached: ${workbookName ?: "workbook.xlsx"}")
+                    appendLine("Workspace path: $workbookPath")
+                    appendLine("Use python_exec and read_excel(\"$workbookPath\") to read the workbook, then answer the user's question.")
+                    /*
+                    appendLine("已上传 Excel 文件：${workbookName ?: "workbook.xlsx"}")
+                    appendLine("工作区路径：$workbookPath")
+                    appendLine("请使用 python_exec 调用 read_excel(\"$workbookPath\") 读取表格，然后按用户问题分析。")
+                    */
+                }.trim()
+            } else {
+                text
+            }
+            onSend(finalText, selectedImageBase64, selectedImageMimeType)
             input = ""
             selectedImageBase64 = null
             selectedImageMimeType = null
             selectedImageBytes = null
+            selectedWorkbookPath = null
+            selectedWorkbookName = null
             scope.launch {
                 kotlinx.coroutines.delay(100)
                 focusRequester.requestFocus()
@@ -291,6 +326,46 @@ fun ChatScreen(
                     selectedImageMimeType = if (mimeType.contains("png", ignoreCase = true)) "image/png" else "image/jpeg"
                     selectedImageBytes = normalizedBytes
                 }
+            }
+        }
+    }
+
+    fun displayNameForUri(uri: Uri): String {
+        context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+            val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            if (idx >= 0 && cursor.moveToFirst()) {
+                return cursor.getString(idx)
+            }
+        }
+        return uri.lastPathSegment?.substringAfterLast('/') ?: "workbook.xlsx"
+    }
+
+    fun safeWorkbookFileName(name: String): String {
+        val cleaned = name.replace(Regex("[^A-Za-z0-9._-]"), "_").take(80).ifBlank { "workbook.xlsx" }
+        return if (cleaned.endsWith(".xlsx", true) || cleaned.endsWith(".xlsm", true)) {
+            cleaned
+        } else {
+            "$cleaned.xlsx"
+        }
+    }
+
+    val workbookPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            try {
+                val displayName = displayNameForUri(uri)
+                val targetDir = File(PythonSkillEngine.workspaceDir(context), "excel").apply { mkdirs() }
+                val targetFile = File(targetDir, "${System.currentTimeMillis()}_${safeWorkbookFileName(displayName)}")
+                context.contentResolver.openInputStream(uri)?.use { inputStream ->
+                    targetFile.outputStream().use { outputStream ->
+                        inputStream.copyTo(outputStream)
+                    }
+                } ?: error("无法读取文件")
+                selectedWorkbookName = displayName
+                selectedWorkbookPath = targetFile.absolutePath
+                Toast.makeText(context, "Excel 已添加：$displayName", Toast.LENGTH_SHORT).show()
+            } catch (e: Exception) {
+                AppLogger.e("ChatScreen", "excel import failed", e)
+                Toast.makeText(context, "Excel 添加失败: ${e.message}", Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -692,6 +767,49 @@ fun ChatScreen(
                     }
                 }
 
+                if (selectedWorkbookPath != null) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.secondaryContainer,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 6.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                Icons.Filled.AttachFile,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                                tint = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                            Text(
+                                selectedWorkbookName ?: "workbook.xlsx",
+                                modifier = Modifier.weight(1f),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                maxLines = 1
+                            )
+                            IconButton(
+                                onClick = {
+                                    selectedWorkbookPath = null
+                                    selectedWorkbookName = null
+                                },
+                                modifier = Modifier.size(28.dp)
+                            ) {
+                                Icon(
+                                    Icons.Filled.Close,
+                                    contentDescription = "移除 Excel",
+                                    modifier = Modifier.size(14.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+
                 Surface(
                     shape = RoundedCornerShape(24.dp),
                     color = MaterialTheme.colorScheme.surface,
@@ -741,6 +859,17 @@ fun ChatScreen(
                                 photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                             }) {
                                 Icon(Icons.Filled.Image, contentDescription = "选择图片")
+                            }
+                            IconButton(onClick = {
+                                workbookPicker.launch(
+                                    arrayOf(
+                                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                        "application/vnd.ms-excel.sheet.macroEnabled.12",
+                                        "application/vnd.ms-excel"
+                                    )
+                                )
+                            }) {
+                                Icon(Icons.Filled.AttachFile, contentDescription = "选择 Excel")
                             }
                             when {
                                 isVoiceRecording -> {
@@ -1055,6 +1184,33 @@ private fun MessageBubble(msg: ChatMessageEntity) {
         }
 
         // Search result expand button
+        val generatedExcelPaths = if (isUser) emptyList() else extractWorkspaceExcelPaths(msg.content)
+        if (generatedExcelPaths.isNotEmpty()) {
+            Column(
+                modifier = Modifier.padding(top = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                generatedExcelPaths.take(3).forEach { path ->
+                    TextButton(
+                        onClick = { openWorkspaceExcel(context, path) }
+                    ) {
+                        Icon(
+                            Icons.Filled.AttachFile,
+                            contentDescription = null,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            File(path).name,
+                            style = MaterialTheme.typography.labelSmall,
+                            maxLines = 1
+                        )
+                    }
+                }
+            }
+        }
+
+        // Search result expand button
         if (hasSearchResult) {
             TextButton(
                 onClick = { showSearchResult = true },
@@ -1092,6 +1248,34 @@ private fun resultPanelLabel(result: String?): String {
         hasBrowse && hasSearch -> "联网资料"
         hasBrowse -> "网页阅读内容"
         else -> "搜索结果"
+    }
+}
+
+private fun extractWorkspaceExcelPaths(text: String): List<String> {
+    if (text.isBlank()) return emptyList()
+    val regex = Regex("""(?:[A-Za-z]:)?[/\\][^\s"'`，。；）)]+agent_workspace[/\\][^\s"'`，。；）)]+\.(?:xlsx|xlsm)""")
+    return regex.findAll(text)
+        .map { it.value.replace('/', File.separatorChar).replace('\\', File.separatorChar) }
+        .distinct()
+        .filter { File(it).exists() }
+        .toList()
+}
+
+private fun openWorkspaceExcel(context: android.content.Context, path: String) {
+    val file = File(path)
+    if (!file.exists()) {
+        Toast.makeText(context, "文件不存在: ${file.name}", Toast.LENGTH_SHORT).show()
+        return
+    }
+    val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+    val intent = Intent(Intent.ACTION_VIEW).apply {
+        setDataAndType(uri, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    runCatching {
+        context.startActivity(Intent.createChooser(intent, "打开 Excel"))
+    }.onFailure {
+        Toast.makeText(context, "没有可打开 Excel 的应用", Toast.LENGTH_SHORT).show()
     }
 }
 

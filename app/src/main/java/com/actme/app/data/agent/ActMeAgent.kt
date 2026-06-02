@@ -45,7 +45,10 @@ data class AgentTurnResult(
 data class SystemCall(
     val type: String,
     val query: String = "",
-    val url: String = ""
+    val url: String = "",
+    val code: String = "",
+    val input: String = "",
+    @SerialName("timeout_ms") val timeoutMs: Long = 3_000L
 )
 
 @Serializable
@@ -253,12 +256,27 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
             val url = callObj.stringValue("url")
                 ?: argumentsObj?.stringValue("url")
                 ?: ""
-            SystemCall(type = type, query = query, url = url)
+            val code = callObj.stringValue("code")
+                ?: argumentsObj?.stringValue("code")
+                ?: ""
+            val input = callObj.stringValue("input")
+                ?: argumentsObj?.stringValue("input")
+                ?: ""
+            val timeoutMs = callObj.longValue("timeout_ms")
+                ?: argumentsObj?.longValue("timeout_ms")
+                ?: callObj.longValue("timeoutMs")
+                ?: argumentsObj?.longValue("timeoutMs")
+                ?: 3_000L
+            SystemCall(type = type, query = query, url = url, code = code, input = input, timeoutMs = timeoutMs)
         }
     }
 
     private fun JsonObject.stringValue(key: String): String? {
         return (this[key] as? JsonPrimitive)?.contentOrNull
+    }
+
+    private fun JsonObject.longValue(key: String): Long? {
+        return (this[key] as? JsonPrimitive)?.contentOrNull?.toLongOrNull()
     }
 
     private fun JsonObject.argumentsObject(): JsonObject? {
@@ -317,7 +335,11 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
                     .find(block)?.groupValues?.getOrNull(1).orEmpty()
                 val url = Regex("\"url\"\\s*:\\s*\"([^\"]*)\"")
                     .find(block)?.groupValues?.getOrNull(1).orEmpty()
-                SystemCall(type = type, query = query, url = url)
+                val code = Regex("\"code\"\\s*:\\s*\"([^\"]*)\"")
+                    .find(block)?.groupValues?.getOrNull(1).orEmpty()
+                val input = Regex("\"input\"\\s*:\\s*\"([^\"]*)\"")
+                    .find(block)?.groupValues?.getOrNull(1).orEmpty()
+                SystemCall(type = type, query = query, url = url, code = code, input = input)
             }
             .toList()
     }
@@ -554,7 +576,7 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
         }
 
         val multiStepHint = if (enableWebSearch) {
-            "Multi-step workflow: you may call system_calls, observe the returned results, then call more system_calls in the next pass. You have discretion to choose the number and order of tool calls. Use web_search to discover sources, browse_url to inspect specific pages, and get_current_time for exact time. For broad, uncertain, recent, or source-sensitive questions, consider browsing multiple non-duplicate pages to confirm information. For simple questions, direct answers or one search may be enough. Do not repeat the same query or URL unless there is a clear reason. Stop calling tools when the answer is sufficiently supported, the user likely wants a quick answer, or the tool budget is nearly exhausted."
+            "Multi-step workflow: you may call system_calls, observe the returned results, then call more system_calls in the next pass. You have discretion to choose the number and order of tool calls. Use web_search to discover sources, browse_url to inspect specific pages, get_current_time for exact time, and python_exec for calculation, parsing, sorting, deduplication, JSON/CSV/text processing, and other deterministic transformations. For broad, uncertain, recent, or source-sensitive questions, consider browsing multiple non-duplicate pages to confirm information. For simple questions, direct answers or one search may be enough. Do not repeat the same query or URL unless there is a clear reason. Stop calling tools when the answer is sufficiently supported, the user likely wants a quick answer, or the tool budget is nearly exhausted."
         } else {
             ""
         }
@@ -572,6 +594,15 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
             $webSearchHint
             $browseUrlHint
             $multiStepHint
+            Native Python workflow:
+            - Use python_exec whenever deterministic code is useful: calculation, parsing, regex extraction, JSON/CSV/table processing, Excel reading/writing, sorting, deduplication, validation, data transformation, or reusable helper logic.
+            - python_exec call format: {"type":"python_exec","code":"print(2+2)\nemit({'answer': 4})","input":"optional text or JSON","timeout_ms":3000}
+            - Each python_exec runs Python code in a sandbox. Available variables/functions: input_text, input_json, emit(value), set_result(value), result, workspace_dir, read_excel(path, max_rows=200, max_sheets=10), write_excel(filename, sheets), save_script(name, source), load_script(name), list_scripts(), compile_script(name), run_script(name).
+            - The sandbox has no network and only workspace file access. Do not use os/socket/subprocess/ctypes. Use web_search/browse_url for network access, then Python for processing.
+            - For one-off tasks, put Python directly in code and call emit(value) with the final structured result.
+            - For reusable or non-trivial logic, first write a .py script with save_script("tools/name.py", source). Then call compile_script("tools/name.py"). If compile_script returns ok=false, inspect error, fix the source with save_script, compile again, then run_script("tools/name.py"). Do not run an uncompiled reusable script unless the task is urgent and simple.
+            - Saved scripts run with the same globals as python_exec, so they can read input_text/input_json, call read_excel/write_excel, and return via emit(value) or result.
+            - For uploaded .xlsx/.xlsm files, call read_excel(path) using the workspace path in the user message. For exporting Excel, call write_excel("filename.xlsx", {"Sheet1":[["col"],["value"]]}) and include the returned path in the final reply.
             【关于本 App】
             $systemMemoryText
 

@@ -5,6 +5,7 @@ plugins {
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.serialization")
     id("com.google.devtools.ksp")
+    id("com.chaquo.python")
 }
 
 val generatedAssetsDir = layout.buildDirectory.dir("generated/assets/main")
@@ -96,6 +97,15 @@ android {
         }
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+    }
+}
+
+chaquopy {
+    defaultConfig {
+        version = "3.11"
+        pip {
+            install("openpyxl==3.1.5")
         }
     }
 }
