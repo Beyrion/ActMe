@@ -66,6 +66,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.remember
@@ -95,6 +96,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.mikepenz.markdown.m3.Markdown
 import com.mikepenz.markdown.m3.markdownColor
 import com.mikepenz.markdown.m3.markdownTypography
@@ -579,7 +581,8 @@ fun ChatScreen(
 
     MarqueeBorder(
         isActive = sending,
-        modifier = Modifier.fillMaxSize()
+        modifier = Modifier.fillMaxSize(),
+        cornerRadius = 36.dp
     ) {
         Column(
             modifier = Modifier.fillMaxSize()
@@ -611,7 +614,7 @@ fun ChatScreen(
             Column(
                 modifier = Modifier
                     .weight(1f)
-                    .padding(horizontal = 12.dp)
+                    .padding(start = 12.dp, end = 12.dp, bottom = 12.dp)
             ) {
 
             // ---- Message list ----
@@ -628,13 +631,35 @@ fun ChatScreen(
                 }
             }
 
-            // Auto-scroll to bottom on initial load
+            // In-memory scroll position cache (resets on app restart)
+            val scrollPositions = remember { mutableStateMapOf<Long, Int>() }
+
+            // Continuously track scroll position for the current conversation
+            val activeConversationId = messages.firstOrNull()?.conversationId
             LaunchedEffect(Unit) {
+                snapshotFlow {
+                    messages.firstOrNull()?.conversationId to
+                        listState.layoutInfo.visibleItemsInfo.firstOrNull()?.index
+                }
+                .collect { (convId, firstVisible) ->
+                    if (convId != null && firstVisible != null) {
+                        scrollPositions[convId] = firstVisible
+                    }
+                }
+            }
+
+            // On session change: restore cached position or scroll to bottom
+            LaunchedEffect(activeConversationId) {
+                val savedPos = activeConversationId?.let { scrollPositions[it] }
                 snapshotFlow { listState.layoutInfo.totalItemsCount }
                     .first { it > 0 }
-                val targetIndex = listState.layoutInfo.totalItemsCount - 1
-                if (targetIndex >= 0) {
-                    listState.scrollToItem(targetIndex)
+                if (savedPos != null && savedPos < listState.layoutInfo.totalItemsCount) {
+                    listState.scrollToItem(savedPos)
+                } else {
+                    val targetIndex = listState.layoutInfo.totalItemsCount - 1
+                    if (targetIndex >= 0) {
+                        listState.scrollToItem(targetIndex)
+                    }
                 }
             }
 
@@ -817,6 +842,7 @@ fun ChatScreen(
                         OutlinedTextField(
                             modifier = Modifier
                                 .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 8.dp)
                                 .focusRequester(focusRequester)
                                 .onFocusChanged { isInputFocused = it.isFocused }
                                 .pointerInput(Unit) {
@@ -849,7 +875,7 @@ fun ChatScreen(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 8.dp, vertical = 4.dp),
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             IconButton(onClick = {
@@ -1207,32 +1233,41 @@ private fun MessageBubble(msg: ChatMessageEntity) {
             }
         }
 
-        // Search result expand button
-        if (hasSearchResult) {
-            TextButton(
-                onClick = { showSearchResult = true },
-                modifier = Modifier.padding(top = 2.dp)
-            ) {
-                Text(
-                    resultExpandLabel(msg.searchResult),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary
-                )
-            }
-        }
-
+        // Info tags row (search result + tokens, same line)
         val tokenLabel = messageTokenLabel(msg)
-        if (tokenLabel != null) {
-            Text(
-                tokenLabel,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(
-                    top = 2.dp,
-                    start = if (isUser) 0.dp else 8.dp,
-                    end = if (isUser) 8.dp else 0.dp
-                )
-            )
+        if (hasSearchResult || tokenLabel != null) {
+            Row(
+                modifier = Modifier.padding(top = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                if (hasSearchResult) {
+                    Surface(
+                        shape = RoundedCornerShape(4.dp),
+                        color = Color(0xFFBCBCBC),
+                        modifier = Modifier.clickable { showSearchResult = true }
+                    ) {
+                        Text(
+                            resultExpandLabel(msg.searchResult),
+                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                            color = Color.White,
+                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 3.dp)
+                        )
+                    }
+                }
+                if (tokenLabel != null) {
+                    Surface(
+                        shape = RoundedCornerShape(4.dp),
+                        color = Color(0xFFBCBCBC),
+                    ) {
+                        Text(
+                            tokenLabel,
+                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                            color = Color.White,
+                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 3.dp)
+                        )
+                    }
+                }
+            }
         }
     }
 }
@@ -1302,10 +1337,10 @@ private fun messageTokenLabel(msg: ChatMessageEntity): String? {
     if (msg.tokenSource == "api" && total != null && total > 0) {
         val input = msg.tokenInput ?: 0
         val output = msg.tokenOutput ?: 0
-        return "API tokens: 输入 $input / 输出 $output / 总计 $total"
+        return "$total tokens: ↑ $input ↓ $output"
     }
     val estimated = estimateMessageTokens(msg)
-    return if (estimated > 0) "约 $estimated tokens" else null
+    return if (estimated > 0) "~$estimated tokens" else null
 }
 
 private fun estimateMessageTokens(msg: ChatMessageEntity): Int {
