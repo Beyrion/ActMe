@@ -1,99 +1,126 @@
 # ActMe Agent 设计说明
 
-本文档描述 ActMe Agent 的目标、输入输出协议、系统工具、多步执行、Python 沙箱、Excel 工作流、联网搜索、网页阅读、JSON 解析兜底、token usage 和 UI 展示策略。
+ActMe Agent 是 App 内置的中文行动型 Agent。它不是单轮聊天机器人，而是一个连接记忆、日程、联网、代码执行、文件处理和本机 Android 自动化能力的移动端执行代理。
 
-## 目标
+本文档描述 Agent 的整体架构、输入输出协议、系统工具、多步执行、三驾马车、Skill/Memory、UI 展示和调试策略。更细的专题文档见 `docs/`。
 
-ActMe Agent 是 App 内置的行动型中文 Agent。它不是单纯聊天机器人，而是连接以下能力的中枢：
+## 核心定位
 
-- 与用户自然语言对话。
-- 读取用户记忆、系统记忆、当前日程和启用的 Skills。
-- 判断是否需要写入记忆。
-- 判断是否需要创建日程。
-- 判断是否需要新增本地 Skill。
-- 按需调用系统工具，例如搜索、浏览网页、获取当前时间、运行 Python、读写 Excel。
-- 在一次回复中多轮执行工具，并把每一步展示给用户。
-- 在工具失败、JSON 不标准、网页无法读取、Python 报错等情况下尽量降级处理，而不是把内部结构暴露给用户。
+ActMe Agent 的目标是帮助用户把自然语言请求转化为可执行流程：
+
+- 读取上下文：聊天历史、用户记忆、系统记忆、当前日程、启用 Skills。
+- 判断写入：是否需要更新 memory、schedule 或 skill。
+- 调用工具：联网搜索、网页浏览、Python、Excel、ADB、当前时间。
+- 多步执行：观察工具结果后继续搜索、浏览、计算或操作。
+- 可见可控：每一步工具执行都在聊天中展示，用户可以中止。
+- 降级处理：工具失败或模型 JSON 不标准时尽量恢复，而不是把内部结构暴露给用户。
 
 ## 主要代码位置
 
 ```text
 app/src/main/java/com/actme/app/data/agent/ActMeAgent.kt
-  构造系统提示、组装 LLM messages、解析 Agent JSON、流式抽取 reply。
+  构造 system prompt、组装 LLM messages、解析 Agent JSON、流式抽取 reply。
 
 app/src/main/java/com/actme/app/data/agent/SystemSkillExecutor.kt
-  执行 system_calls，包括 get_current_time、web_search、browse_url、python_exec。
+  执行 system_calls，包括 time、web_search、browse_url、python_exec、adb_shell。
+
+app/src/main/java/com/actme/app/data/repo/ActMeRepository.kt
+  对话主流程、多步工具循环、工具预算、可见步骤、取消控制、结果落库。
 
 app/src/main/java/com/actme/app/data/agent/GeckoSearchEngine.kt
-  使用 GeckoView + WebExtension 读取渲染后的页面文本。
+  使用 GeckoView 进行搜索页渲染和网页文本读取。
 
 app/src/main/java/com/actme/app/data/agent/PythonSkillEngine.kt
   初始化 Chaquopy Python runtime，调用 Python 沙箱。
 
 app/src/main/python/agent_python.py
-  Python 沙箱、Excel 读写、运行期脚本保存/编译/执行。
+  Python 沙箱、Excel 读写、脚本保存/编译/执行。
 
-app/src/main/java/com/actme/app/data/remote/OpenAiResponsesClient.kt
-  OpenAI-compatible / Anthropic-compatible API 客户端，支持 streaming 和 token usage。
+app/src/main/java/com/actme/app/data/agent/AdbSkillEngine.kt
+  ADB 配对、连接配置保存、shell 命令执行。
 
-app/src/main/java/com/actme/app/data/repo/ActMeRepository.kt
-  对话主流程、多步工具循环、可见执行步骤、取消控制、结果落库。
+app/src/main/java/com/actme/app/ui/AdbOverlayService.kt
+  显示在其他应用上方的 ADB 配对悬浮窗。
 
 app/src/main/java/com/actme/app/ui/chat/ChatScreen.kt
-  聊天 UI、消息气泡、Excel 附件、生成文件按钮、资料展开面板、token 显示、停止按钮。
+  聊天 UI、工具执行气泡、资料展开、Excel 文件按钮、token 展示、停止按钮。
 ```
+
+## 三驾马车
+
+ActMe 的执行层由三类内置能力组成：
+
+1. **内置浏览器**：联网搜索、打开网页、读取渲染后的页面文本。
+2. **内置 Python**：确定性计算、数据清洗、Excel 读写、脚本复用。
+3. **内置 ADB**：用户授权后观察和操作本机 Android 环境。
+
+三者的关系：
+
+```text
+大模型负责规划和总结
+App 内置能力负责真实执行
+Agentic Loop 负责调度和继续
+UI 负责展示、控制和中止
+```
+
+详见：
+
+- [docs/BUILTIN_CAPABILITIES.md](docs/BUILTIN_CAPABILITIES.md)
+- [docs/BUILTIN_BROWSER.md](docs/BUILTIN_BROWSER.md)
+- [docs/BUILTIN_PYTHON.md](docs/BUILTIN_PYTHON.md)
+- [docs/BUILTIN_ADB.md](docs/BUILTIN_ADB.md)
 
 ## Agent 输入上下文
 
-每轮对话会构造一组 messages，主要包含：
+每轮对话进入模型前会构造 messages，主要包含：
 
 - system prompt
-- 历史聊天消息
 - 当前用户输入
 - 可选图片输入
+- 历史聊天消息
 - 用户记忆
 - 系统记忆
 - 当前日程
 - 启用 Skills
-- 已执行的联网搜索/网页浏览/Python 结果
+- 已执行的工具结果
 
-历史消息进入模型前会清洗：
+历史消息会被清洗：
 
-- assistant 消息中的“执行过程”只保留最终回答部分。
-- 去掉“展开搜索结果 / 展开网页阅读内容 / 展开联网资料”的内部链接。
-- 避免上一轮 UI 过程日志污染下一轮 Agent 判断。
+- `tool_execution` 消息不作为普通对话注入。
+- assistant 消息中的 UI 展示文本会尽量剥离。
+- 搜索结果、网页阅读内容、工具执行日志不会污染下一轮自然语言判断。
 
 ## Agent 输出协议
 
-Agent 被要求只输出 JSON：
+Agent 需要输出 JSON：
 
 ```json
 {
-  "reply": "给用户的中文回复",
+  "reply": "给用户看的中文回复",
   "memory_updates": [
     {
-      "category": "短期目标",
-      "content": "..."
+      "category": "长期目标",
+      "content": "用户希望长期提升英语口语能力。"
     }
   ],
   "schedule_updates": [
     {
-      "title": "...",
-      "detail": "...",
+      "title": "复习英语",
+      "detail": "背单词并做阅读训练",
       "start_at": 0,
       "reminder_at": 0,
-      "repeat_type": "NONE",
+      "repeat_type": "DAILY",
       "repeat_days_of_week": [],
       "repeat_day_of_month": null,
-      "reminder_time": "12:00"
+      "reminder_time": "20:00"
     }
   ],
   "skill_updates": [
     {
-      "name": "...",
-      "description": "...",
-      "trigger_keywords": ["..."],
-      "action_template": "..."
+      "name": "考试复习计划",
+      "description": "当用户提到考试和复习时，生成分阶段计划。",
+      "trigger_keywords": ["考试", "复习", "备考"],
+      "action_template": "先确认考试日期和科目，再拆分每日任务，并设置提醒。"
     }
   ],
   "system_calls": [
@@ -107,13 +134,13 @@ Agent 被要求只输出 JSON：
 
 字段说明：
 
-- `reply`：最终给用户看的中文回复。若本轮需要先调用工具，可为空。
-- `memory_updates`：写入个人记忆库。
-- `schedule_updates`：日程候选；保存前还会经日程子 Agent 二次结构化。
+- `reply`：最终给用户看的中文回复；如果需要先调用工具，可以为空。
+- `memory_updates`：写入个人记忆。
+- `schedule_updates`：生成日程候选，保存前会再经过日程子 Agent 结构化。
 - `skill_updates`：新增或更新本地 Skill。
 - `system_calls`：请求 App 执行系统工具。
 
-## 系统工具
+## System Calls
 
 ### get_current_time
 
@@ -132,29 +159,20 @@ Agent 被要求只输出 JSON：
 ```json
 {
   "type": "web_search",
-  "query": "中国银行积存金价格 2026年6月"
+  "query": "中国银行 积存金 价格 2026年"
 }
 ```
 
-搜索后端由 `SystemSkillExecutor` 管理。当前顺序包括：
-
-1. Bing Gecko
-2. Bing HTML
-3. DuckDuckGo API
-4. DuckDuckGo HTML
-5. Baidu
-6. SearXNG
-
-Bing Gecko 会使用内置 GeckoView 打开 Bing 搜索页并返回渲染文本。搜索结果可能是整页文本，不一定是结构化链接列表，因此 Agent 会被提示在必要时从搜索结果文本中提取或还原 URL，再继续浏览。
+搜索后端由 `SystemSkillExecutor` 管理，包含 Bing Gecko、Bing HTML、DuckDuckGo、Baidu、SearXNG 等降级路径。
 
 ### browse_url / browser_url
 
-用内置浏览器打开指定 URL，并读取渲染后的页面文本。
+使用内置 GeckoView 浏览器打开 URL，并返回渲染后的页面文本。
 
 ```json
 {
   "type": "browse_url",
-  "url": "https://www.boc.cn/fimarkets"
+  "url": "https://www.boc.cn/fimarkets/"
 }
 ```
 
@@ -171,332 +189,297 @@ Bing Gecko 会使用内置 GeckoView 打开 Bing 搜索页并返回渲染文本�
 ```json
 {
   "type": "python_exec",
-  "code": "import json\nvalues = input_json\nemit({'sum': sum(values)})",
-  "input": "[1,2,3]",
+  "code": "values = input_json\nemit({'sum': sum(values)})",
+  "input": "[1, 2, 3]",
   "timeout_ms": 3000
 }
 ```
 
-`python_exec` 适合：
+适合：
 
-- 计算、统计、排序、去重。
-- JSON / CSV / 表格文本处理。
+- 计算和统计。
+- JSON/CSV/表格处理。
 - 正则提取和文本清洗。
 - Excel 读取、分析、生成。
-- 复杂但确定性的中间处理。
-- 保存可复用 Python 工具脚本。
+- 保存和复用 Python 脚本。
 
-沙箱暴露：
-
-- `input_text`
-- `input_json`
-- `emit(value)`
-- `set_result(value)`
-- `result`
-- `workspace_dir`
-- `read_excel(path, max_rows=200, max_sheets=10)`
-- `write_excel(filename, sheets)`
-- `save_script(name, source)`
-- `load_script(name)`
-- `list_scripts()`
-- `compile_script(name)`
-- `run_script(name)`
-
-限制：
-
-- 无网络访问。
-- 只能访问 `agent_workspace` 工作区。
-- 不允许 `os`、`socket`、`subprocess`、`ctypes` 等系统/进程/网络能力。
-- 联网应通过 `web_search` / `browse_url` 完成，再把结果交给 Python 处理。
-
-## Python 原生工作流
-
-系统提示会要求 Agent 按以下方式使用 Python：
-
-1. 对一次性任务，直接在 `python_exec.code` 中写 Python，并用 `emit(value)` 返回结构化结果。
-2. 对可复用或较复杂逻辑，先用 `save_script("tools/name.py", source)` 保存脚本。
-3. 保存后调用 `compile_script("tools/name.py")`。
-4. 如果 `compile_script` 返回 `ok=false`，读取 `error`，修正源码，再次 `save_script` 和 `compile_script`。
-5. 编译通过后使用 `run_script("tools/name.py")`。
-6. 脚本与 `python_exec` 共享同一套全局变量和 helper，因此脚本中也能读取 `input_text` / `input_json`、调用 `read_excel` / `write_excel`，并通过 `emit(value)` 返回结果。
-
-示例：
+可用 helper：
 
 ```python
-source = """
-values = input_json
-emit({
-    "sum": sum(values),
-    "avg": sum(values) / len(values),
-    "max": max(values)
-})
-"""
-save_script("tools/stats.py", source)
-check = compile_script("tools/stats.py")
-if not check["ok"]:
-    emit(check)
-else:
-    emit(run_script("tools/stats.py"))
+input_text
+input_json
+emit(value)
+set_result(value)
+result
+workspace_dir
+read_excel(path, max_rows=200, max_sheets=10)
+write_excel(filename, sheets)
+save_script(name, source)
+load_script(name)
+list_scripts()
+compile_script(name)
+run_script(name)
 ```
 
-## Excel 工作流
+### adb_shell
 
-### 读取 Excel
+通过已配对的内置 ADB 执行 shell 命令。
 
-用户可以在聊天输入区选择 `.xlsx/.xlsm`，也可以从系统文件管理器或其他 App 中“用 ActMe 打开/分享” Excel 文件。App 会把文件复制到：
+```json
+{
+  "type": "adb_shell",
+  "command": "dumpsys window | head -50",
+  "timeout_ms": 15000
+}
+```
+
+兼容别名：
+
+- `adb`
+- `run_adb`
+
+执行器会自动去掉命令前缀中的 `adb shell` 或 `shell`。
+
+ADB 是高权限能力，Agent 默认应优先使用只读命令。删除、卸载、清数据、改权限、改系统设置等高风险命令必须等待用户明确确认。
+
+## Agentic Loop
+
+ActMe 支持一次用户请求中的多步工具执行：
 
 ```text
-files/agent_workspace/excel/
+用户请求
+-> LLM 输出 system_calls
+-> App 执行工具
+-> 工具结果返回给 LLM
+-> LLM 继续调用工具或生成最终 reply
 ```
 
-用户发送问题后，Agent 会收到工作区路径，并可调用：
+Repository 负责：
 
-```python
-data = read_excel(path, max_rows=200, max_sheets=10)
-emit(data)
-```
+- 多 pass 循环。
+- 工具预算。
+- 搜索/浏览/Python/ADB 去重。
+- 可见步骤展示。
+- 中止控制。
+- 暂停后允许用户发送“继续”。
 
-返回结构包含：
+详见 [docs/AGENTIC_LOOP.md](docs/AGENTIC_LOOP.md)。
 
-- workbook path
-- sheet count
-- sheet name
-- max row / max column
-- returned rows
+## 工具预算与去重
 
-### 生成 Excel
+为避免无限循环，ActMe 对工具调用做预算控制：
 
-Agent 可以调用：
+- 总工具调用数。
+- 搜索调用数。
+- 浏览调用数。
+- 多步 pass 数。
 
-```python
-result = write_excel("report.xlsx", {
-    "Summary": [
-        ["category", "amount"],
-        ["A", 120],
-        ["B", 300]
-    ]
-})
-emit(result)
-```
+去重策略：
 
-生成文件会写入 `agent_workspace`。Repository 会从工具结果中提取 `.xlsx/.xlsm` 路径并附加到最终回复；聊天 UI 会显示可点击文件按钮，通过 FileProvider 交给系统 Excel/WPS 等应用打开。
+- 相同搜索 query 不重复执行。
+- 相同 URL 不重复浏览。
+- 相同 Python code + input 不重复执行。
+- 相同 ADB command 不重复执行。
 
-### 支持范围
-
-- 支持 `.xlsx`
-- 支持 `.xlsm`
-- 旧 `.xls` 暂不保证可读
-
-## 内置浏览器读取机制
-
-网页阅读由 `GeckoSearchEngine` 实现：
-
-1. App 启动时初始化 Gecko runtime。
-2. 执行浏览时创建 `GeckoSession`。
-3. 安装内置 WebExtension。
-4. 打开 URL。
-5. WebExtension 在页面 ready 后读取页面标题和正文文本。
-6. 通过 native messaging 返回给 App。
-7. App 将结果包装为：
-
-```text
-[BROWSE_RESULT]
-页面标题：...
-页面文本：...
-```
-
-失败时返回：
-
-```text
-[BROWSE_ERROR] ...
-```
-
-如果 GeckoView 读取为空，`SystemSkillExecutor` 会尝试 HTTP 文本提取作为 fallback。
-
-## 多步执行工作流
-
-一次用户回复可能包含多轮：
-
-1. LLM 先生成 `system_calls`。
-2. Repository 显示 “Agent planning pass N”。
-3. SystemSkillExecutor 执行工具。
-4. 每个工具发出可见 step event：
-   - `STARTED`
-   - `FINISHED`
-   - `FAILED`
-5. Repository 将工具结果追加为当前轮资料。
-6. Repository 把工具结果作为 continuation 输入，再次调用 Agent。
-7. Agent 可继续请求更多工具，也可生成最终 `reply`。
-8. 工具预算耗尽或模型不再请求工具时结束。
-
-当前预算：
-
-- `maxPasses = 6`
-- `maxToolCalls = 12`
-- `maxSearchCalls = 4`
-- `maxBrowseCalls = 8`
-
-这些预算在 `ActMeRepository.ToolBudget` 中定义。
+当预算耗尽但 Agent 仍请求工具时，聊天中会显示暂停原因，并提示用户可以发送“继续”。
 
 ## 可见、可继续、可控、可中止
 
-聊天气泡中会展示执行过程，例如：
+工具执行会进入聊天 UI 的工具执行气泡。典型步骤：
 
 ```text
-执行过程：
-1. [OK] Agent planning pass 1 - 2 tool call(s) requested
-2. [OK] Web search - ...
-3. [OK] Run Python - ...
-4. [OK] Agent observes results - reply=..., next tools=...
-
----
-最终回答...
+[RUNNING] 联网搜索 - 中国银行 积存金 价格
+[OK] 打开网页 - https://www.boc.cn/fimarkets/
+[OK] Run Python - parse table
+[OK] Run ADB - dumpsys window ...
 ```
 
-控制策略：
+用户可以中止执行。中止后：
 
-- 发送中按钮变成停止按钮。
-- 点击停止会 cancel 当前 coroutine job。
-- 工具执行循环检查 cancellation。
-- 被取消时消息显示“已中止”。
-- 预算耗尽但仍有后续工具请求时，消息显示暂停原因，并提示用户可发送“继续”。
+- 当前 coroutine 取消。
+- 工具循环停止。
+- UI 显示“已中止”。
 
-## 工具调用自由度
+## 内置浏览器工作流
 
-Agent 有较高自由度：
+浏览器能力负责联网事实确认：
 
-- 可以决定是否搜索。
-- 可以决定是否浏览网页。
-- 可以决定是否运行 Python。
-- 可以决定是否生成 Excel。
-- 可以决定工具调用顺序。
-- 简单问题可以直接回答。
-- 复杂、近期、不确定或需要来源支撑的问题，可以多次搜索和浏览多个不重复页面。
+1. `web_search` 发现来源。
+2. `browse_url` 打开官网、公告、新闻、文档或价格页。
+3. Agent 根据页面文本判断是否继续浏览。
+4. 必要时交给 Python 做提取和计算。
 
-系统提示会建议优先使用官网、一手来源、公告、产品说明、新闻原文、文档、价格页等更可靠来源，但不会把所有任务都强制成固定流程。
+常见用途：
 
-## 搜索结果和网页阅读展示
+- 查最新信息。
+- 验证官网数据。
+- 多来源交叉确认。
+- 阅读动态网页正文。
 
-工具结果会存入 `chat_messages.searchResult`，UI 根据内容类型显示不同入口：
+详见 [docs/BUILTIN_BROWSER.md](docs/BUILTIN_BROWSER.md)。
 
-- 只有搜索：展开搜索结果
-- 只有网页阅读：展开网页阅读内容
-- 搜索和网页阅读都有：展开联网资料
+## 内置 Python 工作流
 
-弹窗中会将内部标记转换为用户可读标题：
+Python 能力负责确定性处理：
 
-- `[BROWSE_RESULT]` -> 网页阅读内容
-- `[BROWSE_ERROR]` -> 网页阅读失败
+1. 简单任务直接在 `python_exec.code` 中写代码。
+2. 复杂任务先 `save_script`。
+3. 调用 `compile_script` 检查语法。
+4. 出错则修复后再编译。
+5. 编译通过后 `run_script`。
+
+Excel 工作流：
+
+- 外部 App 可以把 Excel 分享/打开到 ActMe。
+- 聊天输入区可以选择 `.xlsx/.xlsm`。
+- Agent 可调用 `read_excel(path)` 读取表格。
+- Agent 可调用 `write_excel(filename, sheets)` 生成文件并返回聊天。
+
+详见 [docs/BUILTIN_PYTHON.md](docs/BUILTIN_PYTHON.md)。
+
+## 内置 ADB 工作流
+
+ADB 能力负责本机 Android 观察和自动化。
+
+配对流程：
+
+1. 设置页点击“内置 ADB”。
+2. App 检查悬浮窗权限。
+3. App 启动 `AdbOverlayService`，并打开开发者选项。
+4. 用户进入无线调试，点击“使用配对码配对设备”。
+5. 用户保持系统配对码弹窗不关闭，在 ActMe 悬浮窗输入配对端口和验证码。
+6. 配对成功后，输入无线调试主页面的连接端口，点击“测试并保存连接”。
+
+连接成功后：
+
+- App 保存 `host:port`。
+- 悬浮窗可以关闭。
+- Agent 后续 `adb_shell` 会读取保存配置，临时连接并执行命令。
+
+限制：
+
+- 无线调试端口可能变化，变化后需要重新保存连接。
+- 部分系统要求开启“允许在设置上重叠显示”。
+- ADB 高风险命令需要用户确认。
+
+详见 [docs/BUILTIN_ADB.md](docs/BUILTIN_ADB.md)。
+
+## Memory
+
+Memory 记录“关于用户的长期事实”。
+
+示例：
+
+```text
+[长期目标] 用户希望长期提升英语口语能力。
+[个人偏好] 用户喜欢表格式计划。
+[学习工作] 用户正在准备期末考试。
+```
+
+Agent 可通过 `memory_updates` 写入。系统分类不允许 Agent 随意写入。
+
+## Skill
+
+Skill 记录“可复用做事方法”。
+
+示例：
+
+```text
+考试复习计划：先确认考试日期和科目，再拆分每日任务，并设置提醒。
+论文资料整理：先联网搜索多个来源，再按主题提炼观点和引用链接。
+Excel 数据分析：先读取表格结构，再用 Python 汇总统计，最后生成结果文件。
+```
+
+当前 Skill 是轻量结构：
+
+- name
+- description
+- triggerKeywords
+- actionTemplate
+- enabled
+
+Claude/Codex 风格的目录型 skill 可以通过 `tools/adapt_claude_skills.py` 转换为当前 App 可识别的轻量 preload，同时保留完整 `SKILL.md` 和资源。
+
+详见 [docs/SKILL_MEMORY_DESIGN.md](docs/SKILL_MEMORY_DESIGN.md)。
 
 ## JSON 解析兜底
 
-模型有时会输出非严格 JSON，例如：
+模型可能输出非严格 JSON，例如：
 
-- `reply` 内出现未转义引号。
-- 输出包含 Markdown code fence。
-- `system_call` 写成单对象而不是数组。
-- 使用 `tool_calls`、`tool_call`、`calls` 等别名。
-- 输出 OpenAI tool call 风格的 `function.arguments`。
+- 包含 Markdown code fence。
+- `system_call` 写成单对象。
+- 使用 `tool_calls` / `tool_call` / `calls` 等别名。
+- `reply` 中出现未转义引号。
+- OpenAI tool call 风格的 `function.arguments`。
 
-`ActMeAgent.parseRaw` 的处理顺序：
+`ActMeAgent.parseRaw` 会尝试：
 
 1. 严格 JSON 解析。
-2. 宽松解析候选：
-   - 提取 JSON 主体。
-   - 提取 code fence。
-   - 宽松抽取 `reply` 字段。
-   - 宽松抽取 system calls。
-3. 仍失败时，才把 raw 文本作为普通 reply。
+2. 提取 code fence。
+3. 提取 JSON 主体。
+4. 宽松解析 `reply`。
+5. 宽松解析 system calls。
+6. 仍失败时把 raw 文本作为普通 reply。
 
-`ReplyExtractor` 负责流式阶段从 JSON 中增量抽取 `reply`。它对 `reply` 内部未转义引号做了容错，只有当引号后面看起来是下一个 JSON 字段或对象结束时，才认为 reply 结束。
+目标是避免把 system_call 字典或内部 JSON 原样回复给用户。
 
-## Token usage
+## Token Usage
 
-`OpenAiResponsesClient` 支持 API usage：
+`OpenAiResponsesClient` 会尽量读取 API usage：
 
-- OpenAI-compatible streaming 请求会尝试加入 `stream_options.include_usage=true`。
-- 如果兼容接口不支持该参数，会自动重试不带 usage，避免聊天失败。
-- Anthropic-compatible streaming 会从 message usage 事件读取 `input_tokens` / `output_tokens`。
-- 多步执行中，每一次 LLM 调用的 usage 会累加到最终 assistant 消息。
+- OpenAI-compatible streaming 尝试使用 `stream_options.include_usage=true`。
+- 不支持该参数时自动重试。
+- Anthropic-compatible streaming 从 message usage 事件读取 token。
+- 多步执行会累计每次 LLM 调用的 usage。
 
-Room 中相关字段：
+UI 只在 assistant 消息下方显示 token，不显示用户输入 token。
 
-- `tokenInput`
-- `tokenOutput`
-- `tokenTotal`
-- `tokenSource`
+## 失败与降级
 
-UI 只在 assistant 消息下显示 token，不显示用户输入消息 token。
+单个工具失败不会直接终止整轮 Agent。常见降级：
 
-## 记忆更新
-
-Agent 可通过 `memory_updates` 写入个人记忆。记忆分类来自 `MemoryCategories.writable`：
-
-- 短期目标
-- 长期目标
-- 个人焦虑
-- 近期烦恼
-- 个人偏好
-- 人际关系
-- 健康状态
-- 学习工作
-
-系统分类不允许由 Agent 写入。
-
-## 日程更新
-
-Agent 可通过 `schedule_updates` 产生日程候选。为了降低错误创建提醒的风险，Repository 会把候选和用户原始需求交给日程子 Agent，再生成最终结构：
-
-- `repeat_type`: `NONE` / `DAILY` / `WEEKLY` / `MONTHLY`
-- 一次性提醒需要日期和时间。
-- 每日提醒需要时间。
-- 每周提醒需要星期和时间。
-- 每月提醒需要日期和时间。
-
-保存后由 `ReminderScheduler` 注册 Android 闹钟提醒。开机后 `BootReceiver` 会恢复提醒。
-
-## Skills
-
-Skills 来源：
-
-- 预置 assets。
-- 构建时从 `~/.codex/skills/` 导入。
-- Agent 在对话中通过 `skill_updates` 新增。
-
-Skills 会作为上下文注入 Agent，帮助它形成可复用行为。
-
-## 失败和降级策略
-
-- 单个工具失败不会直接终止整轮 Agent，而是返回 `[TOOL_ERROR]`、`[BROWSE_ERROR]` 或 `[PYTHON_ERROR]`，让模型基于已有信息继续。
-- 网页读取失败会尝试 HTTP fallback。
-- 搜索后端按顺序尝试，前一个不可用时尝试后一个。
-- JSON 解析失败会进行宽松解析。
-- Python 可通过 `compile_script` 检查并修复脚本。
-- usage 获取失败不会影响聊天。
+- 搜索后端失败，尝试下一个后端。
+- GeckoView 读取为空，尝试 HTTP 文本提取。
+- Python 语法错误，使用 `compile_script` 检查并修复。
+- ADB 连接失败，提示重新测试并保存端口。
+- JSON 解析失败，进入宽松解析。
+- usage 获取失败，不影响聊天主流程。
 
 ## 调试
 
 常用 logcat 过滤：
 
 ```powershell
-adb logcat -v time | Select-String -Pattern "ActMe|SystemSkillExecutor|GeckoSearchEngine|PythonSkillEngine|BROWSE|SEARCH|PYTHON|system_calls|parseRaw"
+adb logcat -v time | Select-String -Pattern "ActMe|SystemSkillExecutor|GeckoSearchEngine|PythonSkillEngine|AdbSkillEngine|BROWSE|SEARCH|PYTHON|ADB|system_calls|parseRaw"
 ```
 
 重点日志：
 
-- `ActMeRepository`：对话开始、Agent 结果、pass 结果、任务完成。
-- `ActMeAgent`：JSON 解析失败、宽松解析。
-- `SystemSkillExecutor`：工具执行、搜索后端、浏览 URL、Python 调用。
+- `ActMeRepository`：多步循环、工具预算、pass 结果。
+- `ActMeAgent`：JSON 解析、宽松解析、system calls。
+- `SystemSkillExecutor`：工具执行、搜索、浏览、Python、ADB。
+- `GeckoSearchEngine`：GeckoView 加载和网页文本读取。
 - `PythonSkillEngine`：Python runtime 初始化和执行失败。
-- `GeckoSearchEngine`：GeckoView 加载、扩展消息、渲染文本长度。
-- `ActMeLlmClient`：LLM 请求、stream usage fallback。
+- `AdbSkillEngine`：ADB 配对、连接、shell 执行。
 
 ## 已知限制
 
-- 一些网站要求登录、App 内访问或强风控，公开网页无法读取完整内容。
-- Bing Gecko 返回的是搜索页渲染文本，模型需要自行抽取链接或还原面包屑 URL。
-- Python 沙箱没有网络和系统命令能力。
-- Excel 第一版主要支持 `.xlsx/.xlsm`，旧 `.xls` 不保证可读。
-- OpenAI-compatible 网关不一定支持 streaming usage，App 会自动重试但无法拿到精确 token。
-- 当前工具预算是静态配置，尚未按任务复杂度动态调整。
-- Agent 仍依赖模型遵循 JSON 协议，尽管已有多层解析兜底。
+- 部分网站需要登录、验证码或强风控，无法稳定读取。
+- 搜索页文本需要 Agent 自行提取有效链接或还原面包屑 URL。
+- Python 沙箱默认无网络和系统命令能力。
+- Excel 当前重点支持 `.xlsx/.xlsm`。
+- ADB 连接依赖无线调试状态，端口可能变化。
+- ADB 悬浮窗依赖系统 overlay 权限，部分系统还需要允许覆盖设置页。
+- 当前工具预算仍是静态策略，尚未按任务复杂度动态调整。
+- Agent 仍依赖模型遵守 JSON 协议，虽然已有多层兜底。
+
+## docs 目录
+
+专题文档：
+
+- [docs/BUILTIN_CAPABILITIES.md](docs/BUILTIN_CAPABILITIES.md)
+- [docs/BUILTIN_BROWSER.md](docs/BUILTIN_BROWSER.md)
+- [docs/BUILTIN_PYTHON.md](docs/BUILTIN_PYTHON.md)
+- [docs/BUILTIN_ADB.md](docs/BUILTIN_ADB.md)
+- [docs/AGENTIC_LOOP.md](docs/AGENTIC_LOOP.md)
+- [docs/SKILL_MEMORY_DESIGN.md](docs/SKILL_MEMORY_DESIGN.md)
