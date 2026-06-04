@@ -1,8 +1,12 @@
 # ActMe
 
-ActMe 是一个面向中文个人行动管理的 Android 应用。它把聊天 Agent、个人记忆、日程提醒、本地语音识别、联网搜索、内置浏览器、轻量 Python 执行环境和 Excel 工作流放在同一个移动端体验里，让用户用自然语言完成记录、查询、规划、分析和执行。
+ActMe 是一个面向中文个人行动管理的 Android 应用。它把聊天 Agent、个人记忆、日程提醒、本地语音识别、联网搜索、内置浏览器、轻量 Python 执行环境和 Excel 工作流放在同一个移动端体验里，让用户用自然语言完成记录、查询、规划、分析和执行。以内置浏览器、内置Python、内置ADB作为赋能核心的三驾马车，为整体Agent端侧能力提升构建关键基础。
+
+![三驾马车](docs/overview.png)
 
 项目以本地优先为核心：记忆、日程、聊天记录、Skills、提醒、ASR 模型和 Agent 工作区都保存在本机；LLM 对话通过用户配置的 OpenAI-compatible 或 Anthropic-compatible API 完成；联网搜索、网页阅读、Python 执行和 Excel 处理由 App 内置系统能力按需执行。
+
+![整体架构](docs/arch.png)
 
 ## 核心功能
 
