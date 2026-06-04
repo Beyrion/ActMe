@@ -136,6 +136,7 @@ object SystemSkillExecutor {
                 "web_search" -> executeWebSearch(call.query)
                 "browse_url", "browser_url", "web_browse", "open_url" -> executeBrowseUrl(call.url.ifBlank { call.query })
                 "python_exec", "run_python", "python" -> executePython(call)
+                "adb_shell", "adb", "run_adb" -> executeAdbShell(call)
                 else -> {
                     AppLogger.w(TAG, "Unknown call: " + call.type)
                     "[TOOL_ERROR] Unknown system call: ${call.type}"
@@ -156,6 +157,9 @@ object SystemSkillExecutor {
         if (call.type == "python_exec" || call.type == "run_python" || call.type == "python") {
             return "Run Python"
         }
+        if (call.type == "adb_shell" || call.type == "adb" || call.type == "run_adb") {
+            return "Run ADB"
+        }
         return when (call.type) {
             "get_current_time" -> "获取当前时间"
             "web_search" -> "联网搜索"
@@ -168,6 +172,9 @@ object SystemSkillExecutor {
         if (call.type == "python_exec" || call.type == "run_python" || call.type == "python") {
             return call.code.lineSequence().firstOrNull()?.trim().orEmpty().ifBlank { "python_exec" }.take(240)
         }
+        if (call.type == "adb_shell" || call.type == "adb" || call.type == "run_adb") {
+            return adbCommand(call).take(240)
+        }
         return when (call.type) {
             "web_search" -> call.query
             "browse_url", "browser_url", "web_browse", "open_url" -> call.url.ifBlank { call.query }
@@ -178,6 +185,8 @@ object SystemSkillExecutor {
     private fun summarizeToolResult(result: String): String {
         if (result.contains("[PYTHON_RESULT]")) return "Python completed, ${result.length} chars"
         if (result.contains("[PYTHON_ERROR]")) return "Python failed"
+        if (result.contains("[ADB_RESULT]")) return "ADB completed, ${result.length} chars"
+        if (result.contains("[ADB_ERROR]")) return "ADB failed"
         return when {
             result.contains("[BROWSE_RESULT]") -> "网页内容已读取，${result.length} 字符"
             result.contains("[BROWSE_ERROR]") -> "网页读取失败"
@@ -226,6 +235,37 @@ object SystemSkillExecutor {
                 appendLine(result.error.trimEnd())
             }
         }.trim()
+    }
+
+    // ---- adb_shell ----
+
+    private suspend fun executeAdbShell(call: SystemCall): String {
+        val command = adbCommand(call)
+        if (command.isBlank()) return "[ADB_ERROR] Empty adb shell command."
+        val timeoutMs = call.timeoutMs.coerceIn(1_000L, 60_000L)
+        AppLogger.i(TAG, "ADB-EXEC: command=${command.take(160)}, timeoutMs=$timeoutMs")
+        val result = AdbSkillEngine.shell(command, timeoutMs = timeoutMs)
+        return buildString {
+            appendLine(if (result.ok) "[ADB_RESULT]" else "[ADB_ERROR]")
+            result.exitCode?.let { appendLine("exit_code: $it") }
+            if (result.output.isNotBlank()) {
+                appendLine("stdout:")
+                appendLine(result.output.trimEnd())
+            }
+            if (result.error.isNotBlank()) {
+                appendLine("stderr:")
+                appendLine(result.error.trimEnd())
+            }
+            if (!result.ok && result.error.isBlank() && result.output.isBlank()) {
+                appendLine("error:")
+                appendLine("ADB command failed without output.")
+            }
+        }.trim()
+    }
+
+    private fun adbCommand(call: SystemCall): String {
+        val raw = call.command.ifBlank { call.code }.ifBlank { call.query }.trim()
+        return raw.removePrefix("adb shell ").removePrefix("shell ").trim()
     }
 
     // ---- browse_url ----

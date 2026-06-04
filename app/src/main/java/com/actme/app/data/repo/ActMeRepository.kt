@@ -290,10 +290,12 @@ class ActMeRepository(
                 val isSearch = type == "web_search"
                 val isBrowse = type == "browse_url" || type == "browser_url" || type == "web_browse" || type == "open_url"
                 val isPython = type == "python_exec" || type == "run_python" || type == "python"
+                val isAdb = type == "adb_shell" || type == "adb" || type == "run_adb"
                 val key = when {
                     isSearch -> call.query.trim().lowercase()
                     isBrowse -> call.url.ifBlank { call.query }.trim().lowercase()
                     isPython -> type + ":" + call.code.take(500) + ":" + call.input.take(500)
+                    isAdb -> type + ":" + call.command.ifBlank { call.code }.ifBlank { call.query }.take(500)
                     else -> type + ":" + call.query + ":" + call.url
                 }
                 val duplicate = (isSearch && key in searchedQueries) || (isBrowse && key in visitedUrls)
@@ -368,7 +370,7 @@ class ActMeRepository(
             val continuationInput = "用户问题：$userInput\n\nsystem_calls 执行结果：\n$executedResults\n\n请基于以上结果，回答用户问题。"
             val remainingAfterExecution = budget.maxToolCalls - budget.toolCalls
             val continuationWithBudget = continuationInput + if (remainingAfterExecution > 0) {
-                "\n\nTool budget: remaining=$remainingAfterExecution. You may continue calling get_current_time, web_search, and browse_url if useful. Decide freely whether more searching or browsing is needed based on the task, uncertainty, source quality, and user intent. Prefer primary or authoritative sources when they matter, and use multiple independent pages when helpful. If a search result only shows a breadcrumb URL such as https://www.boc.cn › fimarkets, you may convert it to https://www.boc.cn/fimarkets and browse it. Do not repeat the same query or URL unless there is a clear reason. Return final reply when the answer is sufficiently supported or the user likely wants a quick answer."
+                "\n\nTool budget: remaining=$remainingAfterExecution. You may continue calling get_current_time, web_search, browse_url, python_exec, and adb_shell if useful. Decide freely whether more searching, browsing, Python processing, or ADB inspection/control is needed based on the task, uncertainty, source quality, and user intent. Prefer primary or authoritative sources when they matter, and use multiple independent pages when helpful. If a search result only shows a breadcrumb URL such as https://www.boc.cn › fimarkets, you may convert it to https://www.boc.cn/fimarkets and browse it. Do not repeat the same query, URL, code, or ADB command unless there is a clear reason. Return final reply when the answer is sufficiently supported or the user likely wants a quick answer."
             } else {
                 "\n\nTool budget: remaining=0. Do not call more tools in this turn. Return the best final reply from the available results."
             }

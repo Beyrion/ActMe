@@ -4,6 +4,7 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.serialization")
+    id("org.jetbrains.kotlin.plugin.compose")
     id("com.google.devtools.ksp")
     id("com.chaquo.python")
 }
@@ -70,10 +71,6 @@ android {
         buildConfig = true
     }
 
-    composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.14"
-    }
-
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -97,6 +94,7 @@ android {
         }
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+            excludes += "/META-INF/versions/9/OSGI-INF/MANIFEST.MF"
         }
     }
 }
@@ -105,6 +103,8 @@ chaquopy {
     defaultConfig {
         version = "3.11"
         pip {
+            options("--index-url", "https://pypi.tuna.tsinghua.edu.cn/simple")
+            options("--trusted-host", "pypi.tuna.tsinghua.edu.cn")
             install("openpyxl==3.1.5")
         }
     }
@@ -141,6 +141,7 @@ dependencies {
     implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
 
     implementation("org.mozilla.geckoview:geckoview:114.0.20230608214645")
+    implementation("com.flyfishxu:kadb:1.2.1")
 
     implementation("com.mikepenz:multiplatform-markdown-renderer-m3:0.27.0")
 

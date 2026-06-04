@@ -2,6 +2,10 @@ package com.actme.app.ui.settings
 
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
+import android.provider.Settings
+import android.widget.Toast
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -15,6 +19,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -23,9 +28,11 @@ import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Info
 import com.actme.app.data.local.ProviderEntity
+import com.actme.app.ui.AdbOverlayService
 import com.actme.app.ui.GeckoDebugActivity
 import androidx.compose.material.icons.outlined.Api
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -47,13 +54,17 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import com.actme.app.data.agent.AdbSkillEngine
 import com.actme.app.mnn.DownloadState
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -95,6 +106,37 @@ fun SettingsScreen(
     var showDeleteModelDialog by remember { mutableStateOf(false) }
     var showDeleteVisionModelDialog by remember { mutableStateOf(false) }
     var langExpanded by remember { mutableStateOf(false) }
+    var showAdbDialog by remember { mutableStateOf(false) }
+    var showAdbOverlayPermissionDialog by remember { mutableStateOf(false) }
+
+    if (showAdbDialog) {
+        AdbPairingDialog(onDismiss = { showAdbDialog = false })
+    }
+
+    if (showAdbOverlayPermissionDialog) {
+        AlertDialog(
+            onDismissRequest = { showAdbOverlayPermissionDialog = false },
+            title = { Text("需要悬浮窗权限") },
+            text = { Text("ADB 配对窗口必须显示在系统无线调试页面上方。请允许 ActMe“显示在其他应用上层”。如果系统另外提示“允许在设置上重叠显示”，也必须打开，否则无线调试页面上看不到配对窗口。授权后返回设置页重新打开内置 ADB。") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showAdbOverlayPermissionDialog = false
+                        val intent = Intent(
+                            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                            Uri.parse("package:${context.packageName}")
+                        )
+                        context.startActivity(intent)
+                    }
+                ) { Text("去授权") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAdbOverlayPermissionDialog = false }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
 
     // Clear history dialog
     if (showClearDialog) {
@@ -531,6 +573,29 @@ fun SettingsScreen(
                     context.startActivity(Intent(context, GeckoDebugActivity::class.java))
                 }
             )
+
+            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+
+            ListItem(
+                headlineContent = { Text("内置 ADB") },
+                supportingContent = { Text("手动配对无线调试，供 Agent 调用 adb shell") },
+                leadingContent = {
+                    Icon(Icons.Outlined.Api, null, Modifier.size(24.dp))
+                },
+                modifier = Modifier.clickable {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(context)) {
+                        showAdbOverlayPermissionDialog = true
+                    } else {
+                        runCatching {
+                            context.startService(Intent(context, AdbOverlayService::class.java))
+                            Toast.makeText(context, "如果系统提示，请开启“允许在设置上重叠显示”。", Toast.LENGTH_LONG).show()
+                            context.startActivity(Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS))
+                        }.onFailure {
+                            Toast.makeText(context, "无法打开 ADB 悬浮窗：${it.message}", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }
+            )
         }
 
         Spacer(Modifier.height(8.dp))
@@ -564,6 +629,178 @@ fun SettingsScreen(
 
         Spacer(Modifier.height(32.dp))
     }
+}
+
+@Composable
+private fun AdbPairingDialog(
+    onDismiss: () -> Unit
+) {
+    val scope = rememberCoroutineScope()
+    val saved = remember { AdbSkillEngine.getSavedConfig() }
+    var host by remember { mutableStateOf(saved.host) }
+    var pairPort by remember { mutableStateOf("") }
+    var pairCode by remember { mutableStateOf("") }
+    var connectPort by remember { mutableStateOf(saved.port.toString()) }
+    var shellCommand by remember { mutableStateOf("echo actme_adb_ready") }
+    var busy by remember { mutableStateOf(false) }
+    var status by remember {
+        mutableStateOf("请保持系统无线调试的配对码弹窗不关闭，在这里输入配对端口和验证码。")
+    }
+
+    AlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        title = { Text("内置 ADB 配对") },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(560.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    "操作流程\n" +
+                        "1. 在系统无线调试中点击“使用配对码配对设备”。\n" +
+                        "2. 不要关闭系统配对码弹窗，把配对端口和验证码填到这里。\n" +
+                        "3. 配对成功后，把无线调试主页面显示的连接端口填入连接端口。\n" +
+                        "4. 点击“测试并保存连接”，看到 actme_adb_ready 后即可让 Agent 调用 adb_shell。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                OutlinedTextField(
+                    value = host,
+                    onValueChange = { host = it },
+                    label = { Text("Host") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = pairPort,
+                        onValueChange = { pairPort = it.filter(Char::isDigit).take(5) },
+                        label = { Text("配对端口") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                    OutlinedTextField(
+                        value = pairCode,
+                        onValueChange = { pairCode = it.filter(Char::isDigit).take(8) },
+                        label = { Text("验证码") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+
+                Button(
+                    enabled = !busy,
+                    onClick = {
+                        val port = pairPort.toIntOrNull()
+                        if (port == null) {
+                            status = "配对端口无效。"
+                            return@Button
+                        }
+                        busy = true
+                        status = "正在配对 $host:$port ..."
+                        scope.launch {
+                            val result = AdbSkillEngine.pair(host, port, pairCode)
+                            status = if (result.ok) result.output else "配对失败：${result.error}"
+                            busy = false
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(if (busy) "执行中" else "配对")
+                }
+
+                OutlinedTextField(
+                    value = connectPort,
+                    onValueChange = { connectPort = it.filter(Char::isDigit).take(5) },
+                    label = { Text("连接端口") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Button(
+                    enabled = !busy,
+                    onClick = {
+                        val port = connectPort.toIntOrNull()
+                        if (port == null) {
+                            status = "连接端口无效。"
+                            return@Button
+                        }
+                        busy = true
+                        status = "正在连接 $host:$port ..."
+                        scope.launch {
+                            val result = AdbSkillEngine.testConnection(host, port)
+                            status = if (result.ok) {
+                                "连接成功，已保存 $host:$port\n${result.output.trim()}"
+                            } else {
+                                "连接失败：${result.error.ifBlank { result.output }}"
+                            }
+                            busy = false
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("测试并保存连接")
+                }
+
+                OutlinedTextField(
+                    value = shellCommand,
+                    onValueChange = { shellCommand = it },
+                    label = { Text("adb shell 命令") },
+                    minLines = 2,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Button(
+                    enabled = !busy,
+                    onClick = {
+                        val port = connectPort.toIntOrNull()
+                        busy = true
+                        status = "正在执行 shell ..."
+                        scope.launch {
+                            val result = AdbSkillEngine.shell(shellCommand, host, port)
+                            status = buildString {
+                                appendLine(if (result.ok) "执行成功" else "执行失败")
+                                result.exitCode?.let { appendLine("exit_code: $it") }
+                                if (result.output.isNotBlank()) appendLine(result.output.trimEnd())
+                                if (result.error.isNotBlank()) appendLine("stderr: ${result.error.trimEnd()}")
+                            }.trim()
+                            busy = false
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("执行 shell 测试")
+                }
+
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                ) {
+                    Text(
+                        status,
+                        modifier = Modifier.padding(12.dp),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = !busy,
+                onClick = onDismiss
+            ) {
+                Text("关闭")
+            }
+        }
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

@@ -48,6 +48,7 @@ data class SystemCall(
     val query: String = "",
     val url: String = "",
     val code: String = "",
+    val command: String = "",
     val input: String = "",
     @SerialName("timeout_ms") val timeoutMs: Long = 3_000L
 )
@@ -281,6 +282,11 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
             val code = callObj.stringValue("code")
                 ?: argumentsObj?.stringValue("code")
                 ?: ""
+            val command = callObj.stringValue("command")
+                ?: argumentsObj?.stringValue("command")
+                ?: callObj.stringValue("cmd")
+                ?: argumentsObj?.stringValue("cmd")
+                ?: ""
             val input = callObj.stringValue("input")
                 ?: argumentsObj?.stringValue("input")
                 ?: ""
@@ -289,7 +295,7 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
                 ?: callObj.longValue("timeoutMs")
                 ?: argumentsObj?.longValue("timeoutMs")
                 ?: 3_000L
-            SystemCall(type = type, query = query, url = url, code = code, input = input, timeoutMs = timeoutMs)
+            SystemCall(type = type, query = query, url = url, code = code, command = command, input = input, timeoutMs = timeoutMs)
         }
     }
 
@@ -359,9 +365,11 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
                     .find(block)?.groupValues?.getOrNull(1).orEmpty()
                 val code = Regex("\"code\"\\s*:\\s*\"([^\"]*)\"")
                     .find(block)?.groupValues?.getOrNull(1).orEmpty()
+                val command = Regex("\"(?:command|cmd)\"\\s*:\\s*\"([^\"]*)\"")
+                    .find(block)?.groupValues?.getOrNull(1).orEmpty()
                 val input = Regex("\"input\"\\s*:\\s*\"([^\"]*)\"")
                     .find(block)?.groupValues?.getOrNull(1).orEmpty()
-                SystemCall(type = type, query = query, url = url, code = code, input = input)
+                SystemCall(type = type, query = query, url = url, code = code, command = command, input = input)
             }
             .toList()
     }
@@ -625,6 +633,11 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
             - For reusable or non-trivial logic, first write a .py script with save_script("tools/name.py", source). Then call compile_script("tools/name.py"). If compile_script returns ok=false, inspect error, fix the source with save_script, compile again, then run_script("tools/name.py"). Do not run an uncompiled reusable script unless the task is urgent and simple.
             - Saved scripts run with the same globals as python_exec, so they can read input_text/input_json, call read_excel/write_excel, and return via emit(value) or result.
             - For uploaded .xlsx/.xlsm files, call read_excel(path) using the workspace path in the user message. For exporting Excel, call write_excel("filename.xlsx", {"Sheet1":[["col"],["value"]]}) and include the returned path in the final reply.
+            Native ADB workflow:
+            - If the user asks you to inspect or control the Android device/app UI and ADB has been paired in settings, you may call adb_shell.
+            - adb_shell call format: {"type":"adb_shell","command":"dumpsys window | head -50","timeout_ms":15000}
+            - Prefer read-only commands first, such as dumpsys, settings get, pm list, logcat -d, uiautomator dump, screencap, or input keyevent/tap/text only when the user intent requires GUI control.
+            - ADB is powerful. Do not run destructive package/data/file commands unless the user explicitly asks for that exact action.
             【关于本 App】
             $systemMemoryText
 
@@ -690,7 +703,7 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
         // via shouldRetryWithoutResponseFormat in OpenAiResponsesClient.
         val agentResultResponseFormat: JsonObject by lazy {
             Json.parseToJsonElement(
-                """{"type":"json_schema","json_schema":{"name":"agent_result","strict":true,"schema":{"type":"object","properties":{"reply":{"type":"string"},"system_calls":{"type":"array","items":{"type":"object","properties":{"type":{"type":"string"},"query":{"type":"string"},"url":{"type":"string"},"code":{"type":"string"},"input":{"type":"string"},"timeout_ms":{"type":"number"}},"required":["type","query","url","code","input","timeout_ms"],"additionalProperties":false}},"memory_updates":{"type":"array","items":{"type":"object","properties":{"category":{"type":"string"},"content":{"type":"string"}},"required":["category","content"],"additionalProperties":false}},"schedule_updates":{"type":"array","items":{"type":"object","properties":{"title":{"type":"string"},"detail":{"type":"string"},"start_at":{"anyOf":[{"type":"integer"},{"type":"null"}]},"reminder_at":{"anyOf":[{"type":"integer"},{"type":"null"}]},"repeat_type":{"anyOf":[{"type":"string"},{"type":"null"}]},"repeat_days_of_week":{"type":"array","items":{"type":"integer"}},"repeat_day_of_month":{"anyOf":[{"type":"integer"},{"type":"null"}]},"reminder_time":{"anyOf":[{"type":"string"},{"type":"null"}]}},"required":["title","detail","start_at","reminder_at","repeat_type","repeat_days_of_week","repeat_day_of_month","reminder_time"],"additionalProperties":false}},"skill_updates":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"description":{"type":"string"},"trigger_keywords":{"type":"array","items":{"type":"string"}},"action_template":{"type":"string"}},"required":["name","description","trigger_keywords","action_template"],"additionalProperties":false}}},"required":["reply","system_calls","memory_updates","schedule_updates","skill_updates"],"additionalProperties":false}}}"""
+                """{"type":"json_schema","json_schema":{"name":"agent_result","strict":true,"schema":{"type":"object","properties":{"reply":{"type":"string"},"system_calls":{"type":"array","items":{"type":"object","properties":{"type":{"type":"string"},"query":{"type":"string"},"url":{"type":"string"},"code":{"type":"string"},"command":{"type":"string"},"input":{"type":"string"},"timeout_ms":{"type":"number"}},"required":["type","query","url","code","command","input","timeout_ms"],"additionalProperties":false}},"memory_updates":{"type":"array","items":{"type":"object","properties":{"category":{"type":"string"},"content":{"type":"string"}},"required":["category","content"],"additionalProperties":false}},"schedule_updates":{"type":"array","items":{"type":"object","properties":{"title":{"type":"string"},"detail":{"type":"string"},"start_at":{"anyOf":[{"type":"integer"},{"type":"null"}]},"reminder_at":{"anyOf":[{"type":"integer"},{"type":"null"}]},"repeat_type":{"anyOf":[{"type":"string"},{"type":"null"}]},"repeat_days_of_week":{"type":"array","items":{"type":"integer"}},"repeat_day_of_month":{"anyOf":[{"type":"integer"},{"type":"null"}]},"reminder_time":{"anyOf":[{"type":"string"},{"type":"null"}]}},"required":["title","detail","start_at","reminder_at","repeat_type","repeat_days_of_week","repeat_day_of_month","reminder_time"],"additionalProperties":false}},"skill_updates":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"description":{"type":"string"},"trigger_keywords":{"type":"array","items":{"type":"string"}},"action_template":{"type":"string"}},"required":["name","description","trigger_keywords","action_template"],"additionalProperties":false}}},"required":["reply","system_calls","memory_updates","schedule_updates","skill_updates"],"additionalProperties":false}}}"""
             ).jsonObject
         }
     }
