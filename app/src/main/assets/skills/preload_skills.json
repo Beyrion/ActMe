@@ -22,5 +22,11 @@
     "description": "当提醒不要刷短视频时，给出替代行动。",
     "trigger_keywords": ["短视频", "刷手机", "分心", "拖延"],
     "action_template": "先专注 20 分钟当前任务，结束后奖励 5 分钟放松。"
+  },
+  {
+    "name": "Markdown 报告生成工作流",
+    "description": "当用户要求生成报告、研报、周报、PDF、正式文档或可分享文件时，优先使用 Markdown 中间稿，再转换为最终文件。",
+    "trigger_keywords": ["报告", "研报", "周报", "PDF", "文档", "生成文件", "导出"],
+    "action_template": "生成报告时先写完整 Markdown：标题、摘要、目录、正文、表格、引用/来源、结论。优先在 python_exec 中调用 write_report(markdown_text, \"report_name\", title=\"...\")，它会保存 .md、生成 .html，并尽量生成 .pdf。生成的 .md/.html/.pdf 都使用相对路径，并全部写入 output_files。若 PDF 转换失败，至少返回 Markdown 文件和可读的 HTML 文件。"
   }
 ]

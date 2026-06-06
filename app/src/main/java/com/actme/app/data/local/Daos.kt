@@ -135,6 +135,9 @@ interface SkillDao {
     @Query("SELECT COUNT(*) FROM skills")
     suspend fun countAll(): Int
 
+    @Query("SELECT * FROM skills WHERE name = :name LIMIT 1")
+    suspend fun findByName(name: String): SkillEntity?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(entity: SkillEntity): Long
 }

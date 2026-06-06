@@ -36,7 +36,7 @@ object GeckoSearchEngine {
         }
     }
 
-    suspend fun search(url: String, timeoutMs: Long = 10_000L): String? {
+    suspend fun search(url: String, timeoutMs: Long = 8_000L): String? {
         val context = appContext ?: run {
             AppLogger.w(TAG, "GECKO-SEARCH-SKIP: not initialized")
             return null

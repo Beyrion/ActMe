@@ -2,6 +2,7 @@ package com.actme.app.data.repo
 
 import com.actme.app.util.AppLogger
 import com.actme.app.data.agent.ActMeAgent
+import com.actme.app.data.agent.AgentResult
 import com.actme.app.data.agent.PythonSkillEngine
 import com.actme.app.data.agent.ReplyExtractor
 import com.actme.app.data.agent.SystemCall
@@ -63,10 +64,10 @@ class ActMeRepository(
     )
 
     private data class ToolBudget(
-        val maxPasses: Int = 6,
-        val maxToolCalls: Int = 12,
-        val maxSearchCalls: Int = 4,
-        val maxBrowseCalls: Int = 8,
+        val maxPasses: Int = 12,
+        val maxToolCalls: Int = 24,
+        val maxSearchCalls: Int = 8,
+        val maxBrowseCalls: Int = 14,
         var toolCalls: Int = 0,
         var searchCalls: Int = 0,
         var browseCalls: Int = 0
@@ -144,9 +145,13 @@ class ActMeRepository(
         val systemMemories = memoryDao.getSystemMemories()
         val allSchedules = scheduleDao.getAllNow()
         val enabledSkills = skillDao.getEnabledNow()
-        // Exclude tool_execution messages from history — they are UI metadata, not conversation turns
         val historyMessages = chatDao.getByConversation(conversationId)
-            .filter { it.createdAt < now && it.role != "tool_execution" }
+            .filter { it.createdAt < now }
+            .takeLastUserRounds(10)
+        AppLogger.i(
+            TAG,
+            "history context: messages=${historyMessages.size}, userRounds=${historyMessages.count { it.role == "user" }}, toolMessages=${historyMessages.count { it.role == "tool_execution" }}"
+        )
 
         val config = buildProviderConfig()
 
@@ -265,9 +270,82 @@ class ActMeRepository(
         var searchSucceeded = false
         var searchFailed = false
         var toolLoopPausedReason: String? = null
+        val maxEmptyCompletionRecoveries = 4
+        var emptyCompletionRecoveries = 0
+        suspend fun recoverEmptyCompletion(raw: String): AgentResult {
+            emptyCompletionRecoveries += 1
+            val callLens = result.systemCalls.joinToString(",") { call ->
+                "${call.type}:code=${call.code.length}:query=${call.query.length}:url=${call.url.length}:files=${call.outputFiles.size + call.generatedFiles.size + call.expectedOutputs.size + call.files.size}"
+            }.ifBlank { "none" }
+            AppLogger.w(
+                TAG,
+                "empty completion blocked; attempt=$emptyCompletionRecoveries, files=${generatedFileRefs.size}, rawLen=${raw.length}, systemCalls=${result.systemCalls.size}, callLens=$callLens, rawHeadB64=${LogCodec.utf8Base64(raw.take(320))}, rawTailB64=${LogCodec.utf8Base64(raw.takeLast(320))}"
+            )
+            addRunStep(
+                title = "Agent continues empty result",
+                detail = "reply and output files are empty; requesting completion",
+                status = StepStatus.RUNNING
+            )
+            val toolContext = searchResults
+                ?.takeIf { it.isNotBlank() }
+                ?: "No tool result is available yet. Decide whether to call tools or directly provide a non-empty reply."
+            val recoveryInput = """
+                User request:
+                $userInput
+
+                Existing tool/intermediate results:
+                $toolContext
+
+                The previous model output had an empty reply and no output file, so it is not a valid stop.
+                Continue now:
+                - If enough information is available, put the complete final answer/report in reply.
+                - If the user asked for a file, produce the needed result file and list it in output_files.
+                - Do not return empty reply with empty system_calls.
+            """.trimIndent()
+            val recoveryExtractor = ReplyExtractor()
+            val recoveryBuilder = StringBuilder()
+            var recoveryUsage: TokenUsage? = null
+            agent.runTurnStreamingWithUsage(
+                userInput = recoveryInput,
+                memories = userMemories,
+                systemMemories = systemMemories,
+                schedules = allSchedules,
+                skills = enabledSkills,
+                config = config,
+                enableWebSearch = true,
+                historyMessages = historyMessages,
+                webSearchResults = searchResults
+            ).collect { chunk ->
+                recoveryUsage = mergeStreamingUsage(recoveryUsage, chunk.usage)
+                val display = recoveryExtractor.consume(chunk.text)
+                if (display != null) {
+                    recoveryBuilder.append(display)
+                    val visible = agent.sanitizeUserVisibleReply(recoveryBuilder.toString())
+                    if (visible.isNotBlank()) {
+                        chatDao.updateContent(replyMsgId, visible)
+                    }
+                }
+            }
+            addApiUsage(recoveryUsage)
+            val recoveryRaw = recoveryExtractor.getRaw()
+            val recovered = agent.parseRaw(recoveryRaw)
+            generatedFileRefs += extractWorkspaceFileRefs(recoveryRaw)
+            AppLogger.i(
+                TAG,
+                "empty completion recovery result: replyLen=${recovered.reply.length}, systemCalls=${recovered.systemCalls.size}, files=${generatedFileRefs.size}"
+            )
+            return recovered
+        }
         for (pass in 1..budget.maxPasses) {
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
-            if (result.systemCalls.isEmpty()) break
+            if (result.systemCalls.isEmpty()) {
+                generatedFileRefs += extractWorkspaceFileRefs(result.reply)
+                if (result.reply.isBlank() && generatedFileRefs.isEmpty() && emptyCompletionRecoveries < maxEmptyCompletionRecoveries) {
+                    result = recoverEmptyCompletion(rawText)
+                    continue
+                }
+                break
+            }
 
             // First pass needing tools: convert initialMsgId → tool_execution, open fresh reply bubble
             if (toolMsgId == -1L) {
@@ -417,7 +495,12 @@ class ActMeRepository(
                 throw e
             }
             addApiUsage(continuationUsage)
-            result = agent.parseRaw(continuationExtractor.getRaw())
+            val continuationRaw = continuationExtractor.getRaw()
+            result = agent.parseRaw(continuationRaw)
+            generatedFileRefs += extractWorkspaceFileRefs(continuationRaw)
+            if (result.reply.isBlank() && result.systemCalls.isEmpty() && generatedFileRefs.isEmpty() && emptyCompletionRecoveries < maxEmptyCompletionRecoveries) {
+                result = recoverEmptyCompletion(continuationRaw)
+            }
             updateRunStep(thinkingStep, StepStatus.DONE, "reply=${result.reply.length} chars, next tools=${result.systemCalls.size}")
             AppLogger.i(TAG, "pass $pass result: replyLen=${result.reply.length}, systemCalls=${result.systemCalls.size}")
         }
@@ -443,6 +526,10 @@ class ActMeRepository(
         generatedFileRefs += extractWorkspaceFileRefs(searchResults.orEmpty())
         generatedFileRefs += extractWorkspaceFileRefs(result.reply)
         val generatedFiles = generatedFileRefs.toList()
+        if (finalReply.isBlank() && generatedFiles.isEmpty()) {
+            AppLogger.w(TAG, "final empty reply blocked after recoveries=$emptyCompletionRecoveries")
+            finalReply = "模型连续返回空结果，未生成可展示回复或结果文件。本轮已自动重试，但仍未得到有效输出。"
+        }
         val missingGeneratedFiles = generatedFiles.filterNot { finalReply.contains(it) }
         AppLogger.i(
             "AgentFile",
@@ -522,6 +609,22 @@ class ActMeRepository(
     suspend fun deleteMemoryItem(id: Long) = withContext(Dispatchers.IO) {
         memoryDao.deleteById(id)
         AppLogger.i(TAG, "memory deleted: id=$id")
+    }
+
+    private fun List<ChatMessageEntity>.takeLastUserRounds(rounds: Int): List<ChatMessageEntity> {
+        if (rounds <= 0) return emptyList()
+        var userSeen = 0
+        var startIndex = 0
+        for (index in indices.reversed()) {
+            if (this[index].role == "user") {
+                userSeen += 1
+                if (userSeen == rounds) {
+                    startIndex = index
+                    break
+                }
+            }
+        }
+        return if (userSeen < rounds) this else subList(startIndex, size)
     }
 
     suspend fun addManualSchedule(

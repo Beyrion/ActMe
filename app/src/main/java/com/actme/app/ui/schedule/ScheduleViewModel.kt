@@ -2,10 +2,10 @@ package com.actme.app.ui.schedule
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import android.util.Log
 import com.actme.app.data.local.RepeatType
 import com.actme.app.data.local.ScheduleEntity
 import com.actme.app.data.repo.ActMeRepository
+import com.actme.app.util.AppLogger
 import com.actme.app.util.LogCodec
 import java.time.LocalDate
 import java.time.LocalTime
@@ -105,12 +105,12 @@ class ScheduleViewModel(private val repository: ActMeRepository) : ViewModel() {
         viewModelScope.launch {
             val result = repository.addScheduleBySubAgent(rawRequest.trim())
             if (result.isFailure) {
-                Log.i(
+                AppLogger.i(
                     TAG,
                     "add schedule by sub-agent failed: messageB64=${LogCodec.utf8Base64(result.exceptionOrNull()?.message)}"
                 )
             } else {
-                Log.i(TAG, "add schedule by sub-agent success")
+                AppLogger.i(TAG, "add schedule by sub-agent success")
             }
             onResult(result)
         }

@@ -1,5 +1,32 @@
 # Release Notes
 
+## 1.3.0 - 2026-06-07
+
+### Report And File Generation
+
+- Added `write_report(markdown_text, base_name, title, make_pdf)` as the preferred report-generation helper for Agent Python.
+- Added Markdown + HTML + PDF report output flow, with generated files collected into the final chat bubble.
+- Added `fpdf2`, `fonttools`, `markdown`, and supporting XML/font packages to the packaged Python runtime.
+- Added app-packaged Chinese report fonts and routed PDF generation through app-owned font assets instead of `/system/fonts`.
+- Added `report_font_dir` to the Python execution environment so Agent code can see the read-only report font directory when needed.
+- Clarified that generated files should prefer relative paths under `agent_workspace` when they need to be shown in chat; the app maps those files to displayable file buttons.
+
+### Python Sandbox And Diagnostics
+
+- Clarified the Python sandbox model: file read/write/delete/rename access is not additionally blocked at the Python layer; Android's app sandbox and system permissions decide what succeeds.
+- Kept process control, native-code loading, package installation, virtual environments, and system shell calls restricted.
+- Improved Python stdout, stderr, PDF-generation errors, and traceback logging so logcat can show report failures without silent fallback.
+- Added stronger `[ActMe]`-prefixed diagnostics for Python execution, file collection, and report generation.
+- Increased Agent loop capacity for longer tool workflows while still keeping duplicate-tool and budget guards.
+- Added empty-completion recovery so a pass with no user-visible reply and no output file continues automatically instead of requiring the user to say “继续”.
+
+### Agent Prompt And Reliability
+
+- Updated the Agent prompt to prefer `write_report` for reports and avoid manual ReportLab font registration.
+- Updated the prompt to avoid `/system/fonts`, which may be blocked by Android SELinux.
+- Updated file-output guidance so any pass in the Agent loop can produce files and the final response should surface them.
+- Improved JSON/tool-call parsing resilience for malformed or partially wrapped tool calls.
+
 ## 1.2.0 - 2026-06-06
 
 ### Agent Loop And Tool Output

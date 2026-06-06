@@ -1,6 +1,7 @@
 package com.actme.app.data.agent
 
 import com.actme.app.util.AppLogger
+import com.actme.app.util.LogCodec
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ensureActive
@@ -20,11 +21,18 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.TextStyle
 import java.util.Locale
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 
 object SystemSkillExecutor {
 
     private const val TAG = "SystemSkillExecutor"
     private const val MAX_SEARCH_RESULTS = 5
+    private const val SEARCH_CONNECT_TIMEOUT_MS = 2_000
+    private const val SEARCH_READ_TIMEOUT_MS = 4_000
+    private const val BROWSE_CONNECT_TIMEOUT_MS = 3_000
+    private const val BROWSE_READ_TIMEOUT_MS = 5_000
 
     private val USER_AGENT = "Mozilla/5.0"
 
@@ -50,13 +58,14 @@ object SystemSkillExecutor {
     private suspend fun warmUpBing() {
         if (bingWarmedUp) return
         try {
-            withTimeoutOrNull(5_000L) {
+            withTimeoutOrNull(2_500L) {
                 withContext(Dispatchers.IO) {
                     ensureCookieHandler()
                     val url = URL("https://cn.bing.com/")
                     AppLogger.i(TAG, "BING-WARMUP: GET cn.bing.com/")
                     val conn = (url.openConnection() as HttpURLConnection).apply {
-                        connectTimeout = 5_000; readTimeout = 5_000
+                        connectTimeout = SEARCH_CONNECT_TIMEOUT_MS
+                        readTimeout = SEARCH_READ_TIMEOUT_MS
                         setBrowserHeaders()
                     }
                     val code = conn.responseCode
@@ -92,12 +101,12 @@ object SystemSkillExecutor {
     )
 
     private val SEARCH_BACKENDS = listOf(
-        SearchBackend("Bing Gecko",    12_000) { q -> searchBingGecko(q) },
-        SearchBackend("Bing",           8_000) { q -> searchBingHtml(q) },
-        SearchBackend("DuckDuckGo API",  5_000) { q -> searchDuckDuckGoApi(q) },
-        SearchBackend("DuckDuckGo HTML", 8_000) { q -> searchDuckDuckGoHtml(q) },
-        SearchBackend("Baidu",          8_000) { q -> searchBaiduHtml(q) },
-        SearchBackend("SearXNG",         8_000) { q -> searchSearXngPublic(q) },
+        SearchBackend("Bing Gecko",     6_000) { q -> searchBingGecko(q) },
+        SearchBackend("Bing",           5_000) { q -> searchBingHtml(q) },
+        SearchBackend("DuckDuckGo API", 4_000) { q -> searchDuckDuckGoApi(q) },
+        SearchBackend("DuckDuckGo HTML", 5_000) { q -> searchDuckDuckGoHtml(q) },
+        SearchBackend("Baidu",          5_000) { q -> searchBaiduHtml(q) },
+        SearchBackend("SearXNG",        5_000) { q -> searchSearXngPublic(q) },
     )
 
     data class ToolStepEvent(
@@ -211,9 +220,33 @@ object SystemSkillExecutor {
     // ---- python_exec ----
 
     private suspend fun executePython(call: SystemCall): String {
-        val code = call.code.ifBlank { call.query }
+        val code = repairMalformedMarkdownReportCode(call.code.ifBlank { call.query })
         if (code.isBlank()) return "[PYTHON_ERROR] Empty Python code."
-        AppLogger.i(TAG, "PYTHON-EXEC: chars=${code.length}, inputChars=${call.input.length}, timeoutMs=${call.timeoutMs}")
+        AppLogger.i(
+            TAG,
+            "PYTHON-EXEC: chars=${code.length}, inputChars=${call.input.length}, timeoutMs=${call.timeoutMs}, codeHeadB64=${LogCodec.utf8Base64(code.take(240))}, codeTailB64=${LogCodec.utf8Base64(code.takeLast(240))}"
+        )
+        if (isObviouslyIncompletePython(code)) {
+            AppLogger.w(TAG, "PYTHON-ERROR: incomplete python code detected before execution")
+            return """
+                [PYTHON_ERROR]
+                elapsed_ms: 0
+                error:
+                Python code is incomplete or truncated before execution. Re-send one complete python_exec call with the full code string. Prefer write_report(markdown_text, "report_name", title="...") for reports instead of hand-written ReportLab code.
+            """.trimIndent()
+        }
+        if (usesUnsafeReportLabFontPath(code)) {
+            AppLogger.w(
+                TAG,
+                "PYTHON-ERROR: blocked manual ReportLab font registration; code references TTFont or /system/fonts. Android SELinux may deny /system/fonts ioctl. Use write_report(markdown_text, \"report_name\", title=\"...\") instead."
+            )
+            return """
+                [PYTHON_ERROR]
+                elapsed_ms: 0
+                error:
+                Manual ReportLab font registration is blocked for debugging and reliability. The code references TTFont or /system/fonts, which fails on Android due to SELinux font-file access restrictions. Use write_report(markdown_text, "report_name", title="...") so the app-owned report helper handles Markdown, HTML, and PDF generation and logs pdf_start/pdf_success/pdf_error.
+            """.trimIndent()
+        }
         val result = PythonSkillEngine.execute(code, call.input, call.timeoutMs)
         val workspace = runCatching { PythonSkillEngine.workspaceDir().canonicalFile }.getOrNull()
         val outputFiles = (call.outputFiles + call.generatedFiles + call.expectedOutputs + call.files + result.output_files)
@@ -223,8 +256,32 @@ object SystemSkillExecutor {
             .distinct()
         AppLogger.i(
             "AgentFile",
-            "python_exec ok=${result.ok}, rawOutputFiles=${result.output_files.size}, mergedOutputFiles=${outputFiles.size}, files=${outputFiles.joinToString("|")}"
+            "python_exec ok=${result.ok}, rawOutputFiles=${result.output_files.size}, mergedOutputFiles=${outputFiles.size}, files=${outputFiles.joinToString("|")}, fileInfo=${outputFiles.fileInfo()}"
         )
+        if (result.stdout.isNotBlank()) {
+            AppLogger.i(TAG, "PYTHON-STDOUT:\n${result.stdout.trimEnd()}")
+        }
+        if (result.stderr.isNotBlank()) {
+            AppLogger.w(TAG, "PYTHON-STDERR:\n${result.stderr.trimEnd()}")
+        }
+        result.result?.let { json ->
+            AppLogger.i(TAG, "PYTHON-RESULT-B64: ${LogCodec.utf8Base64(json.toString())}")
+            val pdfError = runCatching {
+                json.jsonObject["pdf_error"]?.jsonPrimitive?.contentOrNull
+            }.getOrNull()
+            val pdfTrace = runCatching {
+                json.jsonObject["pdf_error_trace"]?.jsonPrimitive?.contentOrNull
+            }.getOrNull()
+            if (!pdfError.isNullOrBlank() || !pdfTrace.isNullOrBlank()) {
+                AppLogger.w(
+                    TAG,
+                    "PDF-ERROR: ${pdfError.orEmpty()}\nPDF-TRACE:\n${pdfTrace.orEmpty()}"
+                )
+            }
+        }
+        if (!result.ok && result.error.isNotBlank()) {
+            AppLogger.w(TAG, "PYTHON-ERROR:\n${result.error}")
+        }
         return buildString {
             appendLine(if (result.ok) "[PYTHON_RESULT]" else "[PYTHON_ERROR]")
             appendLine("elapsed_ms: ${result.elapsed_ms}")
@@ -251,6 +308,47 @@ object SystemSkillExecutor {
         }.trim()
     }
 
+    private fun repairMalformedMarkdownReportCode(code: String): String {
+        val raw = code.trim()
+        if (!raw.startsWith("md = \"") || !raw.contains("write_report(md")) return code
+        val writeReportIndex = raw.indexOf("write_report(md")
+        if (writeReportIndex <= 0) return code
+        val markdownPart = raw.substringAfter("md = \"").substring(0, writeReportIndex - "md = \"".length)
+            .trimEnd()
+            .removeSuffix("\"")
+            .trimEnd()
+        if (markdownPart.isBlank()) return code
+        val tail = raw.substring(writeReportIndex).trimStart()
+        val safeMarkdown = markdownPart.replace("\"\"\"", "\\\"\\\"\\\"")
+        val repaired = buildString {
+            append("md = \"\"\"")
+            append(safeMarkdown)
+            appendLine("\"\"\"")
+            append(tail)
+        }
+        AppLogger.w(TAG, "PYTHON-REPAIR: converted malformed md string assignment to triple-quoted markdown, chars=${repaired.length}")
+        return repaired
+    }
+
+    private fun isObviouslyIncompletePython(code: String): Boolean {
+        val trimmed = code.trimEnd()
+        if (trimmed.endsWith("\\")) return true
+        val lastLine = trimmed.lineSequence().lastOrNull()?.trim().orEmpty()
+        return lastLine in setOf("=", "(", "[", "{") ||
+            lastLine.endsWith("=") ||
+            lastLine.endsWith("(") ||
+            lastLine.endsWith("[") ||
+            lastLine.endsWith("{")
+    }
+
+    private fun usesUnsafeReportLabFontPath(code: String): Boolean {
+        return code.contains("TTFont(") ||
+            code.contains("pdfmetrics.registerFont") ||
+            code.contains("/system/fonts") ||
+            code.contains("NotoSansCJK") ||
+            code.contains("Roboto-Regular.ttf")
+    }
+
     private fun normalizePythonOutputPath(path: String, workspace: java.io.File?): String {
         val clean = path.removePrefix("file://").trim()
         if (workspace == null || clean.isBlank()) return clean
@@ -258,6 +356,17 @@ object SystemSkillExecutor {
             if (candidate.isAbsolute) candidate else java.io.File(workspace, clean)
         }
         return runCatching { file.canonicalPath }.getOrDefault(file.absolutePath)
+    }
+
+    private fun List<String>.fileInfo(): String {
+        return joinToString("|") { path ->
+            val file = java.io.File(path)
+            if (file.isFile) {
+                "${file.name}:${file.length()}B"
+            } else {
+                "${file.name}:missing"
+            }
+        }
     }
 
     // ---- adb_shell ----
@@ -298,7 +407,7 @@ object SystemSkillExecutor {
             ?: return@withContext "[BROWSE_ERROR] Invalid URL; only http/https pages are supported."
 
         AppLogger.i(TAG, "BROWSE-URL: $url")
-        val renderedText = GeckoSearchEngine.search(url, timeoutMs = 15_000L)
+        val renderedText = GeckoSearchEngine.search(url, timeoutMs = 8_000L)
         if (!renderedText.isNullOrBlank()) {
             "[BROWSE_RESULT]\n$renderedText"
         } else {
@@ -335,7 +444,7 @@ object SystemSkillExecutor {
     private fun fetchUrlText(url: String): String? {
         return try {
             val parsed = URL(url)
-            val conn = httpGet(parsed)
+            val conn = httpGet(parsed, BROWSE_CONNECT_TIMEOUT_MS, BROWSE_READ_TIMEOUT_MS)
             val code = conn.responseCode
             val type = conn.contentType.orEmpty()
             AppLogger.i(TAG, "BROWSE-HTTP-RESP: HTTP $code type=$type")
@@ -431,7 +540,7 @@ object SystemSkillExecutor {
 
     private suspend fun searchBingGecko(query: String): SearchResponse? = withContext(Dispatchers.IO) {
         val url = buildBingUrl(query)
-        val renderedText = GeckoSearchEngine.search(url.toString())
+        val renderedText = GeckoSearchEngine.search(url.toString(), timeoutMs = 6_000L)
         if (renderedText.isNullOrBlank()) null else SearchResponse(
             url.toString(),
             listOf("Bing 渲染页面文本（交由模型抽取）" to renderedText)
@@ -446,7 +555,8 @@ object SystemSkillExecutor {
         AppLogger.i(TAG, "BING-REQ: GET " + url.toString())
 
         val conn = (url.openConnection() as HttpURLConnection).apply {
-            connectTimeout = 5_000; readTimeout = 5_000
+            connectTimeout = SEARCH_CONNECT_TIMEOUT_MS
+            readTimeout = SEARCH_READ_TIMEOUT_MS
             setBingSearchHeaders()
         }
 
@@ -543,7 +653,8 @@ object SystemSkillExecutor {
         val q = URLEncoder.encode(query, "UTF-8")
         val url = URL("https://www.baidu.com/s?wd=" + q + "&ie=utf-8&rn=10")
         val conn = (url.openConnection() as HttpURLConnection).apply {
-            connectTimeout = 5_000; readTimeout = 5_000
+            connectTimeout = SEARCH_CONNECT_TIMEOUT_MS
+            readTimeout = SEARCH_READ_TIMEOUT_MS
             setBrowserHeaders()
             setRequestProperty("Cookie", "BAIDUID=0;")
         }
@@ -589,7 +700,7 @@ object SystemSkillExecutor {
     private fun searchDuckDuckGoApi(query: String): SearchResponse {
         val q = URLEncoder.encode(query, "UTF-8")
         val url = URL("https://api.duckduckgo.com/?q=" + q + "&format=json&no_html=1&skip_disambig=1")
-        val conn = httpGet(url)
+        val conn = httpGet(url, SEARCH_CONNECT_TIMEOUT_MS, SEARCH_READ_TIMEOUT_MS)
         val json = BufferedReader(InputStreamReader(conn.inputStream, "UTF-8")).use { it.readText() }
         conn.disconnect()
         val results = mutableListOf<Pair<String, String>>()
@@ -614,7 +725,7 @@ object SystemSkillExecutor {
     private fun searchDuckDuckGoHtml(query: String): SearchResponse {
         val q = URLEncoder.encode(query, "UTF-8")
         val url = URL("https://html.duckduckgo.com/html/?q=" + q)
-        val conn = httpGet(url)
+        val conn = httpGet(url, SEARCH_CONNECT_TIMEOUT_MS, SEARCH_READ_TIMEOUT_MS)
         conn.setRequestProperty("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
         val html = BufferedReader(InputStreamReader(conn.inputStream, "UTF-8")).use { it.readText() }
         conn.disconnect()
@@ -661,7 +772,7 @@ object SystemSkillExecutor {
     private suspend fun trySearXngInstance(inst: String, q: String): SearchResponse? {
         return try {
             val url = URL(inst + "/search?q=" + q + "&format=json&language=zh-CN")
-            val conn = httpGet(url)
+            val conn = httpGet(url, SEARCH_CONNECT_TIMEOUT_MS, SEARCH_READ_TIMEOUT_MS)
             conn.setRequestProperty("Accept", "application/json")
             val json = BufferedReader(InputStreamReader(conn.inputStream, "UTF-8")).use { it.readText() }
             conn.disconnect()
@@ -843,9 +954,14 @@ object SystemSkillExecutor {
         setRequestProperty("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
     }
 
-    private fun httpGet(url: URL): HttpURLConnection {
+    private fun httpGet(
+        url: URL,
+        connectTimeoutMs: Int = SEARCH_CONNECT_TIMEOUT_MS,
+        readTimeoutMs: Int = SEARCH_READ_TIMEOUT_MS
+    ): HttpURLConnection {
         return (url.openConnection() as HttpURLConnection).apply {
-            connectTimeout = 5_000; readTimeout = 5_000
+            connectTimeout = connectTimeoutMs
+            readTimeout = readTimeoutMs
             setBrowserHeaders()
         }
     }

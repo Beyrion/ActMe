@@ -47,8 +47,10 @@ emit(value)
 set_result(value)
 result
 workspace_dir
+report_font_dir
 read_excel(path, max_rows=200, max_sheets=10)
 write_excel(filename, sheets)
+write_report(markdown_text, base_name="report", title=None, make_pdf=True)
 save_script(name, source)
 load_script(name)
 list_scripts()
@@ -56,11 +58,11 @@ compile_script(name)
 run_script(name)
 ```
 
-从 1.2.0 开始，Python import 策略从“允许列表”改为“默认允许已安装包和标准库，少数危险能力受限”。因此 `struct`、`numpy`、`pandas`、`openpyxl`、`matplotlib`、PDF/图片处理库等在实际已打包或可用时可以直接导入。
+从 1.2.0 开始，Python import 策略从“允许列表”改为“默认允许已安装包和标准库，少数危险能力受限”。当前随 APK 打包的常用库包括 `numpy`、`pandas`、`openpyxl`、`Pillow`、`matplotlib`、`reportlab`、`markdown`、`fpdf2` 和 `fonttools`，因此表格分析、Excel、图片、Markdown、HTML 和 PDF 生成可以直接走 `python_exec`。
 
 ## Excel 能力
 
-ActMe 已内置 `openpyxl`，支持：
+ActMe 已内置 `openpyxl`、`pandas` 和 `numpy`，支持：
 
 - 读取 `.xlsx`
 - 读取 `.xlsm`
@@ -114,6 +116,30 @@ Repository 会在 Agent loop 的每一轮工具执行后收集文件，并在最
 - 图片: `.png`, `.jpg`, `.jpeg`
 - 其他文件回退到系统通用打开器
 
+## 报告生成
+
+从 1.3.0 开始，报告类任务优先使用 `write_report`，而不是让 Agent 手写 ReportLab 或 FPDF 样板代码：
+
+```python
+markdown_text = """# 示例报告
+
+## 摘要
+这是中文报告内容。
+"""
+files = write_report(markdown_text, "reports/example_report", title="示例报告")
+emit(files)
+```
+
+`write_report` 会：
+
+- 生成 UTF-8 BOM 编码的 Markdown 文件，方便 Windows 编辑器正确识别中文。
+- 把 Markdown 转成 HTML。
+- 优先通过内置 HTML-to-PDF 路径生成 PDF。
+- 使用 App 打包的中文字体，避免访问 `/system/fonts` 时被 Android SELinux 拒绝。
+- 返回 `markdown`、`html`、`pdf` 和 `output_files`，执行器也会自动扫描工作区新增文件。
+
+`report_font_dir` 是 App 拷贝出来的字体目录，可能位于 `agent_workspace` 外。它是运行时资源，不是生成文件目录。Agent 不需要把字体路径写进 `output_files`。为了让文件按钮稳定显示，模型应把报告、表格、图片等用户可见产物写入 `agent_workspace` 下的相对路径。
+
 ## 运行期脚本
 
 Agent 可以保存脚本：
@@ -141,8 +167,8 @@ run_script("tools/analyze.py")
 内置 Python 是沙箱式能力：
 
 - 默认允许导入标准库和已安装包。
-- 文件写入、删除、重命名限制在 `agent_workspace` 内。
-- 读取类操作尽量放开，以便第三方库读取自身资源和系统字体。
+- Python 层不额外拦截文件写入、删除、重命名；实际能否成功交给 Android App 沙箱和系统权限决定。Prompt 仍要求 Agent 把用户可见的生成文件写到 `agent_workspace` 相对路径，便于 App 收集并显示打开按钮。
+- 读取类操作尽量放开，以便第三方库读取自身资源、App 打包资源和用户可读文件。
 - 禁止或限制包安装、进程控制、native code、系统 shell 等危险能力，例如 `pip`、`venv`、`subprocess`、`ctypes`、`multiprocessing`、`os.system`。
 - 常见 cache/config 路径会指向工作区，例如 `HOME`、`MPLCONFIGDIR`、`XDG_CACHE_HOME`。
 

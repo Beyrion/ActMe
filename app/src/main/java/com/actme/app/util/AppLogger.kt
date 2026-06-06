@@ -13,6 +13,8 @@ import java.util.concurrent.atomic.AtomicLong
  * Lifetime: process-scoped (resets on each app launch).
  */
 object AppLogger {
+    private const val PREFIX = "[ActMe]: "
+    private const val LOGCAT_CHUNK_SIZE = 3000
 
     data class LogEntry(
         val id: Long,
@@ -31,8 +33,15 @@ object AppLogger {
     private val lock = Any()
     private val idGen = AtomicLong(0)
 
+    private fun prefixedLines(message: String): String {
+        return message.lineSequence()
+            .joinToString("\n") { line ->
+                if (line.startsWith(PREFIX)) line else PREFIX + line
+            }
+    }
+
     private fun append(level: Char, tag: String, message: String) {
-        val entry = LogEntry(idGen.getAndIncrement(), System.currentTimeMillis(), level, tag, message)
+        val entry = LogEntry(idGen.getAndIncrement(), System.currentTimeMillis(), level, tag, prefixedLines(message))
         synchronized(lock) {
             if (buffer.size >= MAX_ENTRIES) buffer.removeFirst()
             buffer.addLast(entry)
@@ -40,18 +49,74 @@ object AppLogger {
         }
     }
 
-    fun v(tag: String, msg: String) { Log.v(tag, msg); append('V', tag, msg) }
-    fun d(tag: String, msg: String) { Log.d(tag, msg); append('D', tag, msg) }
-    fun i(tag: String, msg: String) { Log.i(tag, msg); append('I', tag, msg) }
-    fun w(tag: String, msg: String) { Log.w(tag, msg); append('W', tag, msg) }
+    private fun logChunked(level: Char, tag: String, message: String) {
+        val lines = prefixedLines(message).lineSequence().toList().ifEmpty { listOf(PREFIX) }
+        lines.forEach { line ->
+            if (line.length <= LOGCAT_CHUNK_SIZE) {
+                logLine(level, tag, line)
+            } else {
+                val body = line.removePrefix(PREFIX)
+                var offset = 0
+                var part = 1
+                val total = (body.length + LOGCAT_CHUNK_SIZE - 1) / LOGCAT_CHUNK_SIZE
+                while (offset < body.length) {
+                    val end = minOf(offset + LOGCAT_CHUNK_SIZE, body.length)
+                    logLine(level, tag, "$PREFIX[chunk $part/$total] ${body.substring(offset, end)}")
+                    offset = end
+                    part += 1
+                }
+            }
+        }
+    }
+
+    private fun logLine(level: Char, tag: String, message: String) {
+        when (level) {
+            'V' -> Log.v(tag, message)
+            'D' -> Log.d(tag, message)
+            'I' -> Log.i(tag, message)
+            'W' -> Log.w(tag, message)
+            'E' -> Log.e(tag, message)
+            else -> Log.i(tag, message)
+        }
+    }
+
+    fun v(tag: String, msg: String) {
+        val m = prefixedLines(msg)
+        logChunked('V', tag, m)
+        append('V', tag, m)
+    }
+
+    fun d(tag: String, msg: String) {
+        val m = prefixedLines(msg)
+        logChunked('D', tag, m)
+        append('D', tag, m)
+    }
+
+    fun i(tag: String, msg: String) {
+        val m = prefixedLines(msg)
+        logChunked('I', tag, m)
+        append('I', tag, m)
+    }
+
+    fun w(tag: String, msg: String) {
+        val m = prefixedLines(msg)
+        logChunked('W', tag, m)
+        append('W', tag, m)
+    }
+
     fun w(tag: String, msg: String, t: Throwable) {
-        Log.w(tag, msg, t)
-        append('W', tag, "$msg  ↳ ${t.javaClass.simpleName}: ${t.message}")
+        val m = prefixedLines("$msg\n${t.stackTraceToString()}")
+        logChunked('W', tag, m)
+        append('W', tag, m)
     }
 
     fun e(tag: String, msg: String, t: Throwable? = null) {
-        if (t != null) Log.e(tag, msg, t) else Log.e(tag, msg)
-        val full = if (t != null) "$msg  ↳ ${t.javaClass.simpleName}: ${t.message}" else msg
-        append('E', tag, full)
+        val m = if (t != null) {
+            prefixedLines("$msg\n${t.stackTraceToString()}")
+        } else {
+            prefixedLines(msg)
+        }
+        logChunked('E', tag, m)
+        append('E', tag, m)
     }
 }

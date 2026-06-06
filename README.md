@@ -11,8 +11,8 @@ ActMe 的核心不是单轮聊天，而是一个可见、可控、可中止的�
 - **ActMe Agent**：中文对话入口，支持文本、图片、语音输入、Markdown 展示、多轮上下文、Memory、Schedule 和 Skill。
 - **多步工具执行**：Agent 可以在一次回复中多轮调用工具，观察结果后继续搜索、浏览、运行 Python、生成文件或执行 ADB。
 - **内置浏览器**：基于 GeckoView 的网页搜索、URL 打开和渲染后文本读取，用于动态网页和权威来源验证。
-- **内置 Python**：基于 Chaquopy 的 Python 3.11 执行环境，支持标准库和已安装 Python 包，用于计算、解析、表格处理、脚本复用和文件生成。
-- **Excel 和通用文件输出**：支持读取 `.xlsx/.xlsm`，生成 Excel、PDF、CSV、图片、JSON、文本等工作区文件，并在聊天中显示可打开的文件按钮。
+- **内置 Python**：基于 Chaquopy 的 Python 3.11 执行环境，随包内置 `numpy`、`pandas`、`openpyxl`、`Pillow`、`matplotlib`、`reportlab`、`markdown`、`fpdf2`、`fonttools` 等常用库，用于计算、解析、表格处理、脚本复用和文件生成。
+- **Excel、报告和通用文件输出**：支持读取 `.xlsx/.xlsm`，生成 Excel、Markdown、HTML、PDF、CSV、图片、JSON、文本等工作区文件，并在聊天中显示可打开的文件按钮。
 - **内置 ADB**：通过无线调试配对和悬浮窗，允许 Agent 在用户授权后观察和操作本机 Android 环境。
 - **可见执行步骤**：搜索、浏览、Python、ADB 等工具执行会显示在聊天气泡中，支持停止和后续继续。
 - **Token 用量显示**：assistant 消息下方显示 API 返回的 token 用量；不支持 usage 的接口回退到本地估算。
@@ -50,7 +50,7 @@ ActMe 的执行层由三类内置能力组成：
 - OkHttp
 - GeckoView
 - Chaquopy / Python 3.11
-- openpyxl and other packaged Python libraries
+- numpy / pandas / openpyxl / Pillow / matplotlib / reportlab / markdown / fpdf2 / fonttools
 - MNN / Qwen3-ASR
 
 ## 项目结构
@@ -175,8 +175,10 @@ emit(value)
 set_result(value)
 result
 workspace_dir
+report_font_dir
 read_excel(path, max_rows=200, max_sheets=10)
 write_excel(filename, sheets)
+write_report(markdown_text, base_name="report", title=None, make_pdf=True)
 save_script(name, source)
 load_script(name)
 list_scripts()
@@ -195,6 +197,8 @@ Python 执行前后会扫描 `agent_workspace`，自动收集新增或修改的�
 ```
 
 最终聊天气泡会显示文件按钮。支持的常见类型包括 Excel、PDF、CSV、图片、JSON、Markdown 和文本。
+
+报告类任务优先使用 `write_report`。它会生成 Markdown、HTML 和 PDF，并使用 App 打包的中文字体，避免直接访问 `/system/fonts` 触发 Android SELinux 限制。Python 层不额外拦截文件读写删改；实际权限交给 Android App 沙箱和系统权限决定。Prompt 仍要求模型把聊天中需要显示的生成文件写到 `agent_workspace` 相对路径。
 
 ## 调试
 
@@ -221,6 +225,6 @@ adb logcat -v time | Select-String -Pattern "ActMe|AgentFile|SystemSkillExecutor
 - 金融、银行、价格、政策等信息应优先让 Agent 搜索并浏览权威来源。
 - 搜索和网页阅读结果是辅助资料，最终回复仍由 Agent 综合工具结果生成。
 - 部分网页需要登录、强风控或 App 内跳转，内置浏览器可能只能读取公开页面文本。
-- Python 文件写入限制在 `agent_workspace` 内；进程、native code、系统 shell 和包安装能力受限。
+- Python 层不额外拦截文件读写删改；进程、native code、系统 shell 和包安装能力受限。
 - ADB 是高权限能力，配对和连接必须由用户主动授权，高风险命令需要明确确认。
 - 本地 ASR 模型体积较大，首次下载或推送需要较长时间。

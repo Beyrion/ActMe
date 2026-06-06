@@ -295,12 +295,12 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
         val functionObj = callObj["function"] as? JsonObject
         val argumentsObj = callObj.argumentsObject()
             ?: functionObj?.argumentsObject()
-        val type = callObj.stringValue("type")
+        val type = normalizeSystemCallType(callObj.stringValue("type")
             ?: callObj.stringValue("name")
             ?: callObj.stringValue("tool")
             ?: callObj.stringValue("function")
             ?: functionObj?.stringValue("name")
-            ?: return null
+            ?: return null) ?: return null
         val query = callObj.stringValue("query")
             ?: argumentsObj?.stringValue("query")
             ?: ""
@@ -416,22 +416,20 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
             .filter { it >= 0 }
             .minOrNull() ?: return emptyList()
         val tail = text.substring(callsIdx)
-        return Regex("\\{[^{}]*(?:\"type\"|\"name\"|\"tool\"|\"function\")\\s*:\\s*\"([^\"]+)\"[^{}]*\\}")
-            .findAll(tail)
-            .mapNotNull { match ->
-                val block = match.value
-                val type = Regex("\"(?:type|name|tool|function)\"\\s*:\\s*\"([^\"]+)\"")
-                    .find(block)?.groupValues?.getOrNull(1) ?: return@mapNotNull null
-                val query = Regex("\"query\"\\s*:\\s*\"([^\"]*)\"")
-                    .find(block)?.groupValues?.getOrNull(1).orEmpty()
-                val url = Regex("\"url\"\\s*:\\s*\"([^\"]*)\"")
-                    .find(block)?.groupValues?.getOrNull(1).orEmpty()
-                val code = Regex("\"code\"\\s*:\\s*\"([^\"]*)\"")
-                    .find(block)?.groupValues?.getOrNull(1).orEmpty()
-                val command = Regex("\"(?:command|cmd)\"\\s*:\\s*\"([^\"]*)\"")
-                    .find(block)?.groupValues?.getOrNull(1).orEmpty()
-                val input = Regex("\"input\"\\s*:\\s*\"([^\"]*)\"")
-                    .find(block)?.groupValues?.getOrNull(1).orEmpty()
+        return extractJsonObjectBlocks(tail)
+            .mapNotNull { block ->
+                val type = normalizeSystemCallType(extractLooseStringField(block, "type")
+                    ?: extractLooseStringField(block, "name")
+                    ?: extractLooseStringField(block, "tool")
+                    ?: extractLooseStringField(block, "function")
+                    ?: return@mapNotNull null) ?: return@mapNotNull null
+                val query = extractLooseStringField(block, "query").orEmpty()
+                val url = extractLooseStringField(block, "url").orEmpty()
+                val code = extractLooseStringField(block, "code").orEmpty()
+                val command = extractLooseStringField(block, "command")
+                    ?: extractLooseStringField(block, "cmd")
+                    ?: ""
+                val input = extractLooseStringField(block, "input").orEmpty()
                 val outputFiles = extractLooseStringArray(block, "output_files")
                 val generatedFiles = extractLooseStringArray(block, "generated_files")
                 val expectedOutputs = extractLooseStringArray(block, "expected_outputs")
@@ -450,6 +448,64 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
                 )
             }
             .toList()
+    }
+
+    private fun extractJsonObjectBlocks(text: String): List<String> {
+        val blocks = mutableListOf<String>()
+        var start = -1
+        var depth = 0
+        var inString = false
+        var escaping = false
+        for (i in text.indices) {
+            val ch = text[i]
+            if (escaping) {
+                escaping = false
+                continue
+            }
+            if (ch == '\\' && inString) {
+                escaping = true
+                continue
+            }
+            if (ch == '"') {
+                inString = !inString
+                continue
+            }
+            if (inString) continue
+            when (ch) {
+                '{' -> {
+                    if (depth == 0) start = i
+                    depth++
+                }
+                '}' -> {
+                    if (depth > 0) {
+                        depth--
+                        if (depth == 0 && start >= 0) {
+                            blocks += text.substring(start, i + 1)
+                            start = -1
+                        }
+                    }
+                }
+            }
+        }
+        return blocks
+    }
+
+    private fun normalizeSystemCallType(raw: String): String? {
+        val compact = raw.trim()
+        if (compact.isBlank()) return null
+        val aliases = linkedMapOf(
+            "python_exec" to listOf("python_exec", "run_python", "python"),
+            "web_search" to listOf("web_search", "search"),
+            "browse_url" to listOf("browse_url", "browser_url", "web_browse", "open_url"),
+            "adb_shell" to listOf("adb_shell", "run_adb", "adb"),
+            "get_current_time" to listOf("get_current_time", "current_time")
+        )
+        aliases.forEach { (canonical, names) ->
+            if (names.any { compact == it || compact.startsWith("$it\"") || compact.startsWith("$it,") }) {
+                return canonical
+            }
+        }
+        return compact.takeIf { value -> aliases.values.flatten().contains(value) }
     }
 
     private fun extractLooseStringArray(text: String, key: String): List<String> {
@@ -488,6 +544,22 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
         if (i >= text.length) return true
         if (text[i] != '"') return false
         val nextKeys = listOf(
+            "\"type\"",
+            "\"name\"",
+            "\"tool\"",
+            "\"function\"",
+            "\"query\"",
+            "\"url\"",
+            "\"code\"",
+            "\"command\"",
+            "\"cmd\"",
+            "\"input\"",
+            "\"timeout_ms\"",
+            "\"timeoutMs\"",
+            "\"output_files\"",
+            "\"generated_files\"",
+            "\"expected_outputs\"",
+            "\"files\"",
             "\"memory_updates\"",
             "\"schedule_updates\"",
             "\"skill_updates\"",
@@ -516,8 +588,12 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
         val messages = mutableListOf<MessagePayload>()
         messages += MessagePayload("system", systemPrompt)
         historyMessages.forEach { entity ->
+            val role = when (entity.role) {
+                "user" -> "user"
+                else -> "assistant"
+            }
             messages += MessagePayload(
-                role = entity.role,
+                role = role,
                 content = sanitizeHistoryContent(entity),
                 imageBase64 = entity.imageBase64,
                 imageMimeType = entity.imageMimeType
@@ -528,15 +604,29 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
     }
 
     private fun sanitizeHistoryContent(entity: ChatMessageEntity): String {
+        if (entity.role == "tool_execution") {
+            return buildString {
+                appendLine("[历史工具执行]")
+                if (entity.content.isNotBlank()) {
+                    appendLine(entity.content)
+                }
+                if (!entity.searchResult.isNullOrBlank()) {
+                    appendLine("[历史工具中间结果]")
+                    appendLine(entity.searchResult.trim())
+                }
+            }.trim()
+        }
         if (entity.role != "assistant") return entity.content
         val withoutProgress = if (entity.content.contains("执行过程：") && entity.content.contains("\n---\n")) {
             entity.content.substringAfterLast("\n---\n")
         } else {
             entity.content
         }
-        return withoutProgress
+        val visible = withoutProgress
             .replace(Regex("\\n?---\\n[🔍📖🌐] \\[展开(?:搜索结果|网页阅读内容|联网资料)]\\(search://result\\)"), "")
             .trim()
+        val toolContext = entity.searchResult.orEmpty().trim()
+        return if (toolContext.isBlank()) visible else "$visible\n\n[历史工具/中间结果]\n$toolContext"
     }
 
     suspend fun generateReminderInsight(title: String, detail: String, config: ProviderConfig): String {
@@ -703,7 +793,7 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
         }
 
         val searchResultsSection = if (!webSearchResults.isNullOrBlank()) {
-            "\n联网搜索结果：\n$webSearchResults\n"
+            "\n联网搜索结果：\n$webSearchResults\n\n如果这些结果已经足够回答当前问题，优先复用它们并给出结论，不要为了形式继续搜索。只有缺少关键证据、来源质量不足、用户明确要求继续核实，或结果之间明显冲突时，才继续调用 web_search/browse_url。\n"
         } else ""
 
         return """
@@ -718,14 +808,17 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
             Native Python workflow:
             - Use python_exec whenever deterministic code is useful: calculation, parsing, regex extraction, JSON/CSV/table processing, Excel reading/writing, sorting, deduplication, validation, data transformation, or reusable helper logic.
             - python_exec call format: {"type":"python_exec","code":"print(2+2)\nemit({'answer': 4})","input":"optional text or JSON","timeout_ms":3000,"output_files":["workspace-relative paths of files this call creates, such as report.pdf or sample.xlsx"]}
-            - Each python_exec runs Python code in a sandbox. Available variables/functions: input_text, input_json, emit(value), set_result(value), result, workspace_dir, read_excel(path, max_rows=200, max_sheets=10), write_excel(filename, sheets), save_script(name, source), load_script(name), list_scripts(), compile_script(name), run_script(name).
-            - You may import standard-library modules and installed Python packages when available, such as struct, csv, json, math, statistics, numpy, pandas, openpyxl, matplotlib, or PDF/image libraries.
-            - The sandbox has no process/native-code control and limits file writes to workspace_dir. Do not use subprocess, ctypes, multiprocessing, pip, venv, or system shell calls. os/pathlib-style file write/delete/rename operations are limited to workspace_dir.
+            - Each python_exec runs Python code in a sandbox. Available variables/functions: input_text, input_json, emit(value), set_result(value), result, workspace_dir, report_font_dir, read_excel(path, max_rows=200, max_sheets=10), write_excel(filename, sheets), write_report(markdown_text, base_name="report", title=None, make_pdf=True), save_script(name, source), load_script(name), list_scripts(), compile_script(name), run_script(name).
+            - You may import standard-library modules and installed Python packages when available, such as struct, csv, json, math, statistics, markdown, numpy, pandas, openpyxl, PIL, matplotlib, reportlab, fpdf, fontTools/fonttools, or defusedxml.
+            - The Python sandbox allows broad file read/write/delete/rename access at the Python layer; Android's app sandbox and system permissions are the authority for what actually succeeds. Do not use subprocess, ctypes, multiprocessing, pip, venv, or system shell calls.
+            - For any user-visible generated file, write under workspace_dir by using relative filenames/paths such as "report.pdf" or "reports/report.pdf". Do not put absolute /data/... paths in output_files; the app maps relative paths into workspace_dir and shows them in chat.
             - For one-off tasks, put Python directly in code and call emit(value) with the final structured result.
             - For reusable or non-trivial logic, first write a .py script with save_script("tools/name.py", source). Then call compile_script("tools/name.py"). If compile_script returns ok=false, inspect error, fix the source with save_script, compile again, then run_script("tools/name.py"). Do not run an uncompiled reusable script unless the task is urgent and simple.
             - Saved scripts run with the same globals as python_exec, so they can read input_text/input_json, call read_excel/write_excel, and return via emit(value) or result.
-            - For uploaded .xlsx/.xlsm files, call read_excel(path) using the workspace path in the user message. For exporting Excel, call write_excel("filename.xlsx", {"Sheet1":[["col"],["value"]]}) and include the filename in output_files.
-            - When python_exec creates any file, including PDF, Excel, CSV, image, JSON, or text, fill output_files with every generated workspace-relative filename/path.
+            - For uploaded .xlsx/.xlsm files, call read_excel(path) using the workspace path in the user message. For exporting Excel, call write_excel("filename.xlsx", {"Sheet1":[["col"],["value"]]}) and include the filename in output_files. For reports, call write_report(markdown_text, "report_name", title="...") to create Markdown, HTML, and PDF with the app-packaged Chinese font.
+            - For PDF/report generation, do not manually register fonts from /system/fonts or other absolute paths, and do not hand-write PDF boilerplate unless write_report fails. write_report renders Markdown to HTML, tries the built-in HTML-to-PDF path, and uses the app-packaged Chinese font from report_font_dir for PDF output. report_font_dir is an app-owned runtime font directory outside workspace_dir; it is readable and should not be listed as an output file.
+            - When passing long Markdown to write_report, use Python triple-quoted strings: markdown_text = '''# Title\n...'''. Do not put a multi-line report into a normal quoted string such as md = "# Title ...", because embedded quotes and newlines will break Python/JSON parsing.
+            - When python_exec creates any file, including PDF, Excel, CSV, image, JSON, or text, fill output_files with every generated relative filename/path.
             Native ADB workflow:
             - If the user asks you to inspect or control the Android device/app UI and ADB has been paired in settings, you may call adb_shell.
             - adb_shell call format: {"type":"adb_shell","command":"dumpsys window | head -50","timeout_ms":15000}

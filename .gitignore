@@ -22,5 +22,7 @@ app/release
 app/.cxx/
 app/src/main/jniLibs/
 
+.kotlin
+
 *.patch
 **/__pycache__/

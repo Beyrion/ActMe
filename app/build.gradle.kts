@@ -9,30 +9,7 @@ plugins {
     id("com.chaquo.python")
 }
 
-val generatedAssetsDir = layout.buildDirectory.dir("generated/assets/main")
-val importedSkillsDir = generatedAssetsDir.map { it.dir("skills/codex_import").asFile }
-
-val importCodexSkills by tasks.registering {
-    outputs.dir(importedSkillsDir)
-    doLast {
-        val sourceRoot = File(System.getProperty("user.home"), ".codex/skills")
-        val targetRoot = importedSkillsDir.get()
-        targetRoot.mkdirs()
-        if (!sourceRoot.exists()) {
-            logger.warn("未找到 ~/.codex/skills，跳过技能导入。")
-            return@doLast
-        }
-        sourceRoot.walkTopDown()
-            .filter { it.isFile && it.extension.equals("md", true) && it.name.equals("SKILL.md", true) }
-            .forEach { src ->
-                val relative = src.relativeTo(sourceRoot).path.replace(File.separatorChar, '_')
-                val dest = File(targetRoot, relative)
-                dest.parentFile.mkdirs()
-                src.copyTo(dest, overwrite = true)
-            }
-        logger.lifecycle("已导入本地 Codex Skills 到: ${targetRoot.absolutePath}")
-    }
-}
+val generatedChaquopyJniReleaseDir = layout.buildDirectory.dir("generated/chaquopyJni/release")
 
 android {
     namespace = "com.actme.app"
@@ -47,8 +24,8 @@ android {
         applicationId = "com.actme.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 4
-        versionName = "1.2.0"
+        versionCode = 5
+        versionName = "1.3.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -79,7 +56,7 @@ android {
         jvmTarget = "17"
     }
 
-    sourceSets.getByName("main").assets.srcDir(generatedAssetsDir)
+    sourceSets.getByName("release").jniLibs.srcDir(generatedChaquopyJniReleaseDir)
 
     externalNativeBuild {
         cmake {
@@ -104,8 +81,18 @@ chaquopy {
         version = "3.11"
         pip {
             options("--index-url", "https://pypi.tuna.tsinghua.edu.cn/simple")
+            options("--extra-index-url", "https://chaquo.com/pypi-13.1")
             options("--trusted-host", "pypi.tuna.tsinghua.edu.cn")
             install("openpyxl==3.1.5")
+            install("numpy==1.26.2")
+            install("pandas==2.1.3")
+            install("pillow==11.0.0")
+            install("markdown==3.6")
+            install("matplotlib==3.6.0")
+            install("reportlab==4.4.1")
+            install("defusedxml==0.7.1")
+            install("fonttools==4.56.0")
+            install("fpdf2==2.8.3")
         }
     }
 }
@@ -149,8 +136,16 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 }
 
-tasks.matching { it.name == "preBuild" }.configureEach {
-    dependsOn(importCodexSkills)
+val prepareReleaseChaquopyJniLibs by tasks.registering(Copy::class) {
+    dependsOn("installReleasePythonRequirements")
+    from(layout.buildDirectory.dir("python/pip/release/common/chaquopy/lib")) {
+        include("*.so", "*.so.*")
+    }
+    into(generatedChaquopyJniReleaseDir.map { it.dir("arm64-v8a") })
+}
+
+tasks.matching { it.name == "mergeReleaseJniLibFolders" }.configureEach {
+    dependsOn(prepareReleaseChaquopyJniLibs)
 }
 
 val buildMnn by tasks.registering {

@@ -225,8 +225,10 @@ emit(value)
 set_result(value)
 result
 workspace_dir
+report_font_dir
 read_excel(path, max_rows=200, max_sheets=10)
 write_excel(filename, sheets)
+write_report(markdown_text, base_name="report", title=None, make_pdf=True)
 save_script(name, source)
 load_script(name)
 list_scripts()
@@ -359,12 +361,15 @@ Excel 工作流：
 - 聊天输入区可以选择 `.xlsx/.xlsm`。
 - Agent 可调用 `read_excel(path)` 读取表格。
 - Agent 可调用 `write_excel(filename, sheets)` 生成文件并返回聊天。
-- Agent 可生成 PDF、CSV、图片、JSON、Markdown、文本等文件；只要文件位于 `agent_workspace`，聊天气泡就会显示打开按钮。
+- Agent 可生成 PDF、HTML、CSV、图片、JSON、Markdown、文本等文件；只要文件位于 `agent_workspace`，聊天气泡就会显示打开按钮。
+- 报告类任务优先调用 `write_report(markdown_text, "reports/name", title="...")`，一次生成 Markdown、HTML 和 PDF。
 
 Python 沙箱边界：
 
-- 默认允许导入标准库和已安装包，例如 `struct`、`numpy`、`pandas`、`openpyxl`、`matplotlib`。
-- 文件写入、删除、重命名限制在 `agent_workspace`。
+- 默认允许导入标准库和已安装包，例如 `struct`、`numpy`、`pandas`、`openpyxl`、`PIL`、`matplotlib`、`reportlab`、`markdown`、`fpdf`、`fontTools`。
+- Python 层不额外拦截文件读写删改，实际能否成功交给 Android App 沙箱和系统权限决定。
+- Prompt 仍要求模型把需要在聊天中稳定展示打开按钮的生成文件写到 `agent_workspace` 相对路径。
+- `report_font_dir` 是 App 打包字体拷贝出来的目录，可能在 `agent_workspace` 外；它是运行时资源，不用于写生成文件。
 - 进程、native code、包安装和系统 shell 能力受限，例如 `subprocess`、`ctypes`、`multiprocessing`、`pip`、`venv`、`os.system`。
 - 常见 cache/config 目录会重定向到 workspace，便于 matplotlib 等库正常工作。
 

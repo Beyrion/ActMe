@@ -23,12 +23,12 @@ object SkillSeeder {
 
     fun seedIfNeeded(context: Context, skillDao: SkillDao) {
         CoroutineScope(Dispatchers.IO).launch {
-            if (skillDao.countAll() > 0) return@launch
             val content = runCatching {
                 context.assets.open("skills/preload_skills.json").use { it.readBytes().toString(Charsets.UTF_8) }
             }.getOrElse { return@launch }
             val list = runCatching { json.decodeFromString<List<SkillSeedModel>>(content) }.getOrDefault(emptyList())
             list.forEach {
+                if (skillDao.findByName(it.name) != null) return@forEach
                 skillDao.upsert(
                     SkillEntity(
                         name = it.name,
