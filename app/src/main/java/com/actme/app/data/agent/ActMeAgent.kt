@@ -50,7 +50,11 @@ data class SystemCall(
     val code: String = "",
     val command: String = "",
     val input: String = "",
-    @SerialName("timeout_ms") val timeoutMs: Long = 3_000L
+    @SerialName("timeout_ms") val timeoutMs: Long = 3_000L,
+    @SerialName("output_files") val outputFiles: List<String> = emptyList(),
+    @SerialName("generated_files") val generatedFiles: List<String> = emptyList(),
+    @SerialName("expected_outputs") val expectedOutputs: List<String> = emptyList(),
+    val files: List<String> = emptyList()
 )
 
 @Serializable
@@ -195,13 +199,20 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
     }
 
     fun parseRaw(raw: String): AgentResult {
-        val jsonPart = extractJson(raw)
-        val result = runCatching { json.decodeFromString<AgentResult>(jsonPart) }
-            .onFailure { AppLogger.w(TAG, "parseRaw strict failed: ${it.message}; raw=${raw.take(300)}") }
-            .getOrNull()
-            ?: parseLooseAgentResult(raw, jsonPart)
-            ?: AgentResult(reply = raw.trim())
-        return unwrapNestedReply(result)
+        val candidates = extractJsonCandidates(raw)
+        val strictResults = candidates.mapNotNull { candidate ->
+            runCatching { json.decodeFromString<AgentResult>(candidate) }.getOrNull()
+        }
+        val result = strictResults.firstOrNull { it.systemCalls.isNotEmpty() }
+            ?: strictResults.firstOrNull()
+            ?: parseLooseAgentResult(raw, candidates.firstOrNull() ?: raw)
+            ?: AgentResult(reply = sanitizeUserVisibleReply(raw))
+        val unwrapped = unwrapNestedReply(result)
+        return if (unwrapped.systemCalls.isEmpty()) {
+            unwrapped.copy(reply = sanitizeUserVisibleReply(unwrapped.reply))
+        } else {
+            unwrapped
+        }
     }
 
     // Guard against the model wrapping the entire tool-call JSON inside the reply field.
@@ -225,23 +236,28 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
             add(jsonPart)
             add(raw.trim())
             extractCodeFence(raw)?.let { add(it) }
+            addAll(extractJsonCandidates(raw))
         }.distinct()
 
-        for (candidate in candidates) {
-            val parsed = parseLooseJsonCandidate(candidate)
-            if (parsed != null) {
-                AppLogger.i(TAG, "parseRaw loose replyLen=${parsed.reply.length}, system_calls=${parsed.systemCalls.size}")
-                return parsed
+        val parsed = candidates.mapNotNull { parseLooseJsonCandidate(it) }
+            .let { results ->
+                results.firstOrNull { it.systemCalls.isNotEmpty() } ?: results.firstOrNull()
             }
+        if (parsed != null) {
+            AppLogger.i(TAG, "parseRaw loose replyLen=${parsed.reply.length}, system_calls=${parsed.systemCalls.size}")
         }
-        return null
+        return parsed
     }
 
     private fun parseLooseJsonCandidate(text: String): AgentResult? {
         val jsonText = extractJson(text)
         val element = runCatching { json.parseToJsonElement(jsonText) }.getOrNull()
         val obj = element as? JsonObject
-        val calls = obj?.let { extractSystemCalls(it) } ?: extractLooseSystemCalls(jsonText)
+        val calls = when (element) {
+            is JsonObject -> extractSystemCalls(element)
+            is JsonArray -> extractSystemCallsFromElement(element)
+            else -> extractLooseSystemCalls(jsonText)
+        }
         val reply = obj?.get("reply")?.jsonPrimitive?.contentOrNull
             ?: extractLooseStringField(jsonText, "reply")
             ?: ""
@@ -256,47 +272,82 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
             ?: obj["tool_call"]
             ?: obj["calls"]
 
-        val normalized = when (callsElement) {
-            is JsonArray -> callsElement
-            is JsonObject -> JsonArray(listOf(callsElement))
-            else -> return emptyList()
+        return if (callsElement != null) {
+            extractSystemCallsFromElement(callsElement)
+        } else {
+            listOfNotNull(parseSystemCallObject(obj))
         }
+    }
 
-        return normalized.mapNotNull { callElement ->
-            val callObj = callElement as? JsonObject ?: return@mapNotNull null
-            val functionObj = callObj["function"] as? JsonObject
-            val argumentsObj = callObj.argumentsObject()
-                ?: functionObj?.argumentsObject()
-            val type = callObj.stringValue("type")
-                ?: callObj.stringValue("name")
-                ?: callObj.stringValue("tool")
-                ?: callObj.stringValue("function")
-                ?: functionObj?.stringValue("name")
-                ?: return@mapNotNull null
-            val query = callObj.stringValue("query")
-                ?: argumentsObj?.stringValue("query")
-                ?: ""
-            val url = callObj.stringValue("url")
-                ?: argumentsObj?.stringValue("url")
-                ?: ""
-            val code = callObj.stringValue("code")
-                ?: argumentsObj?.stringValue("code")
-                ?: ""
-            val command = callObj.stringValue("command")
-                ?: argumentsObj?.stringValue("command")
-                ?: callObj.stringValue("cmd")
-                ?: argumentsObj?.stringValue("cmd")
-                ?: ""
-            val input = callObj.stringValue("input")
-                ?: argumentsObj?.stringValue("input")
-                ?: ""
-            val timeoutMs = callObj.longValue("timeout_ms")
-                ?: argumentsObj?.longValue("timeout_ms")
-                ?: callObj.longValue("timeoutMs")
-                ?: argumentsObj?.longValue("timeoutMs")
-                ?: 3_000L
-            SystemCall(type = type, query = query, url = url, code = code, command = command, input = input, timeoutMs = timeoutMs)
+    private fun extractSystemCallsFromElement(element: kotlinx.serialization.json.JsonElement?): List<SystemCall> {
+        return when (element) {
+            is JsonArray -> element.flatMap { extractSystemCallsFromElement(it) }
+            is JsonObject -> listOfNotNull(parseSystemCallObject(element))
+            is JsonPrimitive -> element.contentOrNull
+                ?.takeIf { it.isNotBlank() }
+                ?.let { text -> parseLooseAgentResult(text, extractJson(text))?.systemCalls }
+                .orEmpty()
+            else -> emptyList()
         }
+    }
+
+    private fun parseSystemCallObject(callObj: JsonObject): SystemCall? {
+        val functionObj = callObj["function"] as? JsonObject
+        val argumentsObj = callObj.argumentsObject()
+            ?: functionObj?.argumentsObject()
+        val type = callObj.stringValue("type")
+            ?: callObj.stringValue("name")
+            ?: callObj.stringValue("tool")
+            ?: callObj.stringValue("function")
+            ?: functionObj?.stringValue("name")
+            ?: return null
+        val query = callObj.stringValue("query")
+            ?: argumentsObj?.stringValue("query")
+            ?: ""
+        val url = callObj.stringValue("url")
+            ?: argumentsObj?.stringValue("url")
+            ?: ""
+        val code = callObj.stringValue("code")
+            ?: argumentsObj?.stringValue("code")
+            ?: ""
+        val command = callObj.stringValue("command")
+            ?: argumentsObj?.stringValue("command")
+            ?: callObj.stringValue("cmd")
+            ?: argumentsObj?.stringValue("cmd")
+            ?: ""
+        val input = callObj.stringValue("input")
+            ?: argumentsObj?.stringValue("input")
+            ?: ""
+        val timeoutMs = callObj.longValue("timeout_ms")
+            ?: argumentsObj?.longValue("timeout_ms")
+            ?: callObj.longValue("timeoutMs")
+            ?: argumentsObj?.longValue("timeoutMs")
+            ?: 3_000L
+        val outputFiles = callObj.stringListValue("output_files")
+            ?: argumentsObj?.stringListValue("output_files")
+            ?: emptyList()
+        val generatedFiles = callObj.stringListValue("generated_files")
+            ?: argumentsObj?.stringListValue("generated_files")
+            ?: emptyList()
+        val expectedOutputs = callObj.stringListValue("expected_outputs")
+            ?: argumentsObj?.stringListValue("expected_outputs")
+            ?: emptyList()
+        val files = callObj.stringListValue("files")
+            ?: argumentsObj?.stringListValue("files")
+            ?: emptyList()
+        return SystemCall(
+            type = type,
+            query = query,
+            url = url,
+            code = code,
+            command = command,
+            input = input,
+            timeoutMs = timeoutMs,
+            outputFiles = outputFiles,
+            generatedFiles = generatedFiles,
+            expectedOutputs = expectedOutputs,
+            files = files
+        )
     }
 
     private fun JsonObject.stringValue(key: String): String? {
@@ -305,6 +356,18 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
 
     private fun JsonObject.longValue(key: String): Long? {
         return (this[key] as? JsonPrimitive)?.contentOrNull?.toLongOrNull()
+    }
+
+    private fun JsonObject.stringListValue(key: String): List<String>? {
+        val element = this[key] ?: return null
+        return when (element) {
+            is JsonArray -> element.mapNotNull { (it as? JsonPrimitive)?.contentOrNull?.takeIf { value -> value.isNotBlank() } }
+            is JsonPrimitive -> element.contentOrNull
+                ?.split(',', ';', '\n')
+                ?.map { it.trim() }
+                ?.filter { it.isNotBlank() }
+            else -> null
+        }
     }
 
     private fun JsonObject.argumentsObject(): JsonObject? {
@@ -369,8 +432,36 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
                     .find(block)?.groupValues?.getOrNull(1).orEmpty()
                 val input = Regex("\"input\"\\s*:\\s*\"([^\"]*)\"")
                     .find(block)?.groupValues?.getOrNull(1).orEmpty()
-                SystemCall(type = type, query = query, url = url, code = code, command = command, input = input)
+                val outputFiles = extractLooseStringArray(block, "output_files")
+                val generatedFiles = extractLooseStringArray(block, "generated_files")
+                val expectedOutputs = extractLooseStringArray(block, "expected_outputs")
+                val files = extractLooseStringArray(block, "files")
+                SystemCall(
+                    type = type,
+                    query = query,
+                    url = url,
+                    code = code,
+                    command = command,
+                    input = input,
+                    outputFiles = outputFiles,
+                    generatedFiles = generatedFiles,
+                    expectedOutputs = expectedOutputs,
+                    files = files
+                )
             }
+            .toList()
+    }
+
+    private fun extractLooseStringArray(text: String, key: String): List<String> {
+        val body = Regex("\"" + Regex.escape(key) + "\"\\s*:\\s*\\[([\\s\\S]*?)]")
+            .find(text)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?: return emptyList()
+        return Regex("\"((?:[^\"\\\\]|\\\\.)*)\"")
+            .findAll(body)
+            .map { it.groupValues[1].replace("\\\"", "\"").replace("\\\\", "\\") }
+            .filter { it.isNotBlank() }
             .toList()
     }
 
@@ -626,13 +717,15 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
             $multiStepHint
             Native Python workflow:
             - Use python_exec whenever deterministic code is useful: calculation, parsing, regex extraction, JSON/CSV/table processing, Excel reading/writing, sorting, deduplication, validation, data transformation, or reusable helper logic.
-            - python_exec call format: {"type":"python_exec","code":"print(2+2)\nemit({'answer': 4})","input":"optional text or JSON","timeout_ms":3000}
+            - python_exec call format: {"type":"python_exec","code":"print(2+2)\nemit({'answer': 4})","input":"optional text or JSON","timeout_ms":3000,"output_files":["workspace-relative paths of files this call creates, such as report.pdf or sample.xlsx"]}
             - Each python_exec runs Python code in a sandbox. Available variables/functions: input_text, input_json, emit(value), set_result(value), result, workspace_dir, read_excel(path, max_rows=200, max_sheets=10), write_excel(filename, sheets), save_script(name, source), load_script(name), list_scripts(), compile_script(name), run_script(name).
-            - The sandbox has no network and only workspace file access. Do not use os/socket/subprocess/ctypes. Use web_search/browse_url for network access, then Python for processing.
+            - You may import standard-library modules and installed Python packages when available, such as struct, csv, json, math, statistics, numpy, pandas, openpyxl, matplotlib, or PDF/image libraries.
+            - The sandbox has no process/native-code control and limits file writes to workspace_dir. Do not use subprocess, ctypes, multiprocessing, pip, venv, or system shell calls. os/pathlib-style file write/delete/rename operations are limited to workspace_dir.
             - For one-off tasks, put Python directly in code and call emit(value) with the final structured result.
             - For reusable or non-trivial logic, first write a .py script with save_script("tools/name.py", source). Then call compile_script("tools/name.py"). If compile_script returns ok=false, inspect error, fix the source with save_script, compile again, then run_script("tools/name.py"). Do not run an uncompiled reusable script unless the task is urgent and simple.
             - Saved scripts run with the same globals as python_exec, so they can read input_text/input_json, call read_excel/write_excel, and return via emit(value) or result.
-            - For uploaded .xlsx/.xlsm files, call read_excel(path) using the workspace path in the user message. For exporting Excel, call write_excel("filename.xlsx", {"Sheet1":[["col"],["value"]]}) and include the returned path in the final reply.
+            - For uploaded .xlsx/.xlsm files, call read_excel(path) using the workspace path in the user message. For exporting Excel, call write_excel("filename.xlsx", {"Sheet1":[["col"],["value"]]}) and include the filename in output_files.
+            - When python_exec creates any file, including PDF, Excel, CSV, image, JSON, or text, fill output_files with every generated workspace-relative filename/path.
             Native ADB workflow:
             - If the user asks you to inspect or control the Android device/app UI and ADB has been paired in settings, you may call adb_shell.
             - adb_shell call format: {"type":"adb_shell","command":"dumpsys window | head -50","timeout_ms":15000}
@@ -688,10 +781,104 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
     }
 
     private fun extractJson(text: String): String {
-        val start = text.indexOf('{')
-        val end = text.lastIndexOf('}')
-        if (start < 0 || end <= start) return text
-        return text.substring(start, end + 1)
+        return extractJsonCandidates(text).firstOrNull() ?: text
+    }
+
+    fun sanitizeUserVisibleReply(text: String): String {
+        if (text.isBlank()) return ""
+        var cleaned = Regex("```(?:json)?\\s*([\\s\\S]*?)```", RegexOption.IGNORE_CASE).replace(text) { match ->
+            val body = match.groupValues.getOrNull(1).orEmpty()
+            if (looksLikeAgentProtocol(body)) "" else match.value
+        }
+        extractJsonCandidates(cleaned)
+            .filter { looksLikeAgentProtocol(it) }
+            .forEach { candidate -> cleaned = cleaned.replace(candidate, "") }
+        cleaned = stripDanglingProtocolTail(cleaned)
+        return cleaned
+            .lineSequence()
+            .filterNot { line -> looksLikeAgentProtocol(line) }
+            .joinToString("\n")
+            .replace(Regex("\n{3,}"), "\n\n")
+            .trim()
+    }
+
+    private fun stripDanglingProtocolTail(text: String): String {
+        val markerIndexes = listOf(
+            "\"system_calls\"",
+            "\"system_call\"",
+            "\"tool_calls\"",
+            "\"tool_call\""
+        ).map { text.indexOf(it) }.filter { it >= 0 }
+        val marker = markerIndexes.minOrNull() ?: return text
+        val protocolStart = listOf(
+            text.lastIndexOf("{", marker),
+            text.lastIndexOf("```", marker)
+        ).filter { it >= 0 }.minOrNull() ?: marker
+        return text.substring(0, protocolStart)
+    }
+
+    private fun looksLikeAgentProtocol(text: String): Boolean {
+        val compact = text.take(20_000)
+        return compact.contains("\"system_calls\"") ||
+            compact.contains("\"system_call\"") ||
+            compact.contains("\"tool_calls\"") ||
+            compact.contains("\"tool_call\"") ||
+            compact.contains("\"type\"") && (
+                compact.contains("\"python_exec\"") ||
+                    compact.contains("\"web_search\"") ||
+                    compact.contains("\"browse_url\"") ||
+                    compact.contains("\"browser_url\"") ||
+                    compact.contains("\"adb_shell\"") ||
+                    compact.contains("\"get_current_time\"")
+                )
+    }
+
+    private fun extractJsonCandidates(text: String): List<String> {
+        val candidates = mutableListOf<String>()
+        extractCodeFence(text)?.let { fenced ->
+            if (fenced.startsWith("{") && fenced.endsWith("}")) {
+                candidates += fenced
+            }
+        }
+
+        var start = -1
+        var depth = 0
+        var inString = false
+        var escaping = false
+
+        for (i in text.indices) {
+            val ch = text[i]
+            if (escaping) {
+                escaping = false
+                continue
+            }
+            if (ch == '\\' && inString) {
+                escaping = true
+                continue
+            }
+            if (ch == '"') {
+                inString = !inString
+                continue
+            }
+            if (inString) continue
+
+            when (ch) {
+                '{' -> {
+                    if (depth == 0) start = i
+                    depth++
+                }
+                '}' -> {
+                    if (depth > 0) {
+                        depth--
+                        if (depth == 0 && start >= 0) {
+                            candidates += text.substring(start, i + 1)
+                            start = -1
+                        }
+                    }
+                }
+            }
+        }
+        return candidates.distinct()
     }
 
     companion object {
@@ -703,7 +890,7 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
         // via shouldRetryWithoutResponseFormat in OpenAiResponsesClient.
         val agentResultResponseFormat: JsonObject by lazy {
             Json.parseToJsonElement(
-                """{"type":"json_schema","json_schema":{"name":"agent_result","strict":true,"schema":{"type":"object","properties":{"reply":{"type":"string"},"system_calls":{"type":"array","items":{"type":"object","properties":{"type":{"type":"string"},"query":{"type":"string"},"url":{"type":"string"},"code":{"type":"string"},"command":{"type":"string"},"input":{"type":"string"},"timeout_ms":{"type":"number"}},"required":["type","query","url","code","command","input","timeout_ms"],"additionalProperties":false}},"memory_updates":{"type":"array","items":{"type":"object","properties":{"category":{"type":"string"},"content":{"type":"string"}},"required":["category","content"],"additionalProperties":false}},"schedule_updates":{"type":"array","items":{"type":"object","properties":{"title":{"type":"string"},"detail":{"type":"string"},"start_at":{"anyOf":[{"type":"integer"},{"type":"null"}]},"reminder_at":{"anyOf":[{"type":"integer"},{"type":"null"}]},"repeat_type":{"anyOf":[{"type":"string"},{"type":"null"}]},"repeat_days_of_week":{"type":"array","items":{"type":"integer"}},"repeat_day_of_month":{"anyOf":[{"type":"integer"},{"type":"null"}]},"reminder_time":{"anyOf":[{"type":"string"},{"type":"null"}]}},"required":["title","detail","start_at","reminder_at","repeat_type","repeat_days_of_week","repeat_day_of_month","reminder_time"],"additionalProperties":false}},"skill_updates":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"description":{"type":"string"},"trigger_keywords":{"type":"array","items":{"type":"string"}},"action_template":{"type":"string"}},"required":["name","description","trigger_keywords","action_template"],"additionalProperties":false}}},"required":["reply","system_calls","memory_updates","schedule_updates","skill_updates"],"additionalProperties":false}}}"""
+                """{"type":"json_schema","json_schema":{"name":"agent_result","strict":true,"schema":{"type":"object","properties":{"reply":{"type":"string"},"system_calls":{"type":"array","items":{"type":"object","properties":{"type":{"type":"string"},"query":{"type":"string"},"url":{"type":"string"},"code":{"type":"string"},"command":{"type":"string"},"input":{"type":"string"},"timeout_ms":{"type":"number"},"output_files":{"type":"array","items":{"type":"string"}},"generated_files":{"type":"array","items":{"type":"string"}},"expected_outputs":{"type":"array","items":{"type":"string"}},"files":{"type":"array","items":{"type":"string"}}},"required":["type","query","url","code","command","input","timeout_ms","output_files","generated_files","expected_outputs","files"],"additionalProperties":false}},"memory_updates":{"type":"array","items":{"type":"object","properties":{"category":{"type":"string"},"content":{"type":"string"}},"required":["category","content"],"additionalProperties":false}},"schedule_updates":{"type":"array","items":{"type":"object","properties":{"title":{"type":"string"},"detail":{"type":"string"},"start_at":{"anyOf":[{"type":"integer"},{"type":"null"}]},"reminder_at":{"anyOf":[{"type":"integer"},{"type":"null"}]},"repeat_type":{"anyOf":[{"type":"string"},{"type":"null"}]},"repeat_days_of_week":{"type":"array","items":{"type":"integer"}},"repeat_day_of_month":{"anyOf":[{"type":"integer"},{"type":"null"}]},"reminder_time":{"anyOf":[{"type":"string"},{"type":"null"}]}},"required":["title","detail","start_at","reminder_at","repeat_type","repeat_days_of_week","repeat_day_of_month","reminder_time"],"additionalProperties":false}},"skill_updates":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"description":{"type":"string"},"trigger_keywords":{"type":"array","items":{"type":"string"}},"action_template":{"type":"string"}},"required":["name","description","trigger_keywords","action_template"],"additionalProperties":false}}},"required":["reply","system_calls","memory_updates","schedule_updates","skill_updates"],"additionalProperties":false}}}"""
             ).jsonObject
         }
     }

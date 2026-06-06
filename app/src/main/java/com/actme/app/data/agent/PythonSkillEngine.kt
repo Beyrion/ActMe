@@ -98,5 +98,6 @@ data class PythonExecutionResult(
     val stderr: String = "",
     val error: String = "",
     val result: JsonElement? = null,
-    val elapsed_ms: Int = 0
+    val elapsed_ms: Int = 0,
+    val output_files: List<String> = emptyList()
 )

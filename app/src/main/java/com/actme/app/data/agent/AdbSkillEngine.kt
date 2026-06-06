@@ -53,7 +53,7 @@ object AdbSkillEngine {
         AppLogger.i(TAG, "ADB-CONFIG: saved $cleanHost:$port")
     }
 
-    suspend fun pair(host: String, port: Int, pairingCode: String, name: String = "ActMe"): AdbShellResult =
+    suspend fun pair(host: String, port: Int, pairingCode: String): AdbShellResult =
         withContext(Dispatchers.IO) {
             val cleanHost = normalizeHost(host)
             val cleanCode = pairingCode.trim()
@@ -62,7 +62,7 @@ object AdbSkillEngine {
             runCatching {
                 AppLogger.i(TAG, "ADB-PAIR: $cleanHost:$port")
                 withTimeout(DEFAULT_TIMEOUT_MS) {
-                    Kadb.pair(cleanHost, port, cleanCode, name)
+                    Kadb.pair(cleanHost, port, cleanCode)
                 }
                 AdbShellResult(true, "Paired with $cleanHost:$port")
             }.getOrElse { error ->
@@ -93,7 +93,7 @@ object AdbSkillEngine {
         runCatching {
             AppLogger.i(TAG, "ADB-SHELL: $cleanHost:$cleanPort command=${cleanCommand.take(120)}")
             val response = withTimeout(timeoutMs.coerceIn(1_000L, 60_000L)) {
-                Kadb.create(cleanHost, cleanPort, connectTimeout = 5_000, socketTimeout = timeoutMs.toInt()).use { kadb ->
+                Kadb.create(cleanHost, cleanPort).use { kadb ->
                     kadb.shell(cleanCommand)
                 }
             }

@@ -2,6 +2,7 @@ package com.actme.app.data.repo
 
 import com.actme.app.util.AppLogger
 import com.actme.app.data.agent.ActMeAgent
+import com.actme.app.data.agent.PythonSkillEngine
 import com.actme.app.data.agent.ReplyExtractor
 import com.actme.app.data.agent.SystemCall
 import com.actme.app.data.agent.SystemSkillExecutor
@@ -26,6 +27,7 @@ import com.actme.app.data.remote.ProviderManager
 import com.actme.app.data.remote.TokenUsage
 import com.actme.app.notifications.ReminderScheduler
 import com.actme.app.util.LogCodec
+import java.io.File
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
@@ -235,7 +237,10 @@ class ActMeRepository(
                 val display = extractor.consume(chunk.text)
                 if (display != null) {
                     displayBuilder.append(display)
-                    chatDao.updateContent(replyMsgId, displayBuilder.toString())
+                    val visible = agent.sanitizeUserVisibleReply(displayBuilder.toString())
+                    if (visible.isNotBlank()) {
+                        chatDao.updateContent(replyMsgId, visible)
+                    }
                 }
             }
             addApiUsage(streamingUsage)
@@ -256,6 +261,7 @@ class ActMeRepository(
 
         // ── Tool execution loop ──
         var searchResults: String? = null
+        val generatedFileRefs = linkedSetOf<String>()
         var searchSucceeded = false
         var searchFailed = false
         var toolLoopPausedReason: String? = null
@@ -355,6 +361,11 @@ class ActMeRepository(
                 throw e
             }
             searchResults = if (searchResults != null) "$searchResults\n$executedResults" else executedResults
+            generatedFileRefs += extractWorkspaceFileRefs(executedResults)
+            AppLogger.i(
+                "AgentFile",
+                "pass=$pass collectedAfterTool=${generatedFileRefs.size}, files=${generatedFileRefs.joinToString("|")}"
+            )
 
             if (executedResults.contains("[BROWSE_RESULT]")) searchSucceeded = true
             else if (executedResults.contains("[BROWSE_ERROR]")) searchFailed = true
@@ -393,7 +404,10 @@ class ActMeRepository(
                     val display = continuationExtractor.consume(chunk.text)
                     if (display != null) {
                         continuationBuilder.append(display)
-                        chatDao.updateContent(replyMsgId, continuationBuilder.toString())
+                        val visible = agent.sanitizeUserVisibleReply(continuationBuilder.toString())
+                        if (visible.isNotBlank()) {
+                            chatDao.updateContent(replyMsgId, visible)
+                        }
                     }
                 }
             } catch (e: CancellationException) {
@@ -421,13 +435,21 @@ class ActMeRepository(
 
         // Build and persist final reply
         val localSkillHints = runLocalSkills(userInput, enabledSkills)
-        var finalReply = if (localSkillHints.isBlank()) result.reply else "${result.reply}\n\n$localSkillHints"
+        val visibleReply = agent.sanitizeUserVisibleReply(result.reply)
+        var finalReply = if (localSkillHints.isBlank()) visibleReply else "$visibleReply\n\n$localSkillHints"
         if (toolLoopPausedReason != null && result.systemCalls.isNotEmpty()) {
             finalReply += "\n\n---\n执行已暂停：$toolLoopPausedReason。可以发送【继续】让我接着执行后续步骤。"
         }
-        val generatedExcelPaths = extractWorkspaceExcelPaths(searchResults.orEmpty())
-        if (generatedExcelPaths.isNotEmpty() && generatedExcelPaths.none { finalReply.contains(it) }) {
-            finalReply += "\n\n---\n生成的 Excel 文件：\n" + generatedExcelPaths.joinToString("\n")
+        generatedFileRefs += extractWorkspaceFileRefs(searchResults.orEmpty())
+        generatedFileRefs += extractWorkspaceFileRefs(result.reply)
+        val generatedFiles = generatedFileRefs.toList()
+        val missingGeneratedFiles = generatedFiles.filterNot { finalReply.contains(it) }
+        AppLogger.i(
+            "AgentFile",
+            "final collected=${generatedFiles.size}, missing=${missingGeneratedFiles.size}, files=${generatedFiles.joinToString("|")}"
+        )
+        if (missingGeneratedFiles.isNotEmpty()) {
+            finalReply += "\n\n---\nGenerated files:\n" + missingGeneratedFiles.joinToString("\n")
         }
         if (searchFailed) {
             finalReply += "\n\n---\n⚠️ 联网搜索失败，以上回复基于已有知识，可能不是最新信息。"
@@ -973,12 +995,34 @@ class ActMeRepository(
         }
     }
 
-    private fun extractWorkspaceExcelPaths(text: String): List<String> {
+    private fun extractWorkspaceFileRefs(text: String): List<String> {
         if (text.isBlank()) return emptyList()
-        val regex = Regex("""(?:[A-Za-z]:)?[/\\][^\s"'`，。；）)]+agent_workspace[/\\][^\s"'`，。；）)]+\.(?:xlsx|xlsm)""")
-        return regex.findAll(text).map { it.value }.distinct().toList()
+        val refs = mutableListOf<String>()
+        val workspace = runCatching { PythonSkillEngine.workspaceDir().canonicalFile }.getOrNull()
+        val absoluteRegex = Regex("""(?:[A-Za-z]:)?[/\\][^\s"'`,;]+agent_workspace[/\\][^\s"'`,;]+""")
+        refs += absoluteRegex.findAll(text).map { it.value.trimEnd('.', ',', ';') }
+        val outputBlockRegex = Regex("""(?m)^output_files:\s*\n((?:-\s+.+\n?)+)""")
+        outputBlockRegex.findAll(text).forEach { match ->
+            Regex("""(?m)^-\s+(.+)$""").findAll(match.groupValues[1]).forEach { item ->
+                refs += item.groupValues[1].trim().trimEnd('.', ',', ';')
+            }
+        }
+        return refs.mapNotNull { ref -> normalizeWorkspaceFileRef(ref, workspace) }.distinct()
     }
 
+    private fun normalizeWorkspaceFileRef(raw: String, workspace: File?): String? {
+        val clean = raw.removePrefix("file://").trim()
+        if (clean.isBlank()) return null
+        val candidate = if (workspace != null && !File(clean).isAbsolute) {
+            File(workspace, clean)
+        } else {
+            File(clean)
+        }
+        val file = runCatching { candidate.canonicalFile }.getOrNull() ?: return null
+        if (!file.isFile) return null
+        if (workspace != null && !file.path.startsWith(workspace.path + File.separator)) return null
+        return file.absolutePath
+    }
     // ---- Provider management ----
 
     private suspend fun buildProviderConfig(): ProviderConfig {

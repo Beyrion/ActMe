@@ -995,15 +995,19 @@ fun ChatScreen(
                                     }
                                 }
                             }
-                            Spacer(modifier = Modifier.weight(1f))
-
                             // Model selector
-                            Box {
-                                TextButton(onClick = { showModelMenu = true }) {
+                            Box(
+                                modifier = Modifier.weight(1f),
+                                contentAlignment = Alignment.CenterEnd
+                            ) {
+                                TextButton(
+                                    onClick = { showModelMenu = true }
+                                ) {
                                     Text(
                                         selectedModel.ifBlank { "模型" },
                                         style = MaterialTheme.typography.labelSmall,
                                         maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
                                         color = MaterialTheme.colorScheme.primary
                                     )
                                 }
@@ -1351,15 +1355,27 @@ private fun MessageBubble(msg: ChatMessageEntity) {
         }
 
         // Search result expand button
-        val generatedExcelPaths = if (isUser) emptyList() else extractWorkspaceExcelPaths(msg.content)
-        if (generatedExcelPaths.isNotEmpty()) {
+        val generatedFilePaths = if (isUser) {
+            emptyList()
+        } else {
+            extractWorkspaceFilePaths(context, msg.content + "\n" + msg.searchResult.orEmpty())
+        }
+        LaunchedEffect(msg.id, generatedFilePaths.joinToString("|")) {
+            if (!isUser) {
+                AppLogger.i(
+                    "AgentFile",
+                    "bubble msg=${msg.id}, contentChars=${msg.content.length}, searchChars=${msg.searchResult?.length ?: 0}, files=${generatedFilePaths.size}, paths=${generatedFilePaths.joinToString("|")}"
+                )
+            }
+        }
+        if (generatedFilePaths.isNotEmpty()) {
             Column(
                 modifier = Modifier.padding(top = 4.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                generatedExcelPaths.take(3).forEach { path ->
+                generatedFilePaths.take(3).forEach { path ->
                     TextButton(
-                        onClick = { openWorkspaceExcel(context, path) }
+                        onClick = { openWorkspaceFile(context, path) }
                     ) {
                         Icon(
                             Icons.Filled.AttachFile,
@@ -1427,31 +1443,65 @@ private fun resultPanelLabel(result: String?): String {
     }
 }
 
-private fun extractWorkspaceExcelPaths(text: String): List<String> {
+private fun extractWorkspaceFilePaths(context: android.content.Context, text: String): List<String> {
     if (text.isBlank()) return emptyList()
-    val regex = Regex("""(?:[A-Za-z]:)?[/\\][^\s"'`，。；）)]+agent_workspace[/\\][^\s"'`，。；）)]+\.(?:xlsx|xlsm)""")
-    return regex.findAll(text)
-        .map { it.value.replace('/', File.separatorChar).replace('\\', File.separatorChar) }
+    val refs = mutableListOf<String>()
+    val absoluteRegex = Regex("""(?:[A-Za-z]:)?[/\\][^\s"'`,;]+agent_workspace[/\\][^\s"'`,;]+""")
+    refs += absoluteRegex.findAll(text).map { it.value.trimEnd('.', ',', ';') }
+    val outputBlockRegex = Regex("""(?m)^output_files:\s*\n((?:-\s+.+\n?)+)""")
+    outputBlockRegex.findAll(text).forEach { match ->
+        Regex("""(?m)^-\s+(.+)$""").findAll(match.groupValues[1]).forEach { item ->
+            refs += item.groupValues[1].trim().trimEnd('.', ',', ';')
+        }
+    }
+    val workspace = runCatching { PythonSkillEngine.workspaceDir(context).canonicalFile }.getOrNull()
+    return refs
+        .mapNotNull { normalizeWorkspaceFilePath(it, workspace) }
         .distinct()
-        .filter { File(it).exists() }
         .toList()
 }
 
-private fun openWorkspaceExcel(context: android.content.Context, path: String) {
+private fun normalizeWorkspaceFilePath(raw: String, workspace: File?): String? {
+    val clean = raw.removePrefix("file://").trim()
+    if (clean.isBlank()) return null
+    val candidate = if (workspace != null && !File(clean).isAbsolute) {
+        File(workspace, clean)
+    } else {
+        File(clean)
+    }
+    val file = runCatching { candidate.canonicalFile }.getOrNull() ?: return null
+    if (!file.isFile) return null
+    if (workspace != null && !file.path.startsWith(workspace.path + File.separator)) return null
+    return file.absolutePath
+}
+
+private fun openWorkspaceFile(context: android.content.Context, path: String) {
     val file = File(path)
     if (!file.exists()) {
         Toast.makeText(context, "文件不存在: ${file.name}", Toast.LENGTH_SHORT).show()
         return
     }
     val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+    val mimeType = when (file.extension.lowercase()) {
+        "xlsx" -> "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        "xlsm" -> "application/vnd.ms-excel.sheet.macroEnabled.12"
+        "xls" -> "application/vnd.ms-excel"
+        "csv" -> "text/csv"
+        "pdf" -> "application/pdf"
+        "png" -> "image/png"
+        "jpg", "jpeg" -> "image/jpeg"
+        "json" -> "application/json"
+        "txt", "md", "log" -> "text/plain"
+        else -> "*/*"
+    }
     val intent = Intent(Intent.ACTION_VIEW).apply {
-        setDataAndType(uri, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        setDataAndType(uri, mimeType)
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     }
     runCatching {
-        context.startActivity(Intent.createChooser(intent, "打开 Excel"))
+        context.startActivity(Intent.createChooser(intent, "打开文件"))
     }.onFailure {
-        Toast.makeText(context, "没有可打开 Excel 的应用", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, "没有可打开该文件的应用", Toast.LENGTH_SHORT).show()
     }
 }
 

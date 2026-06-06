@@ -7,46 +7,17 @@ import py_compile
 import sys
 import time
 import traceback
+import ctypes
+import multiprocessing
+import subprocess
 from os.path import abspath, commonpath, isabs, join, realpath
 
 
-ALLOWED_IMPORT_ROOTS = {
-    "base64",
-    "bisect",
-    "calendar",
-    "collections",
-    "csv",
-    "datetime",
-    "decimal",
-    "fractions",
-    "functools",
-    "hashlib",
-    "heapq",
-    "html",
-    "io",
-    "itertools",
-    "json",
-    "math",
-    "operator",
-    "random",
-    "re",
-    "statistics",
-    "string",
-    "textwrap",
-    "time",
-    "urllib",
-    "xml",
-}
-
 DENIED_IMPORT_ROOTS = {
-    "ctypes",
-    "multiprocessing",
-    "os",
-    "pathlib",
-    "shutil",
-    "socket",
-    "subprocess",
-    "sys",
+    "ensurepip",
+    "pip",
+    "venv",
+    "webbrowser",
 }
 
 
@@ -69,7 +40,7 @@ def run_code(code, input_text="", timeout_ms=3000, workspace_dir=""):
 
     def safe_import(name, globals=None, locals=None, fromlist=(), level=0):
         root = name.split(".", 1)[0]
-        if root in DENIED_IMPORT_ROOTS or root not in ALLOWED_IMPORT_ROOTS:
+        if root in DENIED_IMPORT_ROOTS:
             raise ImportError("module is not allowed: " + name)
         return original_import(name, globals, locals, fromlist, level)
 
@@ -78,6 +49,13 @@ def run_code(code, input_text="", timeout_ms=3000, workspace_dir=""):
         state["has_result"] = True
 
     workspace_root = realpath(workspace_dir) if workspace_dir else ""
+    if workspace_root:
+        os.environ.setdefault("HOME", workspace_root)
+        os.environ.setdefault("MPLCONFIGDIR", join(workspace_root, ".matplotlib"))
+        os.environ.setdefault("XDG_CACHE_HOME", join(workspace_root, ".cache"))
+        os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
+        os.makedirs(os.environ["XDG_CACHE_HOME"], exist_ok=True)
+    before_files = _workspace_snapshot(workspace_root)
 
     def validate_workspace_path(path):
         if not path:
@@ -218,6 +196,8 @@ def run_code(code, input_text="", timeout_ms=3000, workspace_dir=""):
 
     ok = True
     error = ""
+    restore_os = _patch_os_for_sandbox(workspace_root, validate_workspace_path)
+    restore_system_modules = _patch_system_modules_for_sandbox()
     sys.settrace(trace_func)
     try:
         compiled = compile(code or "", "<agent_python>", "exec")
@@ -228,8 +208,11 @@ def run_code(code, input_text="", timeout_ms=3000, workspace_dir=""):
         error = traceback.format_exc(limit=6)
     finally:
         sys.settrace(None)
+        restore_system_modules()
+        restore_os()
 
     result = state["result"] if state["has_result"] else globals_dict.get("result", None)
+    output_files = _workspace_changed_files(workspace_root, before_files)
     return json.dumps(
         {
             "ok": ok,
@@ -238,9 +221,138 @@ def run_code(code, input_text="", timeout_ms=3000, workspace_dir=""):
             "error": error,
             "result": _json_safe(result),
             "elapsed_ms": int((time.monotonic() - start) * 1000),
+            "output_files": output_files,
         },
         ensure_ascii=False,
     )
+
+
+def _patch_os_for_sandbox(workspace_root, validate_workspace_path):
+    patched = {}
+
+    def remember(name):
+        if hasattr(os, name):
+            patched[name] = getattr(os, name)
+
+    def deny(name):
+        def denied(*args, **kwargs):
+            raise PermissionError("os." + name + " is not allowed in python sandbox")
+        return denied
+
+    def workspace_path_call(name):
+        original = getattr(os, name)
+
+        def wrapped(path, *args, **kwargs):
+            return original(validate_workspace_path(path), *args, **kwargs)
+
+        return wrapped
+
+    def workspace_two_path_call(name):
+        original = getattr(os, name)
+
+        def wrapped(src, dst, *args, **kwargs):
+            return original(validate_workspace_path(src), validate_workspace_path(dst), *args, **kwargs)
+
+        return wrapped
+
+    denied_names = [
+        "chdir",
+        "chmod",
+        "chown",
+        "execv",
+        "execve",
+        "fork",
+        "kill",
+        "killpg",
+        "popen",
+        "spawnl",
+        "spawnle",
+        "spawnlp",
+        "spawnlpe",
+        "spawnv",
+        "spawnve",
+        "spawnvp",
+        "spawnvpe",
+        "startfile",
+        "system",
+    ]
+    one_path_names = ["makedirs", "mkdir", "remove", "rmdir", "unlink"]
+    two_path_names = ["replace", "rename"]
+
+    for name in denied_names + one_path_names + two_path_names:
+        remember(name)
+    for name in denied_names:
+        if hasattr(os, name):
+            setattr(os, name, deny(name))
+    for name in one_path_names:
+        if hasattr(os, name):
+            setattr(os, name, workspace_path_call(name))
+    for name in two_path_names:
+        if hasattr(os, name):
+            setattr(os, name, workspace_two_path_call(name))
+
+    def restore():
+        for name, original in patched.items():
+            setattr(os, name, original)
+
+    return restore
+
+
+def _patch_system_modules_for_sandbox():
+    patched = []
+
+    def remember(module, name):
+        if hasattr(module, name):
+            patched.append((module, name, getattr(module, name)))
+
+    def deny(label):
+        def denied(*args, **kwargs):
+            raise PermissionError(label + " is not allowed in python sandbox")
+        return denied
+
+    for module, names in [
+        (subprocess, ["Popen", "call", "check_call", "check_output", "run"]),
+        (ctypes, ["CDLL", "PyDLL", "WinDLL", "OleDLL", "LibraryLoader"]),
+        (multiprocessing, ["Process", "Pool", "Manager"]),
+    ]:
+        for name in names:
+            remember(module, name)
+            if hasattr(module, name):
+                setattr(module, name, deny(module.__name__ + "." + name))
+
+    def restore():
+        for module, name, original in patched:
+            setattr(module, name, original)
+
+    return restore
+
+
+def _workspace_snapshot(workspace_root):
+    if not workspace_root or not os.path.isdir(workspace_root):
+        return {}
+    snapshot = {}
+    for root, _, files in os.walk(workspace_root):
+        for filename in files:
+            full = join(root, filename)
+            try:
+                rel = os.path.relpath(full, workspace_root).replace("\\", "/")
+                snapshot[rel] = (os.path.getmtime(full), os.path.getsize(full))
+            except Exception:
+                pass
+    return snapshot
+
+
+def _workspace_changed_files(workspace_root, before):
+    if not workspace_root or not os.path.isdir(workspace_root):
+        return []
+    after = _workspace_snapshot(workspace_root)
+    changed = []
+    for rel, stat in after.items():
+        if rel.startswith("python/"):
+            continue
+        if before.get(rel) != stat:
+            changed.append(rel)
+    return sorted(changed)
 
 
 def _json_safe(value):

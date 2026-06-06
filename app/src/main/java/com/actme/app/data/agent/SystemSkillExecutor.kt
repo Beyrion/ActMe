@@ -215,9 +215,23 @@ object SystemSkillExecutor {
         if (code.isBlank()) return "[PYTHON_ERROR] Empty Python code."
         AppLogger.i(TAG, "PYTHON-EXEC: chars=${code.length}, inputChars=${call.input.length}, timeoutMs=${call.timeoutMs}")
         val result = PythonSkillEngine.execute(code, call.input, call.timeoutMs)
+        val workspace = runCatching { PythonSkillEngine.workspaceDir().canonicalFile }.getOrNull()
+        val outputFiles = (call.outputFiles + call.generatedFiles + call.expectedOutputs + call.files + result.output_files)
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .map { normalizePythonOutputPath(it, workspace) }
+            .distinct()
+        AppLogger.i(
+            "AgentFile",
+            "python_exec ok=${result.ok}, rawOutputFiles=${result.output_files.size}, mergedOutputFiles=${outputFiles.size}, files=${outputFiles.joinToString("|")}"
+        )
         return buildString {
             appendLine(if (result.ok) "[PYTHON_RESULT]" else "[PYTHON_ERROR]")
             appendLine("elapsed_ms: ${result.elapsed_ms}")
+            if (outputFiles.isNotEmpty()) {
+                appendLine("output_files:")
+                outputFiles.forEach { appendLine("- $it") }
+            }
             if (result.stdout.isNotBlank()) {
                 appendLine("stdout:")
                 appendLine(result.stdout.trimEnd())
@@ -235,6 +249,15 @@ object SystemSkillExecutor {
                 appendLine(result.error.trimEnd())
             }
         }.trim()
+    }
+
+    private fun normalizePythonOutputPath(path: String, workspace: java.io.File?): String {
+        val clean = path.removePrefix("file://").trim()
+        if (workspace == null || clean.isBlank()) return clean
+        val file = java.io.File(clean).let { candidate ->
+            if (candidate.isAbsolute) candidate else java.io.File(workspace, clean)
+        }
+        return runCatching { file.canonicalPath }.getOrDefault(file.absolutePath)
     }
 
     // ---- adb_shell ----
