@@ -113,6 +113,21 @@ Agentic Loop 的每一步都会进入聊天 UI 的工具执行气泡：
 
 这对联网、浏览、Python 和 ADB 都很重要，因为这些操作可能耗时或产生副作用。
 
+## 文件输出收集
+
+从 1.2.0 开始，Agentic Loop 把生成文件作为一等输出处理。任意 pass 的任意工具都可能产生文件，尤其是 `python_exec`。
+
+处理策略：
+
+- `SystemSkillExecutor` 合并模型声明的 `output_files` / `generated_files` / `expected_outputs` / `files`。
+- Python 执行器会自动检测 `agent_workspace` 中新增或修改的文件。
+- `ActMeRepository` 在每一轮工具执行结束后立即收集文件引用。
+- 最终回复前再次扫描累计工具结果和最终 reply。
+- 使用有序集合去重，避免重名路径重复显示。
+- Chat UI 会从消息正文和隐藏的工具结果中识别文件，并显示打开按钮。
+
+这意味着即使 Agent 没有在最终自然语言回复中提到某个文件，只要工具真实生成并返回到 observation，最终聊天气泡也应显示文件入口。
+
 ## 失败降级
 
 工具失败时，不应该把内部 JSON 或异常堆栈直接暴露给用户。ActMe 的策略是：

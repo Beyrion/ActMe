@@ -1,5 +1,51 @@
 # Release Notes
 
+## 1.2.0 - 2026-06-06
+
+### Agent Loop And Tool Output
+
+- Improved Agent JSON parsing for malformed, fenced, nested, or single-call tool outputs.
+- Added user-visible sanitization so internal `system_calls` / `tool_calls` dictionaries are not shown as chat replies.
+- Added generated-file tracking across every Agent loop pass, not just the final reply.
+- Added `output_files`, `generated_files`, `expected_outputs`, and `files` fields to tool calls.
+- Added automatic Python workspace file-change detection and propagation into tool observations.
+- Added generic generated-file buttons in chat for PDF, Excel, CSV, images, JSON, Markdown, text, and other files.
+- Added `AgentFile` logcat diagnostics for Python output files, repository collection, and chat bubble recognition.
+
+### Python Sandbox
+
+- Relaxed Python imports from an allowlist model to a denylist model, so standard-library modules such as `struct` and installed packages can be imported.
+- Allowed installed packages such as `numpy`, `pandas`, `openpyxl`, `matplotlib`, and PDF/image libraries when available.
+- Kept process, native-code, package-installation, and system-shell capabilities restricted.
+- Limited file write/delete/rename operations to `agent_workspace` while allowing packages to read their own resources and system fonts.
+- Redirected common cache/config paths such as `HOME`, `MPLCONFIGDIR`, and `XDG_CACHE_HOME` into the workspace.
+- Kept Python syntax checking through on-device `compile_script`.
+
+### Built-In ADB
+
+- Added lightweight in-app ADB pairing and connection management.
+- Added an overlay-based pairing flow so users can pair while Android wireless-debugging dialogs remain open.
+- Added collapsible overlay UI, visible status, error toasts, and connection failure feedback.
+- Added `adb_shell` execution for the Agent after a connection is tested and saved.
+- Updated ADB dependency/build compatibility work for the current Android build stack.
+
+### UI And Sessions
+
+- Added a new-chat welcome card and preserved session tab state.
+- Fixed session-history and Agent-session context issues.
+- Fixed accidental new-session creation from the new-session page.
+- Improved token-cost display and message tag layout.
+- Fixed model selector layout so long model names do not cover the send button.
+- Auto-collapsed the keyboard after sending.
+
+### Build, Docs, And Maintenance
+
+- Updated Android Gradle Plugin / Kotlin build configuration used by the app.
+- Added design documents for built-in browser, built-in Python, built-in ADB, Agentic Loop, and Skill/Memory.
+- Updated `Agent.md` with the current multi-tool architecture and runtime behavior.
+- Added a Claude-style skill adapter under `tools/`.
+- Updated architecture diagrams and documentation for the three built-in capability pillars.
+
 ## 1.1.0 - 2026-06-02
 
 ### Agent

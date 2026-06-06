@@ -125,8 +125,17 @@ Agent 需要输出 JSON：
   ],
   "system_calls": [
     {
-      "type": "web_search",
-      "query": "搜索内容"
+      "type": "python_exec",
+      "query": "",
+      "url": "",
+      "code": "emit({'answer': 2 + 2})",
+      "command": "",
+      "input": "",
+      "timeout_ms": 3000,
+      "output_files": [],
+      "generated_files": [],
+      "expected_outputs": [],
+      "files": []
     }
   ]
 }
@@ -139,6 +148,7 @@ Agent 需要输出 JSON：
 - `schedule_updates`：生成日程候选，保存前会再经过日程子 Agent 结构化。
 - `skill_updates`：新增或更新本地 Skill。
 - `system_calls`：请求 App 执行系统工具。
+- `output_files` / `generated_files` / `expected_outputs` / `files`：工具可能生成的工作区文件列表；执行器也会自动检测 Python 运行前后的文件变化。
 
 ## System Calls
 
@@ -191,7 +201,8 @@ Agent 需要输出 JSON：
   "type": "python_exec",
   "code": "values = input_json\nemit({'sum': sum(values)})",
   "input": "[1, 2, 3]",
-  "timeout_ms": 3000
+  "timeout_ms": 3000,
+  "output_files": []
 }
 ```
 
@@ -201,7 +212,9 @@ Agent 需要输出 JSON：
 - JSON/CSV/表格处理。
 - 正则提取和文本清洗。
 - Excel 读取、分析、生成。
+- PDF、CSV、图片、JSON、Markdown、文本等通用文件生成。
 - 保存和复用 Python 脚本。
+- 使用标准库和已安装 Python 包完成确定性处理。
 
 可用 helper：
 
@@ -220,6 +233,18 @@ list_scripts()
 compile_script(name)
 run_script(name)
 ```
+
+文件输出字段：
+
+```json
+{
+  "type": "python_exec",
+  "code": "path = write_excel('report.xlsx', {'Sheet1': [['name', 'score'], ['A', 95]]}); emit({'file': path})",
+  "output_files": ["report.xlsx"]
+}
+```
+
+从 1.2.0 开始，Python 执行器会在每次运行前后扫描 `agent_workspace`，自动收集新增或修改文件，并把它们写入工具 observation。Repository 会在 Agent loop 的每一轮收集文件，最终统一去重显示在聊天中。
 
 ### adb_shell
 
@@ -334,6 +359,14 @@ Excel 工作流：
 - 聊天输入区可以选择 `.xlsx/.xlsm`。
 - Agent 可调用 `read_excel(path)` 读取表格。
 - Agent 可调用 `write_excel(filename, sheets)` 生成文件并返回聊天。
+- Agent 可生成 PDF、CSV、图片、JSON、Markdown、文本等文件；只要文件位于 `agent_workspace`，聊天气泡就会显示打开按钮。
+
+Python 沙箱边界：
+
+- 默认允许导入标准库和已安装包，例如 `struct`、`numpy`、`pandas`、`openpyxl`、`matplotlib`。
+- 文件写入、删除、重命名限制在 `agent_workspace`。
+- 进程、native code、包安装和系统 shell 能力受限，例如 `subprocess`、`ctypes`、`multiprocessing`、`pip`、`venv`、`os.system`。
+- 常见 cache/config 目录会重定向到 workspace，便于 matplotlib 等库正常工作。
 
 详见 [docs/BUILTIN_PYTHON.md](docs/BUILTIN_PYTHON.md)。
 
@@ -466,7 +499,7 @@ adb logcat -v time | Select-String -Pattern "ActMe|SystemSkillExecutor|GeckoSear
 
 - 部分网站需要登录、验证码或强风控，无法稳定读取。
 - 搜索页文本需要 Agent 自行提取有效链接或还原面包屑 URL。
-- Python 沙箱默认无网络和系统命令能力。
+- Python 沙箱限制系统命令、进程控制、native code、包安装和工作区外写入。
 - Excel 当前重点支持 `.xlsx/.xlsm`。
 - ADB 连接依赖无线调试状态，端口可能变化。
 - ADB 悬浮窗依赖系统 overlay 权限，部分系统还需要允许覆盖设置页。
