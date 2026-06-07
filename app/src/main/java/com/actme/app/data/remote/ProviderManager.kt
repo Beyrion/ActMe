@@ -74,12 +74,13 @@ class ProviderManager(private val context: Context, private val providerDao: Pro
         appPrefs.edit().putString("last_model_$providerId", model).apply()
     }
 
-    suspend fun addProvider(name: String, format: String, endpoint: String, sk: String): Long {
+    suspend fun addProvider(name: String, format: String, endpoint: String, defaultModel: String, sk: String): Long {
         val id = providerDao.insert(
             ProviderEntity(
                 name = name,
                 providerFormat = format,
-                endpoint = endpoint
+                endpoint = endpoint,
+                defaultModel = defaultModel
             )
         )
         setSk(id, sk)
@@ -89,13 +90,14 @@ class ProviderManager(private val context: Context, private val providerDao: Pro
         return id
     }
 
-    suspend fun updateProvider(id: Long, name: String, format: String, endpoint: String, sk: String) {
+    suspend fun updateProvider(id: Long, name: String, format: String, endpoint: String, defaultModel: String, sk: String) {
         providerDao.update(
             ProviderEntity(
                 id = id,
                 name = name,
                 providerFormat = format,
-                endpoint = endpoint
+                endpoint = endpoint,
+                defaultModel = defaultModel
             )
         )
         if (sk.isNotBlank()) {

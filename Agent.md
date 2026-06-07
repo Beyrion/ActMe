@@ -228,7 +228,7 @@ workspace_dir
 report_font_dir
 read_excel(path, max_rows=200, max_sheets=10)
 write_excel(filename, sheets)
-write_report(markdown_text, base_name="report", title=None, make_pdf=True)
+write_report(markdown_text, base_name="report", title=None)
 save_script(name, source)
 load_script(name)
 list_scripts()
@@ -247,6 +247,23 @@ run_script(name)
 ```
 
 从 1.2.0 开始，Python 执行器会在每次运行前后扫描 `agent_workspace`，自动收集新增或修改文件，并把它们写入工具 observation。Repository 会在 Agent loop 的每一轮收集文件，最终统一去重显示在聊天中。
+
+### html_to_pdf
+
+使用 Android WebView 将工作区 HTML 文件渲染为 PDF。报告类任务应先用 `write_report` 生成 Markdown 和 HTML，再用这个工具把 HTML 转成 PDF。
+
+```json
+{
+  "type": "html_to_pdf",
+  "url": "reports/report.html",
+  "output_files": ["reports/report.pdf"]
+}
+```
+
+兼容别名：
+
+- `render_html_pdf`
+- `webview_pdf`
 
 ### adb_shell
 
@@ -362,7 +379,8 @@ Excel 工作流：
 - Agent 可调用 `read_excel(path)` 读取表格。
 - Agent 可调用 `write_excel(filename, sheets)` 生成文件并返回聊天。
 - Agent 可生成 PDF、HTML、CSV、图片、JSON、Markdown、文本等文件；只要文件位于 `agent_workspace`，聊天气泡就会显示打开按钮。
-- 报告类任务优先调用 `write_report(markdown_text, "reports/name", title="...")`，一次生成 Markdown、HTML 和 PDF。
+- 报告类任务优先调用 `write_report(markdown_text, "reports/name", title="...")` 生成 Markdown 和 HTML。
+- 需要 PDF 时，再调用 `html_to_pdf`，用 Android WebView 把生成的 HTML 渲染为 PDF。
 
 Python 沙箱边界：
 

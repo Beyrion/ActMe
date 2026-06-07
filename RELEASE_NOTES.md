@@ -4,10 +4,11 @@
 
 ### Report And File Generation
 
-- Added `write_report(markdown_text, base_name, title, make_pdf)` as the preferred report-generation helper for Agent Python.
-- Added Markdown + HTML + PDF report output flow, with generated files collected into the final chat bubble.
+- Added `write_report(markdown_text, base_name, title)` as the preferred report-generation helper for Agent Python.
+- Added Markdown + HTML report output flow, with generated files collected into the final chat bubble.
+- Added `html_to_pdf` system call, which renders workspace HTML files to PDF through Android WebView.
 - Added `fpdf2`, `fonttools`, `markdown`, and supporting XML/font packages to the packaged Python runtime.
-- Added app-packaged Chinese report fonts and routed PDF generation through app-owned font assets instead of `/system/fonts`.
+- Added app-packaged static Chinese report fonts for fallback/manual rendering paths, while the primary report PDF path now uses Android WebView.
 - Added `report_font_dir` to the Python execution environment so Agent code can see the read-only report font directory when needed.
 - Clarified that generated files should prefer relative paths under `agent_workspace` when they need to be shown in chat; the app maps those files to displayable file buttons.
 
@@ -22,10 +23,19 @@
 
 ### Agent Prompt And Reliability
 
-- Updated the Agent prompt to prefer `write_report` for reports and avoid manual ReportLab font registration.
+- Updated the Agent prompt to prefer `write_report` for Markdown/HTML reports and `html_to_pdf` for PDF output, avoiding manual ReportLab font registration.
 - Updated the prompt to avoid `/system/fonts`, which may be blocked by Android SELinux.
 - Updated file-output guidance so any pass in the Agent loop can produce files and the final response should surface them.
 - Improved JSON/tool-call parsing resilience for malformed or partially wrapped tool calls.
+- Prevented local Skill templates from being appended to user-visible chat replies, including model-request failure replies.
+- Added full chat-bubble content logging through `[ActMe]` / `ChatOutput` so displayed replies can be matched exactly from logcat.
+
+### Provider Models
+
+- Added an optional default model field to model providers.
+- When a provider has a default model, the app uses it directly instead of fetching the provider's model list.
+- Added a Room migration for the provider default-model field.
+- Added an empty-model guard so the app reports a local configuration error instead of sending `model: ""` and surfacing an HTTP 400 response.
 
 ## 1.2.0 - 2026-06-06
 

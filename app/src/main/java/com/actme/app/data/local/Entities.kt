@@ -65,6 +65,7 @@ data class ProviderEntity(
     val name: String,
     val providerFormat: String, // "openai" or "anthropic"
     val endpoint: String,
+    val defaultModel: String = "",
     val createdAt: Long = System.currentTimeMillis()
 )
 

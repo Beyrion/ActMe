@@ -83,8 +83,8 @@ fun SettingsScreen(
     onDownloadVisionModel: () -> Unit,
     onDeleteVisionModel: () -> Unit,
     onClearChatHistory: () -> Unit,
-    onAddProvider: (String, String, String, String) -> Unit,
-    onUpdateProvider: (Long, String, String, String, String) -> Unit,
+    onAddProvider: (String, String, String, String, String) -> Unit,
+    onUpdateProvider: (Long, String, String, String, String, String) -> Unit,
     onDeleteProvider: (Long) -> Unit,
     onSetActiveProvider: (Long) -> Unit,
     onBack: () -> Unit
@@ -215,18 +215,19 @@ fun SettingsScreen(
             initialName = editingProvider?.name ?: "",
             initialFormat = editingProvider?.providerFormat ?: "openai",
             initialEndpoint = editingProvider?.endpoint ?: "",
+            initialDefaultModel = editingProvider?.defaultModel ?: "",
             initialSk = "", // SK is never pre-filled for security
             isEdit = editingProvider != null,
             onDismiss = {
                 showAddDialog = false
                 editingProvider = null
             },
-            onSave = { name, format, endpoint, sk ->
+            onSave = { name, format, endpoint, defaultModel, sk ->
                 val provider = editingProvider
                 if (provider != null) {
-                    onUpdateProvider(provider.id, name, format, endpoint, sk)
+                    onUpdateProvider(provider.id, name, format, endpoint, defaultModel, sk)
                 } else {
-                    onAddProvider(name, format, endpoint, sk)
+                    onAddProvider(name, format, endpoint, defaultModel, sk)
                 }
                 showAddDialog = false
                 editingProvider = null
@@ -316,6 +317,14 @@ fun SettingsScreen(
                                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
                                 maxLines = 1
                             )
+                            if (provider.defaultModel.isNotBlank()) {
+                                Text(
+                                    "默认模型: ${provider.defaultModel}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                                    maxLines = 1
+                                )
+                            }
                         }
                         IconButton(onClick = { editingProvider = provider }) {
                             Icon(
@@ -809,14 +818,16 @@ private fun ProviderEditDialog(
     initialName: String,
     initialFormat: String,
     initialEndpoint: String,
+    initialDefaultModel: String,
     initialSk: String,
     isEdit: Boolean,
     onDismiss: () -> Unit,
-    onSave: (String, String, String, String) -> Unit
+    onSave: (String, String, String, String, String) -> Unit
 ) {
     var name by remember { mutableStateOf(initialName) }
     var format by remember { mutableStateOf(initialFormat) }
     var endpoint by remember { mutableStateOf(initialEndpoint) }
+    var defaultModel by remember { mutableStateOf(initialDefaultModel) }
     var sk by remember { mutableStateOf(initialSk) }
     var formatExpanded by remember { mutableStateOf(false) }
 
@@ -878,6 +889,16 @@ private fun ProviderEditDialog(
                 Spacer(Modifier.height(8.dp))
 
                 OutlinedTextField(
+                    value = defaultModel,
+                    onValueChange = { defaultModel = it },
+                    label = { Text("默认模型（可选）") },
+                    placeholder = { Text("留空则拉取模型列表") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(8.dp))
+
+                OutlinedTextField(
                     value = sk,
                     onValueChange = { sk = it },
                     label = { Text("Secret Key") },
@@ -891,7 +912,7 @@ private fun ProviderEditDialog(
             TextButton(
                 onClick = {
                     if (name.isNotBlank() && endpoint.isNotBlank() && (isEdit || sk.isNotBlank())) {
-                        onSave(name.trim(), format, endpoint.trim(), sk.trim())
+                        onSave(name.trim(), format, endpoint.trim(), defaultModel.trim(), sk.trim())
                     }
                 },
                 enabled = name.isNotBlank() && endpoint.isNotBlank() && (isEdit || sk.isNotBlank())

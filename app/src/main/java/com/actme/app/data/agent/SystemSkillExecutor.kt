@@ -8,6 +8,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.BufferedReader
+import java.io.File
 import java.io.InputStreamReader
 import java.net.CookieHandler
 import java.util.zip.GZIPInputStream
@@ -145,6 +146,7 @@ object SystemSkillExecutor {
                 "web_search" -> executeWebSearch(call.query)
                 "browse_url", "browser_url", "web_browse", "open_url" -> executeBrowseUrl(call.url.ifBlank { call.query })
                 "python_exec", "run_python", "python" -> executePython(call)
+                "html_to_pdf", "render_html_pdf", "webview_pdf" -> executeHtmlToPdf(call)
                 "adb_shell", "adb", "run_adb" -> executeAdbShell(call)
                 else -> {
                     AppLogger.w(TAG, "Unknown call: " + call.type)
@@ -173,6 +175,7 @@ object SystemSkillExecutor {
             "get_current_time" -> "获取当前时间"
             "web_search" -> "联网搜索"
             "browse_url", "browser_url", "web_browse", "open_url" -> "打开网页"
+            "html_to_pdf", "render_html_pdf", "webview_pdf" -> "HTML 转 PDF"
             else -> "执行系统技能"
         }
     }
@@ -187,6 +190,7 @@ object SystemSkillExecutor {
         return when (call.type) {
             "web_search" -> call.query
             "browse_url", "browser_url", "web_browse", "open_url" -> call.url.ifBlank { call.query }
+            "html_to_pdf", "render_html_pdf", "webview_pdf" -> call.url.ifBlank { call.query }.ifBlank { call.input }
             else -> call.type
         }.take(240)
     }
@@ -194,6 +198,8 @@ object SystemSkillExecutor {
     private fun summarizeToolResult(result: String): String {
         if (result.contains("[PYTHON_RESULT]")) return "Python completed, ${result.length} chars"
         if (result.contains("[PYTHON_ERROR]")) return "Python failed"
+        if (result.contains("[HTML_PDF_RESULT]")) return "PDF generated"
+        if (result.contains("[HTML_PDF_ERROR]")) return "PDF generation failed"
         if (result.contains("[ADB_RESULT]")) return "ADB completed, ${result.length} chars"
         if (result.contains("[ADB_ERROR]")) return "ADB failed"
         return when {
@@ -232,19 +238,19 @@ object SystemSkillExecutor {
                 [PYTHON_ERROR]
                 elapsed_ms: 0
                 error:
-                Python code is incomplete or truncated before execution. Re-send one complete python_exec call with the full code string. Prefer write_report(markdown_text, "report_name", title="...") for reports instead of hand-written ReportLab code.
+                Python code is incomplete or truncated before execution. Re-send one complete python_exec call with the full code string. Prefer write_report(markdown_text, "report_name", title="...") for Markdown/HTML reports, then call html_to_pdf for PDF output.
             """.trimIndent()
         }
         if (usesUnsafeReportLabFontPath(code)) {
             AppLogger.w(
                 TAG,
-                "PYTHON-ERROR: blocked manual ReportLab font registration; code references TTFont or /system/fonts. Android SELinux may deny /system/fonts ioctl. Use write_report(markdown_text, \"report_name\", title=\"...\") instead."
+                "PYTHON-ERROR: blocked manual ReportLab font registration; code references TTFont or /system/fonts. Android SELinux may deny /system/fonts ioctl. Use write_report(markdown_text, \"report_name\", title=\"...\") to create Markdown/HTML, then html_to_pdf for PDF."
             )
             return """
                 [PYTHON_ERROR]
                 elapsed_ms: 0
                 error:
-                Manual ReportLab font registration is blocked for debugging and reliability. The code references TTFont or /system/fonts, which fails on Android due to SELinux font-file access restrictions. Use write_report(markdown_text, "report_name", title="...") so the app-owned report helper handles Markdown, HTML, and PDF generation and logs pdf_start/pdf_success/pdf_error.
+                Manual ReportLab font registration is blocked for debugging and reliability. The code references TTFont or /system/fonts, which fails on Android due to SELinux font-file access restrictions. Use write_report(markdown_text, "report_name", title="...") to generate Markdown and HTML, then call html_to_pdf with the generated .html path and a .pdf output_files entry.
             """.trimIndent()
         }
         val result = PythonSkillEngine.execute(code, call.input, call.timeoutMs)
@@ -367,6 +373,41 @@ object SystemSkillExecutor {
                 "${file.name}:missing"
             }
         }
+    }
+
+    // ---- html_to_pdf ----
+
+    private suspend fun executeHtmlToPdf(call: SystemCall): String {
+        val workspace = runCatching { PythonSkillEngine.workspaceDir().canonicalFile }.getOrNull()
+        val htmlPath = call.url.ifBlank { call.query }.ifBlank { call.input }.trim()
+        if (htmlPath.isBlank()) return "[HTML_PDF_ERROR] Empty HTML path."
+        val htmlFile = resolveWorkspaceFile(htmlPath, workspace)
+        val outputPath = (call.outputFiles + call.generatedFiles + call.expectedOutputs + call.files)
+            .firstOrNull { it.trim().endsWith(".pdf", ignoreCase = true) }
+            ?.trim()
+            ?: htmlPath.replace(Regex("\\.html?$", RegexOption.IGNORE_CASE), ".pdf")
+        val pdfFile = resolveWorkspaceFile(outputPath, workspace)
+        AppLogger.i(TAG, "HTML-PDF: html=${htmlFile.absolutePath}, pdf=${pdfFile.absolutePath}")
+        val result = HtmlPdfEngine.render(htmlFile, pdfFile)
+        return result.fold(
+            onSuccess = { file ->
+                val path = runCatching { file.canonicalPath }.getOrDefault(file.absolutePath)
+                AppLogger.i("AgentFile", "html_to_pdf ok=true, files=$path, fileInfo=${listOf(path).fileInfo()}")
+                "[HTML_PDF_RESULT]\noutput_files:\n- $path\nbytes: ${file.length()}"
+            },
+            onFailure = { error ->
+                AppLogger.w(TAG, "HTML-PDF-ERROR:\n${error.stackTraceToString()}")
+                "[HTML_PDF_ERROR]\nerror:\n${error.stackTraceToString()}"
+            }
+        )
+    }
+
+    private fun resolveWorkspaceFile(path: String, workspace: File?): File {
+        val clean = path.removePrefix("file://").trim()
+        val file = File(clean).let { candidate ->
+            if (candidate.isAbsolute || workspace == null) candidate else File(workspace, clean)
+        }
+        return runCatching { file.canonicalFile }.getOrDefault(file.absoluteFile)
     }
 
     // ---- adb_shell ----

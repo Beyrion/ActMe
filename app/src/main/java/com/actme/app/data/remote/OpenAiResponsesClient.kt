@@ -1,6 +1,7 @@
 package com.actme.app.data.remote
 
 import com.actme.app.util.AppLogger
+import com.actme.app.util.LogCodec
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -130,8 +131,8 @@ class OpenAiResponsesClient {
             body = response.body?.string().orEmpty()
         }
         if (!response.isSuccessful) {
-            AppLogger.i(TAG, "run failed: code=${response.code}")
-            return LlmResult("请求失败(${response.code})：$body")
+            AppLogger.w(TAG, "run failed: code=${response.code}, bodyLen=${body.length}, bodyB64=${LogCodec.utf8Base64(body.take(4000))}")
+            return LlmResult(safeHttpErrorText(response.code))
         }
         AppLogger.i(TAG, "run success")
         return parseSseBodyWithUsage(body, config.providerFormat)
@@ -177,7 +178,8 @@ class OpenAiResponsesClient {
                         val fallbackResponse = fallback.execute()
                         if (!fallbackResponse.isSuccessful) {
                             val fallbackBody = fallbackResponse.body?.string().orEmpty()
-                            emit(LlmStreamChunk(text = "请求失败(${fallbackResponse.code})：$fallbackBody"))
+                            AppLogger.w(TAG, "stream fallback failed: code=${fallbackResponse.code}, bodyLen=${fallbackBody.length}, bodyB64=${LogCodec.utf8Base64(fallbackBody.take(4000))}")
+                            emit(LlmStreamChunk(text = safeHttpErrorText(fallbackResponse.code)))
                             return@flow
                         }
                         val fallbackSource = fallbackResponse.body?.source() ?: return@flow
@@ -191,7 +193,8 @@ class OpenAiResponsesClient {
                     }
                     return@flow
                 }
-                emit(LlmStreamChunk(text = "请求失败(${response.code})：$body"))
+                AppLogger.w(TAG, "stream failed: code=${response.code}, bodyLen=${body.length}, bodyB64=${LogCodec.utf8Base64(body.take(4000))}")
+                emit(LlmStreamChunk(text = safeHttpErrorText(response.code)))
                 return@flow
             }
             val source = response.body?.source() ?: return@flow
@@ -203,10 +206,15 @@ class OpenAiResponsesClient {
         } catch (e: Exception) {
             if (e is CancellationException) throw e
             AppLogger.e(TAG, "runStreaming error: ${e.message}")
+            emit(LlmStreamChunk(text = "模型请求失败：${e.message ?: e::class.java.simpleName}"))
         } finally {
             call.cancel()
         }
     }.flowOn(Dispatchers.IO)
+
+    private fun safeHttpErrorText(code: Int): String {
+        return "模型请求失败（HTTP $code）。请检查模型、接口地址、API Key 或稍后重试。"
+    }
 
     suspend fun fetchModels(endpoint: String, sk: String, providerFormat: String = "openai"): List<String> {
         if (sk.isBlank() || endpoint.isBlank()) return emptyList()

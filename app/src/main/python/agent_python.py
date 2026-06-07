@@ -108,12 +108,12 @@ def run_code(code, input_text="", timeout_ms=3000, workspace_dir="", report_font
         full_path = validate_workspace_path(filename)
         return _write_excel(full_path, sheets)
 
-    def write_report(markdown_text, base_name="report", title=None, make_pdf=True):
+    def write_report(markdown_text, base_name="report", title=None):
         return _write_report_bundle(
             markdown_text,
             base_name=base_name,
             title=title,
-            make_pdf=make_pdf,
+            make_pdf=False,
             validate_write_path=validate_workspace_path,
             workspace_root=workspace_root,
             report_font_path=report_font_path,

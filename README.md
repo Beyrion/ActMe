@@ -149,6 +149,7 @@ Agent 通过 JSON 请求 App 执行系统工具：
     {"type": "web_search", "query": "搜索内容"},
     {"type": "browse_url", "url": "https://example.com"},
     {"type": "python_exec", "code": "emit({'answer': 2 + 2})", "timeout_ms": 3000},
+    {"type": "html_to_pdf", "url": "reports/report.html", "output_files": ["reports/report.pdf"]},
     {"type": "adb_shell", "command": "dumpsys window | head -50", "timeout_ms": 15000}
   ]
 }
@@ -160,6 +161,7 @@ Agent 通过 JSON 请求 App 执行系统工具：
 - `web_search`
 - `browse_url` / `browser_url` / `web_browse` / `open_url`
 - `python_exec`
+- `html_to_pdf` / `render_html_pdf` / `webview_pdf`
 - `adb_shell` / `adb` / `run_adb`
 
 工具结果会进入 Agentic Loop，Agent 可以继续调用工具或给出最终回复。
@@ -178,7 +180,7 @@ workspace_dir
 report_font_dir
 read_excel(path, max_rows=200, max_sheets=10)
 write_excel(filename, sheets)
-write_report(markdown_text, base_name="report", title=None, make_pdf=True)
+write_report(markdown_text, base_name="report", title=None)
 save_script(name, source)
 load_script(name)
 list_scripts()
@@ -198,7 +200,7 @@ Python 执行前后会扫描 `agent_workspace`，自动收集新增或修改的�
 
 最终聊天气泡会显示文件按钮。支持的常见类型包括 Excel、PDF、CSV、图片、JSON、Markdown 和文本。
 
-报告类任务优先使用 `write_report`。它会生成 Markdown、HTML 和 PDF，并使用 App 打包的中文字体，避免直接访问 `/system/fonts` 触发 Android SELinux 限制。Python 层不额外拦截文件读写删改；实际权限交给 Android App 沙箱和系统权限决定。Prompt 仍要求模型把聊天中需要显示的生成文件写到 `agent_workspace` 相对路径。
+报告类任务优先使用 `write_report` 生成 Markdown 和 HTML；需要 PDF 时继续调用 `html_to_pdf`，由 Android WebView 渲染 HTML 并写出 PDF。Python 层不额外拦截文件读写删改；实际权限交给 Android App 沙箱和系统权限决定。Prompt 仍要求模型把聊天中需要显示的生成文件写到 `agent_workspace` 相对路径。
 
 ## 调试
 

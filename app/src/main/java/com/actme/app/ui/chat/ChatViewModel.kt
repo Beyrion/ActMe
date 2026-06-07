@@ -136,6 +136,13 @@ class ChatViewModel(
             val provider = repository.getActiveProvider()
             if (provider != null) {
                 _currentProviderId.value = provider.id
+                val defaultModel = provider.defaultModel.trim()
+                if (defaultModel.isNotBlank()) {
+                    _selectedModel.value = defaultModel
+                    _availableModels.value = listOf(defaultModel)
+                    repository.setLastModel(provider.id, defaultModel)
+                    return@launch
+                }
                 val lastModel = repository.getLastModel(provider.id)
                 _selectedModel.value = lastModel
                 // Fetch available models in background

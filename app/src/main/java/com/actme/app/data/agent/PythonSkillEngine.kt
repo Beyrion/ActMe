@@ -39,19 +39,25 @@ object PythonSkillEngine {
         return File(base.filesDir, "agent_workspace").apply { mkdirs() }
     }
 
+    fun applicationContext(): Context? = appContext
+
     private fun reportFontDir(context: Context? = appContext): File? {
         val base = context?.applicationContext ?: appContext ?: return null
         val fontDir = File(base.filesDir, "agent_assets/fonts")
-        val fontNames = listOf(
-            "ActMeReportSans.ttf",
-            "ActMeReportSerif.ttf"
+        val fonts = listOf(
+            "ActMeReportSans.ttf" to 16_324_168L,
+            "ActMeReportSerif.ttf" to 16_450_596L
         )
-        if (fontNames.all { File(fontDir, it).isFile && File(fontDir, it).length() > 0L }) {
+        if (fonts.all { (fontName, expectedBytes) ->
+                val file = File(fontDir, fontName)
+                file.isFile && file.length() == expectedBytes
+            }
+        ) {
             return fontDir
         }
         return runCatching {
             fontDir.mkdirs()
-            for (fontName in fontNames) {
+            for ((fontName, _) in fonts) {
                 val target = File(fontDir, fontName)
                 base.assets.open("agent/fonts/$fontName").use { input ->
                     FileOutputStream(target).use { output ->

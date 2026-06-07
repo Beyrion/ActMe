@@ -497,6 +497,7 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
             "python_exec" to listOf("python_exec", "run_python", "python"),
             "web_search" to listOf("web_search", "search"),
             "browse_url" to listOf("browse_url", "browser_url", "web_browse", "open_url"),
+            "html_to_pdf" to listOf("html_to_pdf", "render_html_pdf", "webview_pdf"),
             "adb_shell" to listOf("adb_shell", "run_adb", "adb"),
             "get_current_time" to listOf("get_current_time", "current_time")
         )
@@ -808,15 +809,16 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
             Native Python workflow:
             - Use python_exec whenever deterministic code is useful: calculation, parsing, regex extraction, JSON/CSV/table processing, Excel reading/writing, sorting, deduplication, validation, data transformation, or reusable helper logic.
             - python_exec call format: {"type":"python_exec","code":"print(2+2)\nemit({'answer': 4})","input":"optional text or JSON","timeout_ms":3000,"output_files":["workspace-relative paths of files this call creates, such as report.pdf or sample.xlsx"]}
-            - Each python_exec runs Python code in a sandbox. Available variables/functions: input_text, input_json, emit(value), set_result(value), result, workspace_dir, report_font_dir, read_excel(path, max_rows=200, max_sheets=10), write_excel(filename, sheets), write_report(markdown_text, base_name="report", title=None, make_pdf=True), save_script(name, source), load_script(name), list_scripts(), compile_script(name), run_script(name).
+            - Each python_exec runs Python code in a sandbox. Available variables/functions: input_text, input_json, emit(value), set_result(value), result, workspace_dir, report_font_dir, read_excel(path, max_rows=200, max_sheets=10), write_excel(filename, sheets), write_report(markdown_text, base_name="report", title=None), save_script(name, source), load_script(name), list_scripts(), compile_script(name), run_script(name).
             - You may import standard-library modules and installed Python packages when available, such as struct, csv, json, math, statistics, markdown, numpy, pandas, openpyxl, PIL, matplotlib, reportlab, fpdf, fontTools/fonttools, or defusedxml.
             - The Python sandbox allows broad file read/write/delete/rename access at the Python layer; Android's app sandbox and system permissions are the authority for what actually succeeds. Do not use subprocess, ctypes, multiprocessing, pip, venv, or system shell calls.
             - For any user-visible generated file, write under workspace_dir by using relative filenames/paths such as "report.pdf" or "reports/report.pdf". Do not put absolute /data/... paths in output_files; the app maps relative paths into workspace_dir and shows them in chat.
             - For one-off tasks, put Python directly in code and call emit(value) with the final structured result.
             - For reusable or non-trivial logic, first write a .py script with save_script("tools/name.py", source). Then call compile_script("tools/name.py"). If compile_script returns ok=false, inspect error, fix the source with save_script, compile again, then run_script("tools/name.py"). Do not run an uncompiled reusable script unless the task is urgent and simple.
             - Saved scripts run with the same globals as python_exec, so they can read input_text/input_json, call read_excel/write_excel, and return via emit(value) or result.
-            - For uploaded .xlsx/.xlsm files, call read_excel(path) using the workspace path in the user message. For exporting Excel, call write_excel("filename.xlsx", {"Sheet1":[["col"],["value"]]}) and include the filename in output_files. For reports, call write_report(markdown_text, "report_name", title="...") to create Markdown, HTML, and PDF with the app-packaged Chinese font.
-            - For PDF/report generation, do not manually register fonts from /system/fonts or other absolute paths, and do not hand-write PDF boilerplate unless write_report fails. write_report renders Markdown to HTML, tries the built-in HTML-to-PDF path, and uses the app-packaged Chinese font from report_font_dir for PDF output. report_font_dir is an app-owned runtime font directory outside workspace_dir; it is readable and should not be listed as an output file.
+            - For uploaded .xlsx/.xlsm files, call read_excel(path) using the workspace path in the user message. For exporting Excel, call write_excel("filename.xlsx", {"Sheet1":[["col"],["value"]]}) and include the filename in output_files. For reports, call write_report(markdown_text, "report_name", title="...") to create Markdown and HTML.
+            - To create PDF from a report, first call write_report in python_exec, then call html_to_pdf with url set to the generated .html path and output_files containing the target .pdf path, for example {"type":"html_to_pdf","url":"report.html","output_files":["report.pdf"]}. The host renders HTML to PDF with Android WebView.
+            - For PDF/report generation, do not manually register fonts from /system/fonts or other absolute paths, and do not hand-write PDF boilerplate unless both write_report and html_to_pdf fail. report_font_dir is an app-owned runtime font directory outside workspace_dir; it is readable and should not be listed as an output file.
             - When passing long Markdown to write_report, use Python triple-quoted strings: markdown_text = '''# Title\n...'''. Do not put a multi-line report into a normal quoted string such as md = "# Title ...", because embedded quotes and newlines will break Python/JSON parsing.
             - When python_exec creates any file, including PDF, Excel, CSV, image, JSON, or text, fill output_files with every generated relative filename/path.
             Native ADB workflow:
@@ -832,6 +834,7 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
             1. get_current_time — 获取当前精确时间（含时区、星期）
             2. web_search — 联网搜索最新信息，需要提供 query 参数
             3. browse_url — 使用内置浏览器打开网页并读取渲染后的文本，需要提供 url 参数
+            4. html_to_pdf — 使用 Android WebView 把工作区 HTML 文件渲染为 PDF，url 填 .html 路径，output_files 填 .pdf 路径
             示例：{"system_calls":[{"type":"web_search","query":"2026年最新..."},{"type":"browse_url","url":"https://example.com"}]}
             当 system_calls 非空时，reply 可留空；系统执行后会返回结果让你继续生成最终回复。
             【时间信息】
@@ -921,6 +924,9 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
                     compact.contains("\"web_search\"") ||
                     compact.contains("\"browse_url\"") ||
                     compact.contains("\"browser_url\"") ||
+                    compact.contains("\"html_to_pdf\"") ||
+                    compact.contains("\"render_html_pdf\"") ||
+                    compact.contains("\"webview_pdf\"") ||
                     compact.contains("\"adb_shell\"") ||
                     compact.contains("\"get_current_time\"")
                 )

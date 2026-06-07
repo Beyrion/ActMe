@@ -202,13 +202,25 @@ class ActMeRepository(
             if (step.detail.isBlank()) "$m ${step.title}" else "$m ${step.title} - ${step.detail.take(200)}"
         }
 
+        fun modelExecutionErrorText(e: Exception): String {
+            return "模型请求失败：${e.message?.take(120) ?: e::class.java.simpleName}"
+        }
+
+        suspend fun updateChatContent(messageId: Long, content: String, reason: String) {
+            AppLogger.i(
+                "ChatOutput",
+                "CHAT_CONTENT id=$messageId reason=$reason chars=${content.length}\n$content"
+            )
+            chatDao.updateContent(messageId, content)
+        }
+
         // Only update the tool bubble content when a step is actively running
         suspend fun addRunStep(title: String, detail: String = "", status: StepStatus = StepStatus.RUNNING): Int {
             val index = nextStepIndex++
             runSteps.add(AgentRunStep(index, title, detail, status))
             if (toolMsgId != -1L && status == StepStatus.RUNNING) {
                 val text = if (detail.isBlank()) title else "$title · ${detail.take(60)}"
-                chatDao.updateContent(toolMsgId, text)
+                updateChatContent(toolMsgId, text, "tool_step_running")
             }
             return index
         }
@@ -222,6 +234,16 @@ class ActMeRepository(
         }
 
         // ── Pass 1: stream the initial reply ──
+        if (config.model.isBlank()) {
+            updateChatContent(
+                replyMsgId,
+                "模型未设置。请在模型提供商里填写默认模型，或先拉取并选择一个可用模型。",
+                "missing_model"
+            )
+            touchConversation(conversationId)
+            return@withContext
+        }
+
         val extractor = ReplyExtractor()
         val displayBuilder = StringBuilder()
         try {
@@ -244,17 +266,20 @@ class ActMeRepository(
                     displayBuilder.append(display)
                     val visible = agent.sanitizeUserVisibleReply(displayBuilder.toString())
                     if (visible.isNotBlank()) {
-                        chatDao.updateContent(replyMsgId, visible)
+                        updateChatContent(replyMsgId, visible, "initial_stream")
                     }
                 }
             }
             addApiUsage(streamingUsage)
         } catch (e: CancellationException) {
-            if (toolMsgId != -1L) chatDao.updateContent(toolMsgId, "已中止")
-            chatDao.updateContent(replyMsgId, displayBuilder.toString().ifBlank { "已中止。" })
+            if (toolMsgId != -1L) updateChatContent(toolMsgId, "已中止", "cancel_tool")
+            updateChatContent(replyMsgId, displayBuilder.toString().ifBlank { "已中止。" }, "cancel_reply")
             throw e
         } catch (e: Exception) {
-            AppLogger.e(TAG, "streaming error: ${e.message}")
+            AppLogger.e(TAG, "streaming error", e)
+            updateChatContent(replyMsgId, modelExecutionErrorText(e), "initial_stream_error")
+            touchConversation(conversationId)
+            return@withContext
         }
 
         val rawText = extractor.getRaw()
@@ -322,7 +347,7 @@ class ActMeRepository(
                     recoveryBuilder.append(display)
                     val visible = agent.sanitizeUserVisibleReply(recoveryBuilder.toString())
                     if (visible.isNotBlank()) {
-                        chatDao.updateContent(replyMsgId, visible)
+                        updateChatContent(replyMsgId, visible, "empty_recovery_stream")
                     }
                 }
             }
@@ -350,7 +375,7 @@ class ActMeRepository(
             // First pass needing tools: convert initialMsgId → tool_execution, open fresh reply bubble
             if (toolMsgId == -1L) {
                 chatDao.updateRole(initialMsgId, "tool_execution")
-                chatDao.updateContent(initialMsgId, "")
+                updateChatContent(initialMsgId, "", "promote_initial_to_tool")
                 toolMsgId = initialMsgId
                 replyMsgId = chatDao.insert(
                     ChatMessageEntity(
@@ -374,11 +399,13 @@ class ActMeRepository(
                 val isSearch = type == "web_search"
                 val isBrowse = type == "browse_url" || type == "browser_url" || type == "web_browse" || type == "open_url"
                 val isPython = type == "python_exec" || type == "run_python" || type == "python"
+                val isHtmlToPdf = type == "html_to_pdf" || type == "render_html_pdf" || type == "webview_pdf"
                 val isAdb = type == "adb_shell" || type == "adb" || type == "run_adb"
                 val key = when {
                     isSearch -> call.query.trim().lowercase()
                     isBrowse -> call.url.ifBlank { call.query }.trim().lowercase()
                     isPython -> type + ":" + call.code.take(500) + ":" + call.input.take(500)
+                    isHtmlToPdf -> type + ":" + call.url.ifBlank { call.query }.ifBlank { call.input }.trim().lowercase() + ":" + call.outputFiles.joinToString(",").lowercase()
                     isAdb -> type + ":" + call.command.ifBlank { call.code }.ifBlank { call.query }.take(500)
                     else -> type + ":" + call.query + ":" + call.url
                 }
@@ -434,8 +461,8 @@ class ActMeRepository(
                 }
             } catch (e: CancellationException) {
                 activeToolStep?.let { updateRunStep(it, StepStatus.FAILED, "cancelled") }
-                chatDao.updateContent(toolMsgId, "已中止")
-                chatDao.updateContent(replyMsgId, "已中止。")
+                updateChatContent(toolMsgId, "已中止", "cancel_tool_execution")
+                updateChatContent(replyMsgId, "已中止。", "cancel_reply_during_tool")
                 throw e
             }
             searchResults = if (searchResults != null) "$searchResults\n$executedResults" else executedResults
@@ -459,7 +486,7 @@ class ActMeRepository(
             val continuationInput = "用户问题：$userInput\n\nsystem_calls 执行结果：\n$executedResults\n\n请基于以上结果，回答用户问题。"
             val remainingAfterExecution = budget.maxToolCalls - budget.toolCalls
             val continuationWithBudget = continuationInput + if (remainingAfterExecution > 0) {
-                "\n\nTool budget: remaining=$remainingAfterExecution. You may continue calling get_current_time, web_search, browse_url, python_exec, and adb_shell if useful. Decide freely whether more searching, browsing, Python processing, or ADB inspection/control is needed based on the task, uncertainty, source quality, and user intent. Prefer primary or authoritative sources when they matter, and use multiple independent pages when helpful. If a search result only shows a breadcrumb URL such as https://www.boc.cn › fimarkets, you may convert it to https://www.boc.cn/fimarkets and browse it. Do not repeat the same query, URL, code, or ADB command unless there is a clear reason. Return final reply when the answer is sufficiently supported or the user likely wants a quick answer."
+                "\n\nTool budget: remaining=$remainingAfterExecution. You may continue calling get_current_time, web_search, browse_url, python_exec, html_to_pdf, and adb_shell if useful. Decide freely whether more searching, browsing, Python processing, HTML-to-PDF rendering, or ADB inspection/control is needed based on the task, uncertainty, source quality, and user intent. Prefer primary or authoritative sources when they matter, and use multiple independent pages when helpful. If a search result only shows a breadcrumb URL such as https://www.boc.cn › fimarkets, you may convert it to https://www.boc.cn/fimarkets and browse it. Do not repeat the same query, URL, code, ADB command, or HTML-to-PDF render unless there is a clear reason. Return final reply when the answer is sufficiently supported or the user likely wants a quick answer."
             } else {
                 "\n\nTool budget: remaining=0. Do not call more tools in this turn. Return the best final reply from the available results."
             }
@@ -484,15 +511,24 @@ class ActMeRepository(
                         continuationBuilder.append(display)
                         val visible = agent.sanitizeUserVisibleReply(continuationBuilder.toString())
                         if (visible.isNotBlank()) {
-                            chatDao.updateContent(replyMsgId, visible)
+                            updateChatContent(replyMsgId, visible, "continuation_stream")
                         }
                     }
                 }
             } catch (e: CancellationException) {
                 updateRunStep(thinkingStep, StepStatus.FAILED, "cancelled")
-                chatDao.updateContent(toolMsgId, "已中止")
-                chatDao.updateContent(replyMsgId, "已中止。")
+                updateChatContent(toolMsgId, "已中止", "cancel_tool_continuation")
+                updateChatContent(replyMsgId, "已中止。", "cancel_reply_continuation")
                 throw e
+            } catch (e: Exception) {
+                AppLogger.e(TAG, "continuation streaming error", e)
+                updateRunStep(thinkingStep, StepStatus.FAILED, e.message?.take(120) ?: e::class.java.simpleName)
+                if (toolMsgId != -1L) {
+                    updateChatContent(toolMsgId, "执行失败", "continuation_error_tool")
+                    chatDao.updateSearchResult(toolMsgId, buildStepLog())
+                }
+                result = AgentResult(reply = modelExecutionErrorText(e))
+                break
             }
             addApiUsage(continuationUsage)
             val continuationRaw = continuationExtractor.getRaw()
@@ -512,14 +548,13 @@ class ActMeRepository(
 
         // Finalize tool execution bubble: collapsed "执行完成" + expandable step log
         if (toolMsgId != -1L) {
-            chatDao.updateContent(toolMsgId, "执行完成")
+            updateChatContent(toolMsgId, "执行完成", "tool_execution_complete")
             chatDao.updateSearchResult(toolMsgId, buildStepLog())
         }
 
         // Build and persist final reply
-        val localSkillHints = runLocalSkills(userInput, enabledSkills)
         val visibleReply = agent.sanitizeUserVisibleReply(result.reply)
-        var finalReply = if (localSkillHints.isBlank()) visibleReply else "$visibleReply\n\n$localSkillHints"
+        var finalReply = visibleReply
         if (toolLoopPausedReason != null && result.systemCalls.isNotEmpty()) {
             finalReply += "\n\n---\n执行已暂停：$toolLoopPausedReason。可以发送【继续】让我接着执行后续步骤。"
         }
@@ -543,7 +578,7 @@ class ActMeRepository(
         } else if (searchSucceeded) {
             finalReply += "\n\n---\n${resultExpandLinkText(searchResults)}"
         }
-        chatDao.updateContent(replyMsgId, finalReply)
+        updateChatContent(replyMsgId, finalReply, "final_reply")
         totalApiUsage?.let { usage ->
             chatDao.updateTokenUsage(
                 replyMsgId,
@@ -1134,19 +1169,19 @@ class ActMeRepository(
             return ProviderConfig("openai", "", "", "")
         }
         val sk = providerManager.getSk(provider.id)
-        val model = providerManager.getLastModel(provider.id).ifBlank { "" }
+        val model = provider.defaultModel.trim().ifBlank { providerManager.getLastModel(provider.id).trim().ifBlank { "" } }
         return ProviderConfig(provider.providerFormat, provider.endpoint, sk, model)
     }
 
     val providers = providerManager.providers
     val activeProviderIdFlow = providerManager.activeProviderIdFlow
 
-    suspend fun addProvider(name: String, format: String, endpoint: String, sk: String): Long {
-        return providerManager.addProvider(name, format, endpoint, sk)
+    suspend fun addProvider(name: String, format: String, endpoint: String, defaultModel: String, sk: String): Long {
+        return providerManager.addProvider(name, format, endpoint, defaultModel, sk)
     }
 
-    suspend fun updateProvider(id: Long, name: String, format: String, endpoint: String, sk: String) {
-        providerManager.updateProvider(id, name, format, endpoint, sk)
+    suspend fun updateProvider(id: Long, name: String, format: String, endpoint: String, defaultModel: String, sk: String) {
+        providerManager.updateProvider(id, name, format, endpoint, defaultModel, sk)
     }
 
     suspend fun deleteProvider(id: Long) {
@@ -1179,6 +1214,7 @@ class ActMeRepository(
 
     suspend fun fetchModels(): List<String> {
         val provider = providerManager.getActiveProvider() ?: return emptyList()
+        provider.defaultModel.trim().takeIf { it.isNotBlank() }?.let { return listOf(it) }
         val sk = providerManager.getSk(provider.id)
         return openAiClient.fetchModels(provider.endpoint, sk, provider.providerFormat)
     }

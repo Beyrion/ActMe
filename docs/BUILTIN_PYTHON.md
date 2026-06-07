@@ -50,7 +50,7 @@ workspace_dir
 report_font_dir
 read_excel(path, max_rows=200, max_sheets=10)
 write_excel(filename, sheets)
-write_report(markdown_text, base_name="report", title=None, make_pdf=True)
+write_report(markdown_text, base_name="report", title=None)
 save_script(name, source)
 load_script(name)
 list_scripts()
@@ -58,7 +58,7 @@ compile_script(name)
 run_script(name)
 ```
 
-从 1.2.0 开始，Python import 策略从“允许列表”改为“默认允许已安装包和标准库，少数危险能力受限”。当前随 APK 打包的常用库包括 `numpy`、`pandas`、`openpyxl`、`Pillow`、`matplotlib`、`reportlab`、`markdown`、`fpdf2` 和 `fonttools`，因此表格分析、Excel、图片、Markdown、HTML 和 PDF 生成可以直接走 `python_exec`。
+从 1.2.0 开始，Python import 策略从“允许列表”改为“默认允许已安装包和标准库，少数危险能力受限”。当前随 APK 打包的常用库包括 `numpy`、`pandas`、`openpyxl`、`Pillow`、`matplotlib`、`reportlab`、`markdown`、`fpdf2` 和 `fonttools`，因此表格分析、Excel、图片、Markdown 和 HTML 生成可以直接走 `python_exec`。PDF 报告优先走 Android 侧 `html_to_pdf`。
 
 ## Excel 能力
 
@@ -134,9 +134,19 @@ emit(files)
 
 - 生成 UTF-8 BOM 编码的 Markdown 文件，方便 Windows 编辑器正确识别中文。
 - 把 Markdown 转成 HTML。
-- 优先通过内置 HTML-to-PDF 路径生成 PDF。
-- 使用 App 打包的中文字体，避免访问 `/system/fonts` 时被 Android SELinux 拒绝。
-- 返回 `markdown`、`html`、`pdf` 和 `output_files`，执行器也会自动扫描工作区新增文件。
+- 返回 `markdown`、`html` 和 `output_files`，执行器也会自动扫描工作区新增文件。
+
+如果用户需要 PDF，Agent 应在 `write_report` 生成 HTML 后继续调用 `html_to_pdf`：
+
+```json
+{
+  "type": "html_to_pdf",
+  "url": "reports/example_report.html",
+  "output_files": ["reports/example_report.pdf"]
+}
+```
+
+`html_to_pdf` 使用 Android WebView 渲染 HTML 并通过系统打印管线写出 PDF，避免在 Python/Chaquopy 中维护复杂的 HTML-to-PDF native 依赖链。
 
 `report_font_dir` 是 App 拷贝出来的字体目录，可能位于 `agent_workspace` 外。它是运行时资源，不是生成文件目录。Agent 不需要把字体路径写进 `output_files`。为了让文件按钮稳定显示，模型应把报告、表格、图片等用户可见产物写入 `agent_workspace` 下的相对路径。
 

@@ -92,16 +92,16 @@ class SettingsViewModel(
         }
     }
 
-    fun addProvider(name: String, format: String, endpoint: String, sk: String) {
+    fun addProvider(name: String, format: String, endpoint: String, defaultModel: String, sk: String) {
         viewModelScope.launch(Dispatchers.IO) {
-            repository.addProvider(name, format, endpoint, sk)
+            repository.addProvider(name, format, endpoint, defaultModel, sk)
             _activeProviderId.value = repository.getActiveProviderId()
         }
     }
 
-    fun updateProvider(id: Long, name: String, format: String, endpoint: String, sk: String) {
+    fun updateProvider(id: Long, name: String, format: String, endpoint: String, defaultModel: String, sk: String) {
         viewModelScope.launch(Dispatchers.IO) {
-            repository.updateProvider(id, name, format, endpoint, sk)
+            repository.updateProvider(id, name, format, endpoint, defaultModel, sk)
         }
     }
 

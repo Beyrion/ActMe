@@ -130,7 +130,7 @@ Agentic Loop 的每一步都会进入聊天 UI 的工具执行气泡：
 
 这意味着即使 Agent 没有在最终自然语言回复中提到某个文件，只要工具真实生成并返回到 observation，最终聊天气泡也应显示文件入口。
 
-报告生成是 1.3.0 的重点路径。Agent 应优先通过 `write_report(markdown_text, "reports/name", title="...")` 生成 Markdown、HTML 和 PDF。任意 pass 中产生的 `.md`、`.html`、`.pdf`、Excel、CSV、图片或文本文件都会被累计收集，并在最终消息里去重展示。
+报告生成是 1.3.0 的重点路径。Agent 应优先通过 `write_report(markdown_text, "reports/name", title="...")` 生成 Markdown 和 HTML；需要 PDF 时继续调用 `html_to_pdf`，由 Android WebView 把 HTML 渲染为 PDF。任意 pass 中产生的 `.md`、`.html`、`.pdf`、Excel、CSV、图片或文本文件都会被累计收集，并在最终消息里去重展示。
 
 ## 失败降级
 

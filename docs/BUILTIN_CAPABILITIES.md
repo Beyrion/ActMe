@@ -44,6 +44,11 @@ Agent 通过 `system_calls` 请求 App 执行工具。典型格式：
       "timeout_ms": 3000
     },
     {
+      "type": "html_to_pdf",
+      "url": "reports/report.html",
+      "output_files": ["reports/report.pdf"]
+    },
+    {
       "type": "adb_shell",
       "command": "dumpsys window | head -50",
       "timeout_ms": 15000
@@ -72,7 +77,7 @@ App 执行后会把结果写回多步执行循环，Agent 可以观察结果后�
 
 - 浏览器读取网页可能受登录、反爬、地区、动态渲染和网站结构影响。
 - Python 沙箱允许导入标准库和已安装包；Python 层不额外拦截文件读写删改，实际权限交给 Android App 沙箱和系统权限决定；进程、native code、包安装和系统 shell 等危险能力仍受限。
-- 报告类文件优先通过 `write_report` 生成 Markdown、HTML 和 PDF，并使用 App 打包中文字体，避免依赖 `/system/fonts`。
+- 报告类文件优先通过 `write_report` 生成 Markdown 和 HTML；需要 PDF 时调用 `html_to_pdf`，由 Android WebView 渲染 HTML 并写出 PDF。
 - ADB 需要用户手动授权无线调试和悬浮窗权限，且连接端口可能随系统状态变化。
 - 高风险操作需要谨慎，尤其是 ADB 的删除、卸载、清数据、权限修改等命令。
 
