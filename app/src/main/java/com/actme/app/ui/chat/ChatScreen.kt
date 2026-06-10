@@ -833,31 +833,49 @@ fun ChatScreen(
                 }
 
                 if (selectedWorkbookPath != null) {
+                    val wbPath = selectedWorkbookPath!!
+                    val wbName = selectedWorkbookName ?: "workbook.xlsx"
+                    val wbFile = remember(wbPath) { File(wbPath) }
+                    val wbSize = remember(wbPath) { if (wbFile.exists()) wbFile.length() else 0L }
+                    val wbExt = remember(wbPath) { wbFile.extension.lowercase() }
+                    val wbStyle = remember(wbExt) { fileTypeStyle(wbExt) }
+
                     Surface(
                         shape = RoundedCornerShape(8.dp),
-                        color = MaterialTheme.colorScheme.secondaryContainer,
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(bottom = 6.dp)
+                            .padding(bottom = 4.dp)
                     ) {
                         Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             Icon(
-                                Icons.Filled.AttachFile,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp),
-                                tint = MaterialTheme.colorScheme.onSecondaryContainer
+                                imageVector = wbStyle.icon,
+                                contentDescription = wbExt,
+                                tint = wbStyle.tint,
+                                modifier = Modifier.size(20.dp)
                             )
-                            Text(
-                                selectedWorkbookName ?: "workbook.xlsx",
-                                modifier = Modifier.weight(1f),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSecondaryContainer,
-                                maxLines = 1
-                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    wbName,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                if (wbSize > 0) {
+                                    Spacer(modifier = Modifier.height(1.dp))
+                                    Text(
+                                        formatFileSize(wbSize),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                                        maxLines = 1
+                                    )
+                                }
+                            }
                             IconButton(
                                 onClick = {
                                     selectedWorkbookPath = null
@@ -867,8 +885,9 @@ fun ChatScreen(
                             ) {
                                 Icon(
                                     Icons.Filled.Close,
-                                    contentDescription = "移除 Excel",
-                                    modifier = Modifier.size(14.dp)
+                                    contentDescription = "移除文件",
+                                    modifier = Modifier.size(16.dp),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
                         }
@@ -1424,25 +1443,17 @@ private fun MessageBubble(msg: ChatMessageEntity) {
         }
         if (generatedFilePaths.isNotEmpty()) {
             Column(
-                modifier = Modifier.padding(top = 4.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
+                modifier = Modifier
+                    .widthIn(max = 160.dp)
+                    .padding(top = 6.dp, bottom = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 generatedFilePaths.take(3).forEach { path ->
-                    TextButton(
+                    FileCard(
+                        fileName = File(path).name,
+                        filePath = path,
                         onClick = { openWorkspaceFile(context, path) }
-                    ) {
-                        Icon(
-                            Icons.Filled.AttachFile,
-                            contentDescription = null,
-                            modifier = Modifier.size(14.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            File(path).name,
-                            style = MaterialTheme.typography.labelSmall,
-                            maxLines = 1
-                        )
-                    }
+                    )
                 }
             }
         }
