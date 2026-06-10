@@ -94,6 +94,10 @@ class ChatViewModel(
     val sendingConversationId: StateFlow<Long?> = _sendingConversationId
     val sending: Boolean get() = _sendingConversationId.value != null
     private var sendingJob: Job? = null
+
+    private val _errorMessage = MutableStateFlow<String?>(null)
+    val errorMessage: StateFlow<String?> = _errorMessage
+    private var errorDismissJob: Job? = null
     val isRecording = MutableStateFlow(false)
     val transcribedText = MutableStateFlow<String?>(null)
     val pendingWorkbookAttachment = MutableStateFlow<PendingWorkbookAttachment?>(null)
@@ -106,6 +110,10 @@ class ChatViewModel(
     val selectedModel: StateFlow<String> = _selectedModel
 
     private val _currentProviderId = MutableStateFlow(-1L)
+    private var refreshModelJob: Job? = null
+
+    private val _isRefreshingModels = MutableStateFlow(false)
+    val isRefreshingModels: StateFlow<Boolean> = _isRefreshingModels
 
     init {
         viewModelScope.launch {
@@ -118,6 +126,9 @@ class ChatViewModel(
             repository.providers.collect { providers ->
                 if (providers.isNotEmpty()) {
                     refreshModelState()
+                } else {
+                    _availableModels.value = emptyList()
+                    _selectedModel.value = ""
                 }
             }
         }
@@ -126,40 +137,52 @@ class ChatViewModel(
             repository.activeProviderIdFlow.collect { id ->
                 if (id > 0) {
                     refreshModelState()
+                } else {
+                    _availableModels.value = emptyList()
+                    _selectedModel.value = ""
                 }
             }
         }
     }
 
     private fun refreshModelState() {
-        viewModelScope.launch(Dispatchers.IO) {
-            val provider = repository.getActiveProvider()
-            if (provider != null) {
-                _currentProviderId.value = provider.id
-                val defaultModel = provider.defaultModel.trim()
-                if (defaultModel.isNotBlank()) {
-                    _selectedModel.value = defaultModel
-                    _availableModels.value = listOf(defaultModel)
-                    repository.setLastModel(provider.id, defaultModel)
-                    return@launch
-                }
-                val lastModel = repository.getLastModel(provider.id)
-                _selectedModel.value = lastModel
-                // Fetch available models in background
-                try {
-                    val models = repository.fetchModels()
-                    _availableModels.value = models
-                    // If no last model or last model not in list, set default
-                    if (lastModel.isBlank() || (models.isNotEmpty() && lastModel !in models)) {
-                        val default = models.firstOrNull() ?: ""
-                        _selectedModel.value = default
-                        if (default.isNotBlank()) {
-                            repository.setLastModel(provider.id, default)
-                        }
+        refreshModelJob?.cancel()
+        _isRefreshingModels.value = true
+        refreshModelJob = viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val provider = repository.getActiveProvider()
+                if (provider != null) {
+                    _currentProviderId.value = provider.id
+                    val defaultModel = provider.defaultModel.trim()
+                    if (defaultModel.isNotBlank()) {
+                        _selectedModel.value = defaultModel
+                        _availableModels.value = listOf(defaultModel)
+                        repository.setLastModel(provider.id, defaultModel)
+                        return@launch
                     }
-                } catch (_: Exception) {
-                    // Keep empty list, user can type model name
+                    val lastModel = repository.getLastModel(provider.id)
+                    _selectedModel.value = lastModel
+                    // Fetch available models in background
+                    try {
+                        val models = repository.fetchModels()
+                        _availableModels.value = models
+                        // If no last model or last model not in list, set default
+                        if (lastModel.isBlank() || (models.isNotEmpty() && lastModel !in models)) {
+                            val default = models.firstOrNull() ?: ""
+                            _selectedModel.value = default
+                            if (default.isNotBlank()) {
+                                repository.setLastModel(provider.id, default)
+                            }
+                        }
+                    } catch (_: Exception) {
+                        // Keep empty list, user can type model name
+                    }
+                } else {
+                    _availableModels.value = emptyList()
+                    _selectedModel.value = ""
                 }
+            } finally {
+                _isRefreshingModels.value = false
             }
         }
     }
@@ -226,13 +249,27 @@ class ChatViewModel(
         }
     }
 
+    fun dismissError() {
+        errorDismissJob?.cancel()
+        _errorMessage.value = null
+    }
+
     fun sendMessage(input: String, imageBase64: String? = null, imageMimeType: String? = null) {
         val conversationId = currentConversationIdMutable.value ?: return
         if (input.isBlank() && imageBase64 == null || _sendingConversationId.value != null) return
+        _errorMessage.value = null
+        errorDismissJob?.cancel()
         sendingJob = viewModelScope.launch {
             _sendingConversationId.value = conversationId
             try {
-                repository.sendMessage(conversationId, input.trim(), imageBase64, imageMimeType)
+                val error = repository.sendMessage(conversationId, input.trim(), imageBase64, imageMimeType)
+                if (error != null) {
+                    _errorMessage.value = error
+                    errorDismissJob = launch {
+                        kotlinx.coroutines.delay(4000)
+                        _errorMessage.value = null
+                    }
+                }
             } finally {
                 _sendingConversationId.value = null
                 sendingJob = null

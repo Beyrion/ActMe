@@ -99,6 +99,8 @@ class MainActivity : ComponentActivity() {
                             val sessionInfos by chatViewModel.sessionInfos.collectAsStateWithLifecycle(emptyList())
                             val currentConversationId by chatViewModel.currentConversationId.collectAsStateWithLifecycle(null)
                             val pendingWorkbook by chatViewModel.pendingWorkbookAttachment.collectAsStateWithLifecycle(null)
+                            val errorMessage by chatViewModel.errorMessage.collectAsStateWithLifecycle(null)
+                            val isRefreshingModels by chatViewModel.isRefreshingModels.collectAsStateWithLifecycle(false)
                             val presetQuestions by chatViewModel.presetQuestions.collectAsStateWithLifecycle(emptyList())
 
                             var showMenu by remember { mutableStateOf(false) }
@@ -129,7 +131,11 @@ class MainActivity : ComponentActivity() {
                                     onWorkbookConsumed = chatViewModel::consumeWorkbookAttachment,
                                     onNavigateToMenu = { showMenu = true },
                                     onCreateConversation = { chatViewModel.createNewConversation() },
-                                    presetQuestions = presetQuestions
+                                    presetQuestions = presetQuestions,
+                                    errorMessage = errorMessage,
+                                    onErrorDismiss = { chatViewModel.dismissError() },
+                                    isRefreshingModels = isRefreshingModels,
+                                    onRefreshModels = { chatViewModel.refreshModels() }
                                 )
 
                                 // Scrim overlay

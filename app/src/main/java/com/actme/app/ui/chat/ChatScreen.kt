@@ -90,8 +90,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.UriHandler
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
@@ -105,6 +108,7 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.draw.shadow
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
@@ -162,9 +166,14 @@ fun ChatScreen(
     onWorkbookConsumed: () -> Unit = {},
     onNavigateToMenu: () -> Unit = {},
     onCreateConversation: () -> Unit = {},
-    presetQuestions: List<String> = emptyList()
+    presetQuestions: List<String> = emptyList(),
+    errorMessage: String? = null,
+    onErrorDismiss: () -> Unit = {},
+    isRefreshingModels: Boolean = false,
+    onRefreshModels: () -> Unit = {}
 ) {
     val scope = rememberCoroutineScope()
+    val lifecycleOwner = LocalLifecycleOwner.current
     var input by rememberSaveable { mutableStateOf("") }
     val focusRequester = remember { FocusRequester() }
     val focusManager = LocalFocusManager.current
@@ -181,6 +190,12 @@ fun ChatScreen(
     var scheduleOcrText by remember { mutableStateOf("") }
     var showScheduleOcrText by remember { mutableStateOf(false) }
     var todoCandidate by remember { mutableStateOf<TodoImportPlan?>(null) }
+
+    LaunchedEffect(lifecycleOwner) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            onRefreshModels()
+        }
+    }
 
     LaunchedEffect(pendingWorkbook) {
         val workbook = pendingWorkbook ?: return@LaunchedEffect
@@ -605,20 +620,21 @@ fun ChatScreen(
         )
     }
 
-    MarqueeBorder(
-        isActive = sending,
-        modifier = Modifier.fillMaxSize(),
-        cornerRadius = 36.dp
-    ) {
-        Column(
-            modifier = Modifier.fillMaxSize()
+    Box(modifier = Modifier.fillMaxSize()) {
+        MarqueeBorder(
+            isActive = sending,
+            modifier = Modifier.fillMaxSize(),
+            cornerRadius = 36.dp
         ) {
-            // ---- Top bar ----
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(start = 12.dp, end = 12.dp, top = 12.dp)
+            Column(
+                modifier = Modifier.fillMaxSize()
             ) {
+                // ---- Top bar ----
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 12.dp, end = 12.dp, top = 12.dp)
+                ) {
                 IconButton(
                     onClick = {
                         focusManager.clearFocus()
@@ -1003,6 +1019,14 @@ fun ChatScreen(
                                 TextButton(
                                     onClick = { showModelMenu = true }
                                 ) {
+                                    if (isRefreshingModels) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(12.dp),
+                                            strokeWidth = 2.dp,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                    }
                                     Text(
                                         selectedModel.ifBlank { "模型" },
                                         style = MaterialTheme.typography.labelSmall,
@@ -1051,10 +1075,40 @@ fun ChatScreen(
                         }
                     }
                 }
+                }
             }
+        }
+
+        // Centered error alert
+        AnimatedVisibility(
+            visible = errorMessage != null,
+            enter = fadeIn(tween(200)) + slideInVertically(tween(200)) { -it / 2 },
+            exit = fadeOut(tween(200)),
+            modifier = Modifier.align(Alignment.Center).padding(horizontal = 48.dp)
+        ) {
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = Color(0xFF424242).copy(alpha = 0.95f),
+                shadowElevation = 6.dp,
+                modifier = Modifier.clickable { onErrorDismiss() }
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        errorMessage ?: "",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color(0xFFE0E0E0),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
         }
     }
+}
 }
 
 // ---- Tool execution bubble ----

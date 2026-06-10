@@ -126,7 +126,8 @@ class ActMeRepository(
         userInput: String,
         imageBase64: String? = null,
         imageMimeType: String? = null
-    ) = withContext(Dispatchers.IO) {
+    ): String? = withContext(Dispatchers.IO) {
+        var errorTag: String? = null
         val now = System.currentTimeMillis()
         AppLogger.i(TAG, "send message begin: conversationId=$conversationId, hasImage=${imageBase64 != null}")
         chatDao.insert(
@@ -206,6 +207,26 @@ class ActMeRepository(
             return "模型请求失败：${e.message?.take(120) ?: e::class.java.simpleName}"
         }
 
+        fun briefErrorTag(e: Exception): String {
+            val msg = e.message ?: ""
+            return when {
+                msg.contains("timeout", ignoreCase = true) -> "请求超时"
+                msg.contains("connect", ignoreCase = true) || msg.contains("network", ignoreCase = true) || msg.contains("resolve", ignoreCase = true) -> "网络连接失败"
+                msg.contains("SSL", ignoreCase = true) || msg.contains("certificate", ignoreCase = true) -> "安全连接失败"
+                msg.contains("parse", ignoreCase = true) || msg.contains("json", ignoreCase = true) -> "响应解析失败"
+                msg.contains("refused", ignoreCase = true) -> "连接被拒绝"
+                msg.contains("reset", ignoreCase = true) -> "连接已重置"
+                else -> e::class.java.simpleName.let { name ->
+                    when {
+                        name.contains("Timeout") -> "请求超时"
+                        name.contains("Connect") -> "网络连接失败"
+                        name.contains("UnknownHost") -> "无法解析主机"
+                        else -> "请求失败"
+                    }
+                }
+            }
+        }
+
         suspend fun updateChatContent(messageId: Long, content: String, reason: String) {
             AppLogger.i(
                 "ChatOutput",
@@ -241,7 +262,8 @@ class ActMeRepository(
                 "missing_model"
             )
             touchConversation(conversationId)
-            return@withContext
+            errorTag = "模型未设置"
+            return@withContext errorTag
         }
 
         val extractor = ReplyExtractor()
@@ -279,7 +301,8 @@ class ActMeRepository(
             AppLogger.e(TAG, "streaming error", e)
             updateChatContent(replyMsgId, modelExecutionErrorText(e), "initial_stream_error")
             touchConversation(conversationId)
-            return@withContext
+            errorTag = briefErrorTag(e)
+            return@withContext errorTag
         }
 
         val rawText = extractor.getRaw()
@@ -522,6 +545,7 @@ class ActMeRepository(
                 throw e
             } catch (e: Exception) {
                 AppLogger.e(TAG, "continuation streaming error", e)
+                errorTag = briefErrorTag(e)
                 updateRunStep(thinkingStep, StepStatus.FAILED, e.message?.take(120) ?: e::class.java.simpleName)
                 if (toolMsgId != -1L) {
                     updateChatContent(toolMsgId, "执行失败", "continuation_error_tool")
@@ -629,6 +653,7 @@ class ActMeRepository(
             )
         }
         AppLogger.i(TAG, "send message complete: conversationId=$conversationId")
+        errorTag
     }
 
     suspend fun addOrUpdateMemory(item: MemoryItemEntity) = withContext(Dispatchers.IO) {
