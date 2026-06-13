@@ -1,11 +1,14 @@
 package com.actme.app.ui.chat
 
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import android.content.res.Configuration
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -14,6 +17,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.material.icons.Icons
@@ -74,160 +81,347 @@ fun MenuScreen(
         else sessionInfos.filter { it.session.title.contains(searchQuery, ignoreCase = true) }
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(12.dp)
-    ) {
-        // ---- 全部会话 header ----
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                "全部会话",
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.weight(1f)
-            )
-            IconButton(onClick = onCreateConversation) {
-                Icon(Icons.Filled.Add, contentDescription = "新聊天")
+    val configuration = LocalConfiguration.current
+    val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+
+    if (isLandscape) {
+        Row(modifier = Modifier.fillMaxSize()) {
+            // Left: Navigation items (Memory, Schedule, Settings)
+            Column(
+                modifier = Modifier
+                    .width(72.dp)
+                    .fillMaxHeight()
+                    .padding(vertical = 16.dp, horizontal = 6.dp),
+                verticalArrangement = Arrangement.Top,
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                GridCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    icon = Icons.Filled.Psychology,
+                    label = "记忆",
+                    onClick = onNavigateToMemory
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                GridCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    icon = Icons.Filled.CalendarMonth,
+                    label = "日程",
+                    onClick = onNavigateToSchedule
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                GridCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    icon = Icons.Filled.Settings,
+                    label = "设置",
+                    onClick = onNavigateToSettings
+                )
             }
-        }
 
-        // ---- Search bar ----
-        OutlinedTextField(
-            value = searchQuery,
-            onValueChange = { searchQuery = it },
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 6.dp),
-            placeholder = { Text("搜索会话", style = MaterialTheme.typography.bodyMedium) },
-            leadingIcon = { Icon(Icons.Filled.Search, contentDescription = "搜索", modifier = Modifier.size(20.dp)) },
-            singleLine = true,
-            textStyle = MaterialTheme.typography.bodyMedium,
-            shape = RoundedCornerShape(16.dp),
-            colors = OutlinedTextFieldDefaults.colors(
-                unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant
+            // Divider
+            Spacer(
+                modifier = Modifier
+                    .width(1.dp)
+                    .fillMaxHeight()
+                    .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
             )
-        )
 
-        // ---- Session list ----
-        LazyColumn(
-            modifier = Modifier
-                .weight(1f)
-                .padding(horizontal = 4.dp, vertical = 8.dp)
-        ) {
-            items(filteredSessions, key = { it.session.id }) { info ->
-                var showMenu by remember { mutableStateOf(false) }
-                val session = info.session
-                val selected = session.id == currentConversationId
-                val isLoading = session.id == sendingConversationId
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 4.dp)
-                        .combinedClickable(
-                            onClick = { onSwitchConversation(session.id) },
-                            onLongClick = { showMenu = true }
-                        ),
-                    colors = CardDefaults.cardColors(
-                        containerColor = if (selected)
-                            MaterialTheme.colorScheme.primaryContainer
-                        else
-                            MaterialTheme.colorScheme.surface
-                    ),
-                    shape = RoundedCornerShape(12.dp)
+            // Right: Session list panel
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .padding(12.dp)
+            ) {
+                // Header row: title + search + new button
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column(
+                    Text(
+                        "全部会话",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    OutlinedTextField(
+                        value = searchQuery,
+                        onValueChange = { searchQuery = it },
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(12.dp)
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text(
-                                session.title,
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Medium,
-                                maxLines = 1,
-                                modifier = Modifier.weight(1f)
+                            .weight(1f)
+                            .padding(horizontal = 8.dp)
+                            .height(44.dp),
+                        placeholder = {
+                            Text("搜索", style = MaterialTheme.typography.bodySmall)
+                        },
+                        leadingIcon = {
+                            Icon(
+                                Icons.Filled.Search,
+                                contentDescription = "搜索",
+                                modifier = Modifier.size(18.dp)
                             )
-                            if (isLoading) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(16.dp),
-                                    strokeWidth = 2.dp
+                        },
+                        singleLine = true,
+                        textStyle = MaterialTheme.typography.bodySmall,
+                        shape = RoundedCornerShape(12.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant
+                        )
+                    )
+                    IconButton(onClick = onCreateConversation) {
+                        Icon(Icons.Filled.Add, contentDescription = "新聊天")
+                    }
+                }
+
+                // Session list (2-column grid)
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(2),
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(horizontal = 4.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    items(filteredSessions, key = { it.session.id }) { info ->
+                        var showMenu by remember { mutableStateOf(false) }
+                        val session = info.session
+                        val selected = session.id == currentConversationId
+                        val isLoading = session.id == sendingConversationId
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp)
+                                .combinedClickable(
+                                    onClick = { onSwitchConversation(session.id) },
+                                    onLongClick = { showMenu = true }
+                                ),
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (selected)
+                                    MaterialTheme.colorScheme.primaryContainer
+                                else
+                                    MaterialTheme.colorScheme.surface
+                            ),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(12.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text(
+                                        session.title,
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Medium,
+                                        maxLines = 1,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    if (isLoading) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(16.dp),
+                                            strokeWidth = 2.dp
+                                        )
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        "${info.messageCount} 轮对话",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                                    )
+                                    Text(
+                                        formatRelativeTime(session.updatedAt),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                                    )
+                                }
+                            }
+                            DropdownMenu(
+                                expanded = showMenu,
+                                onDismissRequest = { showMenu = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("重命名") },
+                                    onClick = {
+                                        showMenu = false
+                                        renameTarget = session
+                                        renameInput = session.title
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("删除", color = MaterialTheme.colorScheme.error) },
+                                    onClick = {
+                                        showMenu = false
+                                        deleteTarget = session
+                                    }
                                 )
                             }
                         }
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(
-                                "${info.messageCount} 轮对话",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                            )
-                            Text(
-                                formatRelativeTime(session.updatedAt),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                            )
-                        }
-                    }
-                    DropdownMenu(
-                        expanded = showMenu,
-                        onDismissRequest = { showMenu = false }
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text("重命名") },
-                            onClick = {
-                                showMenu = false
-                                renameTarget = session
-                                renameInput = session.title
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("删除", color = MaterialTheme.colorScheme.error) },
-                            onClick = {
-                                showMenu = false
-                                deleteTarget = session
-                            }
-                        )
                     }
                 }
             }
         }
-
-        // ---- 1x3 grid: Memory, Schedule, Settings ----
-        Row(
+    } else {
+        Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                .fillMaxSize()
+                .padding(12.dp)
         ) {
-            GridCard(
-                modifier = Modifier.weight(1f),
-                icon = Icons.Filled.Psychology,
-                label = "记忆",
-                onClick = onNavigateToMemory
+            // ---- 全部会话 header ----
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "全部会话",
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f)
+                )
+                IconButton(onClick = onCreateConversation) {
+                    Icon(Icons.Filled.Add, contentDescription = "新聊天")
+                }
+            }
+
+            // ---- Search bar ----
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = { searchQuery = it },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 6.dp),
+                placeholder = { Text("搜索会话", style = MaterialTheme.typography.bodyMedium) },
+                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = "搜索", modifier = Modifier.size(20.dp)) },
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodyMedium,
+                shape = RoundedCornerShape(16.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant
+                )
             )
-            GridCard(
-                modifier = Modifier.weight(1f),
-                icon = Icons.Filled.CalendarMonth,
-                label = "日程",
-                onClick = onNavigateToSchedule
-            )
-            GridCard(
-                modifier = Modifier.weight(1f),
-                icon = Icons.Filled.Settings,
-                label = "设置",
-                onClick = onNavigateToSettings
-            )
+
+            // ---- Session list ----
+            LazyColumn(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(horizontal = 4.dp, vertical = 8.dp)
+            ) {
+                items(filteredSessions, key = { it.session.id }) { info ->
+                    var showMenu by remember { mutableStateOf(false) }
+                    val session = info.session
+                    val selected = session.id == currentConversationId
+                    val isLoading = session.id == sendingConversationId
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp)
+                            .combinedClickable(
+                                onClick = { onSwitchConversation(session.id) },
+                                onLongClick = { showMenu = true }
+                            ),
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (selected)
+                                MaterialTheme.colorScheme.primaryContainer
+                            else
+                                MaterialTheme.colorScheme.surface
+                        ),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    session.title,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Medium,
+                                    maxLines = 1,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                if (isLoading) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        strokeWidth = 2.dp
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    "${info.messageCount} 轮对话",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                                )
+                                Text(
+                                    formatRelativeTime(session.updatedAt),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                                )
+                            }
+                        }
+                        DropdownMenu(
+                            expanded = showMenu,
+                            onDismissRequest = { showMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("重命名") },
+                                onClick = {
+                                    showMenu = false
+                                    renameTarget = session
+                                    renameInput = session.title
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("删除", color = MaterialTheme.colorScheme.error) },
+                                onClick = {
+                                    showMenu = false
+                                    deleteTarget = session
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+
+            // ---- 1x3 grid: Memory, Schedule, Settings ----
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                GridCard(
+                    modifier = Modifier.weight(1f),
+                    icon = Icons.Filled.Psychology,
+                    label = "记忆",
+                    onClick = onNavigateToMemory
+                )
+                GridCard(
+                    modifier = Modifier.weight(1f),
+                    icon = Icons.Filled.CalendarMonth,
+                    label = "日程",
+                    onClick = onNavigateToSchedule
+                )
+                GridCard(
+                    modifier = Modifier.weight(1f),
+                    icon = Icons.Filled.Settings,
+                    label = "设置",
+                    onClick = onNavigateToSettings
+                )
+            }
         }
     }
 

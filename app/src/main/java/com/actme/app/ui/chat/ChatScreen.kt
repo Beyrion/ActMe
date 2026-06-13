@@ -3,6 +3,7 @@ package com.actme.app.ui.chat
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.OpenableColumns
@@ -21,6 +22,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -36,6 +38,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -89,6 +92,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.LocalUriHandler
@@ -184,12 +188,14 @@ fun ChatScreen(
     var selectedImageBytes by remember { mutableStateOf<ByteArray?>(null) }
     var selectedWorkbookPath by remember { mutableStateOf<String?>(null) }
     var selectedWorkbookName by remember { mutableStateOf<String?>(null) }
-    var showModelMenu by remember { mutableStateOf(false) }
     var importBusy by remember { mutableStateOf(false) }
     var scheduleCandidate by remember { mutableStateOf<List<ScheduleSubAgentPlan>>(emptyList()) }
     var scheduleOcrText by remember { mutableStateOf("") }
     var showScheduleOcrText by remember { mutableStateOf(false) }
     var todoCandidate by remember { mutableStateOf<TodoImportPlan?>(null) }
+
+    val configuration = LocalConfiguration.current
+    val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
 
     LaunchedEffect(lifecycleOwner) {
         lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
@@ -620,480 +626,177 @@ fun ChatScreen(
         )
     }
 
+    // ---- Callback definitions for input area ----
+    val onPickImage: () -> Unit = {
+        photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+    }
+    val onPickWorkbook: () -> Unit = {
+        workbookPicker.launch(
+            arrayOf(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "application/vnd.ms-excel.sheet.macroEnabled.12",
+                "application/vnd.ms-excel"
+            )
+        )
+    }
+    val onClearImage: () -> Unit = {
+        selectedImageBase64 = null
+        selectedImageMimeType = null
+        selectedImageBytes = null
+    }
+    val onClearWorkbook: () -> Unit = {
+        selectedWorkbookPath = null
+        selectedWorkbookName = null
+    }
+    val onImportScheduleCb: () -> Unit = { importScheduleFromImage() }
+    val onImportTodosCb: () -> Unit = { importTodosFromImage() }
+    val onVoiceRecordClick = lambda@ {
+        if (!isModelReady) {
+            Toast.makeText(context, "请先在设置中下载语音识别模型", Toast.LENGTH_SHORT).show()
+        } else {
+            val act = activity ?: return@lambda
+            if (ContextCompat.checkSelfPermission(act, Manifest.permission.RECORD_AUDIO)
+                == PackageManager.PERMISSION_GRANTED
+            ) {
+                audioRecorder?.startRecording(context.cacheDir)
+                isVoiceRecording = true
+                onStartRecording?.invoke()
+                startPreloadingModel()
+            } else {
+                audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            }
+        }
+    }
+    val onStopRecordingClick: () -> Unit = {
+        audioRecorder?.stopRecording()
+        isVoiceRecording = false
+        onStopRecording?.invoke()
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         MarqueeBorder(
             isActive = sending,
             modifier = Modifier.fillMaxSize(),
             cornerRadius = 36.dp
         ) {
-            Column(
-                modifier = Modifier.fillMaxSize()
-            ) {
-                // ---- Top bar ----
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(start = 12.dp, end = 12.dp, top = 12.dp)
-                ) {
-                IconButton(
-                    onClick = {
-                        focusManager.clearFocus()
-                        onNavigateToMenu()
-                    },
-                    modifier = Modifier.align(Alignment.CenterStart)
-                ) {
-                    Icon(Icons.Filled.Menu, contentDescription = "菜单")
-                }
-                Text(
-                    "ActMe",
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.align(Alignment.Center)
-                )
-                IconButton(
-                    onClick = {
-                        focusManager.clearFocus()
-                        onCreateConversation()
-                    },
-                    modifier = Modifier.align(Alignment.CenterEnd)
-                ) {
-                    Icon(Icons.Filled.Add, contentDescription = "新建会话")
-                }
-            }
-
-            // ---- Content area (shifts with keyboard) ----
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(start = 12.dp, end = 12.dp, bottom = 12.dp)
-            ) {
-
-            // ---- Message list ----
-            val listState = rememberLazyListState()
-
-            val isAtBottom by remember {
-                derivedStateOf {
-                    val info = listState.layoutInfo
-                    if (info.totalItemsCount == 0) true
-                    else {
-                        val lastVisible = info.visibleItemsInfo.lastOrNull()?.index ?: -1
-                        lastVisible >= info.totalItemsCount - 1
-                    }
-                }
-            }
-
-            val activeConversationId = messages.firstOrNull()?.conversationId
-
-            // On session change: scroll to bottom
-            LaunchedEffect(activeConversationId) {
-                snapshotFlow { listState.layoutInfo.totalItemsCount }
-                    .first { it > 0 }
-                val targetIndex = listState.layoutInfo.totalItemsCount - 1
-                if (targetIndex >= 0) {
-                    listState.scrollToItem(targetIndex)
-                }
-            }
-
-            // Auto-scroll to bottom when sending or already at bottom
-            LaunchedEffect(messages.size, sending) {
-                if (sending || isAtBottom) {
-                    val targetIndex = listState.layoutInfo.totalItemsCount - 1
-                    if (targetIndex >= 0) {
-                        listState.animateScrollToItem(targetIndex)
-                    }
-                }
-            }
-
-            // Follow streaming content as last assistant message grows
-            val lastMsgContentLen = messages.lastOrNull { it.role == "assistant" || it.role == "tool_execution" }?.content?.length ?: 0
-            LaunchedEffect(lastMsgContentLen) {
-                if (sending && isAtBottom) {
-                    val targetIndex = listState.layoutInfo.totalItemsCount - 1
-                    if (targetIndex >= 0) listState.scrollToItem(targetIndex)
-                }
-            }
-
-            // Auto-scroll to bottom when keyboard appears
-            LaunchedEffect(isInputFocused) {
-                if (isInputFocused) {
-                    kotlinx.coroutines.delay(200)
-                    val targetIndex = listState.layoutInfo.totalItemsCount - 1
-                    if (targetIndex >= 0) listState.animateScrollToItem(targetIndex)
-                }
-            }
-
-            LazyColumn(
-                state = listState,
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(top = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                if (messages.isEmpty() && !sending) {
-                    item(key = "welcome") {
-                        WelcomeCard(
-                            presetQuestions = presetQuestions,
-                            onTagClick = { question -> onSend(question, null, null) }
-                        )
-                    }
-                }
-                items(messages, key = { it.id }) { msg ->
-                    when (msg.role) {
-                        "tool_execution" -> ToolExecutionBubble(msg)
-                        else -> MessageBubble(msg)
-                    }
-                }
-                val lastAssistantMsg = messages.lastOrNull { it.role == "assistant" }
-                val hasActiveToolFeedback = messages.any { it.role == "tool_execution" && it.content.isNotBlank() }
-                val showSkeleton = sending && !hasActiveToolFeedback &&
-                    (lastAssistantMsg == null || lastAssistantMsg.content.isBlank())
-                if (showSkeleton) {
-                    item(key = "skeleton") {
-                        SkeletonBubble()
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            // ---- Input area ----
-            Column(modifier = Modifier.fillMaxWidth()) {
-                // Selected image preview with X overlay
-                if (selectedImageBase64 != null && selectedImageBytes != null) {
-                    var showPreviewFull by remember { mutableStateOf(false) }
-                    Column(modifier = Modifier.padding(bottom = 6.dp)) {
-                        Box(
-                            modifier = Modifier
-                                .padding(bottom = 4.dp)
-                                .size(64.dp)
-                        ) {
-                            val bitmap = BitmapFactory.decodeByteArray(selectedImageBytes!!, 0, selectedImageBytes!!.size)
-                            Image(
-                                bitmap = bitmap.asImageBitmap(),
-                                contentDescription = "选中的图片",
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .clickable { showPreviewFull = true },
-                                contentScale = ContentScale.Crop
-                            )
-                            Box(
-                                modifier = Modifier
-                                    .align(Alignment.TopEnd)
-                                    .padding(2.dp)
-                                    .size(18.dp)
-                                    .background(Color.Black.copy(alpha = 0.5f), CircleShape)
-                                    .clickable {
-                                        selectedImageBase64 = null
-                                        selectedImageMimeType = null
-                                        selectedImageBytes = null
-                                    },
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    Icons.Filled.Close,
-                                    contentDescription = "移除图片",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(10.dp)
-                                )
-                            }
-
-                            if (showPreviewFull) {
-                                AlertDialog(onDismissRequest = { showPreviewFull = false }) {
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clickable { showPreviewFull = false }
-                                    ) {
-                                        Image(
-                                            bitmap = bitmap.asImageBitmap(),
-                                            contentDescription = "查看大图",
-                                            modifier = Modifier.fillMaxWidth(),
-                                            contentScale = ContentScale.FillWidth
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            TextButton(
-                                onClick = { importScheduleFromImage() },
-                                enabled = !importBusy
-                            ) {
-                                Text(if (importBusy) "处理中..." else "转日程")
-                            }
-                            TextButton(
-                                onClick = { importTodosFromImage() },
-                                enabled = !importBusy
-                            ) {
-                                Text(if (importBusy) "处理中..." else "转待办")
-                            }
-                        }
-                    }
-                }
-
-                if (selectedWorkbookPath != null) {
-                    val wbPath = selectedWorkbookPath!!
-                    val wbName = selectedWorkbookName ?: "workbook.xlsx"
-                    val wbFile = remember(wbPath) { File(wbPath) }
-                    val wbSize = remember(wbPath) { if (wbFile.exists()) wbFile.length() else 0L }
-                    val wbExt = remember(wbPath) { wbFile.extension.lowercase() }
-                    val wbStyle = remember(wbExt) { fileTypeStyle(wbExt) }
-
-                    Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+            if (isLandscape) {
+                Row(modifier = Modifier.fillMaxSize()) {
+                    // Left: message list
+                    ChatMessageListPanel(
+                        messages = messages,
+                        sending = sending,
+                        isInputFocused = isInputFocused,
+                        presetQuestions = presetQuestions,
+                        onSendPreset = { onSend(it, null, null) },
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(bottom = 4.dp)
+                            .weight(0.6f)
+                            .fillMaxHeight()
+                            .padding(start = 12.dp, end = 6.dp, top = 12.dp, bottom = 12.dp)
+                    )
+                    // Right (40%): title bar + composer
+                    Column(
+                        modifier = Modifier
+                            .weight(0.4f)
+                            .fillMaxHeight()
                     ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Icon(
-                                imageVector = wbStyle.icon,
-                                contentDescription = wbExt,
-                                tint = wbStyle.tint,
-                                modifier = Modifier.size(20.dp)
-                            )
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    wbName,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    fontWeight = FontWeight.Medium
-                                )
-                                if (wbSize > 0) {
-                                    Spacer(modifier = Modifier.height(1.dp))
-                                    Text(
-                                        formatFileSize(wbSize),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                                        maxLines = 1
-                                    )
-                                }
-                            }
-                            IconButton(
-                                onClick = {
-                                    selectedWorkbookPath = null
-                                    selectedWorkbookName = null
-                                },
-                                modifier = Modifier.size(28.dp)
-                            ) {
-                                Icon(
-                                    Icons.Filled.Close,
-                                    contentDescription = "移除文件",
-                                    modifier = Modifier.size(16.dp),
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-                    }
-                }
-
-                Surface(
-                    shape = RoundedCornerShape(24.dp),
-                    color = MaterialTheme.colorScheme.surface,
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column {
-                        OutlinedTextField(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 8.dp)
-                                .focusRequester(focusRequester)
-                                .onFocusChanged { isInputFocused = it.isFocused }
-                                .pointerInput(Unit) {
-                                    detectTapGestures(
-                                        onLongPress = { input += "\n" }
-                                    )
-                                }
-                                .onKeyEvent { event ->
-                                    if (event.type == KeyEventType.KeyDown && event.key == Key.Enter) {
-                                        val native = event.nativeKeyEvent
-                                        if (native != null && !native.isShiftPressed && native.metaState == 0) {
-                                            doSend()
-                                            return@onKeyEvent true
-                                        }
-                                    }
-                                    false
-                                },
-                            value = input,
-                            onValueChange = { input = it },
-                            placeholder = { Text("告诉 ActMe 你现在想做什么...") },
-                            minLines = 1,
-                            maxLines = 6,
-                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                            keyboardActions = KeyboardActions(onSend = { doSend() }),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = Color.Transparent,
-                                unfocusedBorderColor = Color.Transparent
-                            )
+                        ChatTitleBar(
+                            focusManager = focusManager,
+                            onNavigateToMenu = onNavigateToMenu,
+                            onCreateConversation = onCreateConversation
                         )
-                        Row(
+                        ChatInputArea(
                             modifier = Modifier
+                                .weight(1f)
                                 .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            IconButton(onClick = {
-                                photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                            }) {
-                                Icon(Icons.Filled.Image, contentDescription = "选择图片")
-                            }
-                            IconButton(onClick = {
-                                workbookPicker.launch(
-                                    arrayOf(
-                                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                        "application/vnd.ms-excel.sheet.macroEnabled.12",
-                                        "application/vnd.ms-excel"
-                                    )
-                                )
-                            }) {
-                                Icon(Icons.Filled.AttachFile, contentDescription = "选择 Excel")
-                            }
-                            when {
-                                isVoiceRecording -> {
-                                    Surface(
-                                        shape = RoundedCornerShape(24.dp),
-                                        color = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.clickable {
-                                            audioRecorder?.stopRecording()
-                                            isVoiceRecording = false
-                                            onStopRecording?.invoke()
-                                        }
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                        ) {
-                                            Icon(
-                                                Icons.Filled.Stop,
-                                                contentDescription = "停止录音",
-                                                tint = Color.White,
-                                                modifier = Modifier.size(16.dp)
-                                            )
-                                            Text(
-                                                "对话中",
-                                                style = MaterialTheme.typography.labelMedium,
-                                                color = Color.White
-                                            )
-                                        }
-                                    }
-                                }
-                                isTranscribing -> {
-                                    Surface(
-                                        shape = RoundedCornerShape(24.dp),
-                                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f)
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                        ) {
-                                            CircularProgressIndicator(
-                                                modifier = Modifier.size(16.dp),
-                                                strokeWidth = 2.dp,
-                                                color = Color.White
-                                            )
-                                            Text(
-                                                "识别中",
-                                                style = MaterialTheme.typography.labelMedium,
-                                                color = Color.White
-                                            )
-                                        }
-                                    }
-                                }
-                                else -> {
-                                    IconButton(onClick = {
-                                        if (!isModelReady) {
-                                            Toast.makeText(context, "请先在设置中下载语音识别模型", Toast.LENGTH_SHORT).show()
-                                        } else {
-                                            val act = activity ?: return@IconButton
-                                            if (ContextCompat.checkSelfPermission(act, Manifest.permission.RECORD_AUDIO)
-                                                == PackageManager.PERMISSION_GRANTED) {
-                                                audioRecorder?.startRecording(context.cacheDir)
-                                                isVoiceRecording = true
-                                                onStartRecording?.invoke()
-                                                startPreloadingModel()
-                                            } else {
-                                                audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                                            }
-                                        }
-                                    }) {
-                                        Icon(Icons.Filled.Mic, contentDescription = "语音输入")
-                                    }
-                                }
-                            }
-                            // Model selector
-                            Box(
-                                modifier = Modifier.weight(1f),
-                                contentAlignment = Alignment.CenterEnd
-                            ) {
-                                TextButton(
-                                    onClick = { showModelMenu = true }
-                                ) {
-                                    if (isRefreshingModels) {
-                                        CircularProgressIndicator(
-                                            modifier = Modifier.size(12.dp),
-                                            strokeWidth = 2.dp,
-                                            color = MaterialTheme.colorScheme.primary
-                                        )
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                    }
-                                    Text(
-                                        selectedModel.ifBlank { "模型" },
-                                        style = MaterialTheme.typography.labelSmall,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        color = MaterialTheme.colorScheme.primary
-                                    )
-                                }
-                                DropdownMenu(
-                                    expanded = showModelMenu,
-                                    onDismissRequest = { showModelMenu = false }
-                                ) {
-                                    if (availableModels.isEmpty()) {
-                                        DropdownMenuItem(
-                                            text = { Text("暂无可用模型") },
-                                            onClick = { showModelMenu = false }
-                                        )
-                                    } else {
-                                        for (model in availableModels) {
-                                            DropdownMenuItem(
-                                                text = {
-                                                    Text(
-                                                        model,
-                                                        fontWeight = if (model == selectedModel) FontWeight.Bold else FontWeight.Normal
-                                                    )
-                                                },
-                                                onClick = {
-                                                    onSelectModel(model)
-                                                    showModelMenu = false
-                                                }
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-
-                            if (sending) {
-                                IconButton(onClick = onStopSending) {
-                                    Icon(Icons.Filled.Stop, contentDescription = "停止")
-                                }
-                            } else {
-                                IconButton(onClick = { doSend() }) {
-                                    Icon(Icons.Filled.ArrowUpward, contentDescription = "发送")
-                                }
-                            }
-                        }
+                                .padding(start = 6.dp, end = 12.dp, bottom = 12.dp),
+                            isLandscape = true,
+                            input = input,
+                            onInputChange = { input = it },
+                            focusRequester = focusRequester,
+                            onFocusChanged = { isInputFocused = it },
+                            doSend = { doSend() },
+                            selectedImageBase64 = selectedImageBase64,
+                            selectedImageMimeType = selectedImageMimeType,
+                            selectedImageBytes = selectedImageBytes,
+                            onClearImage = onClearImage,
+                            onImportSchedule = onImportScheduleCb,
+                            onImportTodos = onImportTodosCb,
+                            importBusy = importBusy,
+                            selectedWorkbookPath = selectedWorkbookPath,
+                            selectedWorkbookName = selectedWorkbookName,
+                            onClearWorkbook = onClearWorkbook,
+                            isVoiceRecording = isVoiceRecording,
+                            isTranscribing = isTranscribing,
+                            onVoiceRecordClick = onVoiceRecordClick,
+                            onStopRecordingClick = onStopRecordingClick,
+                            onPickImage = onPickImage,
+                            onPickWorkbook = onPickWorkbook,
+                            availableModels = availableModels,
+                            selectedModel = selectedModel,
+                            isRefreshingModels = isRefreshingModels,
+                            onSelectModel = onSelectModel,
+                            sending = sending,
+                            onStopSending = onStopSending
+                        )
                     }
                 }
+            } else {
+                Column(
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    ChatTitleBar(
+                        focusManager = focusManager,
+                        onNavigateToMenu = onNavigateToMenu,
+                        onCreateConversation = onCreateConversation
+                    )
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(start = 12.dp, end = 12.dp, bottom = 12.dp)
+                    ) {
+                        ChatMessageListPanel(
+                            messages = messages,
+                            sending = sending,
+                            isInputFocused = isInputFocused,
+                            presetQuestions = presetQuestions,
+                            onSendPreset = { onSend(it, null, null) },
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(top = 8.dp)
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        ChatInputArea(
+                            modifier = Modifier.fillMaxWidth(),
+                            isLandscape = false,
+                            input = input,
+                            onInputChange = { input = it },
+                            focusRequester = focusRequester,
+                            onFocusChanged = { isInputFocused = it },
+                            doSend = { doSend() },
+                            selectedImageBase64 = selectedImageBase64,
+                            selectedImageMimeType = selectedImageMimeType,
+                            selectedImageBytes = selectedImageBytes,
+                            onClearImage = onClearImage,
+                            onImportSchedule = onImportScheduleCb,
+                            onImportTodos = onImportTodosCb,
+                            importBusy = importBusy,
+                            selectedWorkbookPath = selectedWorkbookPath,
+                            selectedWorkbookName = selectedWorkbookName,
+                            onClearWorkbook = onClearWorkbook,
+                            isVoiceRecording = isVoiceRecording,
+                            isTranscribing = isTranscribing,
+                            onVoiceRecordClick = onVoiceRecordClick,
+                            onStopRecordingClick = onStopRecordingClick,
+                            onPickImage = onPickImage,
+                            onPickWorkbook = onPickWorkbook,
+                            availableModels = availableModels,
+                            selectedModel = selectedModel,
+                            isRefreshingModels = isRefreshingModels,
+                            onSelectModel = onSelectModel,
+                            sending = sending,
+                            onStopSending = onStopSending
+                        )
+                    }
                 }
             }
         }
@@ -1127,7 +830,6 @@ fun ChatScreen(
             }
         }
     }
-}
 }
 
 // ---- Tool execution bubble ----
@@ -1771,6 +1473,498 @@ private fun SkeletonBubble() {
         ) {
             Box(modifier = Modifier.fillMaxWidth(0.8f).height(12.dp).background(Color.Gray.copy(alpha = 0.15f), RoundedCornerShape(4.dp)))
             Box(modifier = Modifier.fillMaxWidth(0.6f).height(12.dp).background(Color.Gray.copy(alpha = 0.15f), RoundedCornerShape(4.dp)))
+        }
+    }
+}
+
+// ---- Shared message list items (used by both portrait and landscape) ----
+
+private fun LazyListScope.ChatMessageItems(
+    messages: List<ChatMessageEntity>,
+    sending: Boolean,
+    presetQuestions: List<String>,
+    onSendPreset: (String) -> Unit
+) {
+    if (messages.isEmpty() && !sending) {
+        item(key = "welcome") {
+            WelcomeCard(
+                presetQuestions = presetQuestions,
+                onTagClick = onSendPreset
+            )
+        }
+    }
+    items(messages, key = { it.id }) { msg ->
+        when (msg.role) {
+            "tool_execution" -> ToolExecutionBubble(msg)
+            else -> MessageBubble(msg)
+        }
+    }
+    val lastAssistantMsg = messages.lastOrNull { it.role == "assistant" }
+    val hasActiveToolFeedback = messages.any { it.role == "tool_execution" && it.content.isNotBlank() }
+    val showSkeleton = sending && !hasActiveToolFeedback &&
+        (lastAssistantMsg == null || lastAssistantMsg.content.isBlank())
+    if (showSkeleton) {
+        item(key = "skeleton") {
+            SkeletonBubble()
+        }
+    }
+}
+
+// ---- Message list panel ----
+
+@Composable
+private fun ChatMessageListPanel(
+    messages: List<ChatMessageEntity>,
+    sending: Boolean,
+    isInputFocused: Boolean,
+    presetQuestions: List<String>,
+    onSendPreset: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val listState = rememberLazyListState()
+
+    val isAtBottom by remember {
+        derivedStateOf {
+            val info = listState.layoutInfo
+            if (info.totalItemsCount == 0) true
+            else {
+                val lastVisible = info.visibleItemsInfo.lastOrNull()?.index ?: -1
+                lastVisible >= info.totalItemsCount - 1
+            }
+        }
+    }
+
+    val activeConversationId = messages.firstOrNull()?.conversationId
+
+    LaunchedEffect(activeConversationId) {
+        snapshotFlow { listState.layoutInfo.totalItemsCount }
+            .first { it > 0 }
+        val targetIndex = listState.layoutInfo.totalItemsCount - 1
+        if (targetIndex >= 0) {
+            listState.scrollToItem(targetIndex)
+        }
+    }
+
+    LaunchedEffect(messages.size, sending) {
+        if (sending || isAtBottom) {
+            val targetIndex = listState.layoutInfo.totalItemsCount - 1
+            if (targetIndex >= 0) {
+                listState.animateScrollToItem(targetIndex)
+            }
+        }
+    }
+
+    val lastMsgContentLen = messages.lastOrNull { it.role == "assistant" || it.role == "tool_execution" }?.content?.length ?: 0
+    LaunchedEffect(lastMsgContentLen) {
+        if (sending && isAtBottom) {
+            val targetIndex = listState.layoutInfo.totalItemsCount - 1
+            if (targetIndex >= 0) listState.scrollToItem(targetIndex)
+        }
+    }
+
+    LaunchedEffect(isInputFocused) {
+        if (isInputFocused) {
+            kotlinx.coroutines.delay(200)
+            val targetIndex = listState.layoutInfo.totalItemsCount - 1
+            if (targetIndex >= 0) listState.animateScrollToItem(targetIndex)
+        }
+    }
+
+    LazyColumn(
+        state = listState,
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        ChatMessageItems(
+            messages = messages,
+            sending = sending,
+            presetQuestions = presetQuestions,
+            onSendPreset = onSendPreset
+        )
+    }
+}
+
+// ---- Title bar ----
+
+@Composable
+private fun ChatTitleBar(
+    focusManager: androidx.compose.ui.focus.FocusManager,
+    onNavigateToMenu: () -> Unit,
+    onCreateConversation: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(start = 12.dp, end = 12.dp, top = 12.dp)
+    ) {
+        IconButton(
+            onClick = {
+                focusManager.clearFocus()
+                onNavigateToMenu()
+            },
+            modifier = Modifier.align(Alignment.CenterStart)
+        ) {
+            Icon(Icons.Filled.Menu, contentDescription = "菜单")
+        }
+        Text(
+            "ActMe",
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.align(Alignment.Center)
+        )
+        IconButton(
+            onClick = {
+                focusManager.clearFocus()
+                onCreateConversation()
+            },
+            modifier = Modifier.align(Alignment.CenterEnd)
+        ) {
+            Icon(Icons.Filled.Add, contentDescription = "新建会话")
+        }
+    }
+}
+
+// ---- Input area panel ----
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ChatInputArea(
+    modifier: Modifier = Modifier,
+    isLandscape: Boolean = false,
+    input: String,
+    onInputChange: (String) -> Unit,
+    focusRequester: FocusRequester,
+    onFocusChanged: (Boolean) -> Unit,
+    doSend: () -> Unit,
+    selectedImageBase64: String?,
+    selectedImageMimeType: String?,
+    selectedImageBytes: ByteArray?,
+    onClearImage: () -> Unit,
+    onImportSchedule: () -> Unit,
+    onImportTodos: () -> Unit,
+    importBusy: Boolean,
+    selectedWorkbookPath: String?,
+    selectedWorkbookName: String?,
+    onClearWorkbook: () -> Unit,
+    isVoiceRecording: Boolean,
+    isTranscribing: Boolean,
+    onVoiceRecordClick: () -> Unit,
+    onStopRecordingClick: () -> Unit,
+    onPickImage: () -> Unit,
+    onPickWorkbook: () -> Unit,
+    availableModels: List<String>,
+    selectedModel: String,
+    isRefreshingModels: Boolean,
+    onSelectModel: (String) -> Unit,
+    sending: Boolean,
+    onStopSending: () -> Unit
+) {
+    var showModelMenu by remember { mutableStateOf(false) }
+
+    Column(modifier = modifier) {
+        // Selected image preview
+        if (selectedImageBase64 != null && selectedImageBytes != null) {
+            var showPreviewFull by remember { mutableStateOf(false) }
+            Column(modifier = Modifier.padding(bottom = 6.dp)) {
+                Box(
+                    modifier = Modifier
+                        .padding(bottom = 4.dp)
+                        .size(64.dp)
+                ) {
+                    val bitmap = BitmapFactory.decodeByteArray(selectedImageBytes!!, 0, selectedImageBytes!!.size)
+                    Image(
+                        bitmap = bitmap.asImageBitmap(),
+                        contentDescription = "选中的图片",
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { showPreviewFull = true },
+                        contentScale = ContentScale.Crop
+                    )
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(2.dp)
+                            .size(18.dp)
+                            .background(Color.Black.copy(alpha = 0.5f), CircleShape)
+                            .clickable { onClearImage() },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            Icons.Filled.Close,
+                            contentDescription = "移除图片",
+                            tint = Color.White,
+                            modifier = Modifier.size(10.dp)
+                        )
+                    }
+
+                    if (showPreviewFull) {
+                        AlertDialog(onDismissRequest = { showPreviewFull = false }) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { showPreviewFull = false }
+                            ) {
+                                Image(
+                                    bitmap = bitmap.asImageBitmap(),
+                                    contentDescription = "查看大图",
+                                    modifier = Modifier.fillMaxWidth(),
+                                    contentScale = ContentScale.FillWidth
+                                )
+                            }
+                        }
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(
+                        onClick = onImportSchedule,
+                        enabled = !importBusy
+                    ) {
+                        Text(if (importBusy) "处理中..." else "转日程")
+                    }
+                    TextButton(
+                        onClick = onImportTodos,
+                        enabled = !importBusy
+                    ) {
+                        Text(if (importBusy) "处理中..." else "转待办")
+                    }
+                }
+            }
+        }
+
+        // Workbook attachment
+        if (selectedWorkbookPath != null) {
+            val wbPath = selectedWorkbookPath!!
+            val wbName = selectedWorkbookName ?: "workbook.xlsx"
+            val wbFile = remember(wbPath) { File(wbPath) }
+            val wbSize = remember(wbPath) { if (wbFile.exists()) wbFile.length() else 0L }
+            val wbExt = remember(wbPath) { wbFile.extension.lowercase() }
+            val wbStyle = remember(wbExt) { fileTypeStyle(wbExt) }
+
+            Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 4.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Icon(
+                        imageVector = wbStyle.icon,
+                        contentDescription = wbExt,
+                        tint = wbStyle.tint,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            wbName,
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            fontWeight = FontWeight.Medium
+                        )
+                        if (wbSize > 0) {
+                            Spacer(modifier = Modifier.height(1.dp))
+                            Text(
+                                formatFileSize(wbSize),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                                maxLines = 1
+                            )
+                        }
+                    }
+                    IconButton(
+                        onClick = onClearWorkbook,
+                        modifier = Modifier.size(28.dp)
+                    ) {
+                        Icon(
+                            Icons.Filled.Close,
+                            contentDescription = "移除文件",
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+        }
+
+        // Composer surface
+        Surface(
+            shape = RoundedCornerShape(24.dp),
+            color = MaterialTheme.colorScheme.surface,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)),
+            modifier = Modifier.fillMaxWidth().then(if (isLandscape) Modifier.fillMaxHeight() else Modifier)
+        ) {
+            Column(modifier = if (isLandscape) Modifier.fillMaxHeight() else Modifier) {
+                OutlinedTextField(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .then(if (isLandscape) Modifier.weight(1f) else Modifier)
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                        .focusRequester(focusRequester)
+                        .onFocusChanged { onFocusChanged(it.isFocused) }
+                        .pointerInput(Unit) {
+                            detectTapGestures(
+                                onLongPress = { onInputChange(input + "\n") }
+                            )
+                        }
+                        .onKeyEvent { event ->
+                            if (event.type == KeyEventType.KeyDown && event.key == Key.Enter) {
+                                val native = event.nativeKeyEvent
+                                if (native != null && !native.isShiftPressed && native.metaState == 0) {
+                                    doSend()
+                                    return@onKeyEvent true
+                                }
+                            }
+                            false
+                        },
+                    value = input,
+                    onValueChange = onInputChange,
+                    placeholder = { Text("告诉 ActMe 你现在想做什么...") },
+                    minLines = if (isLandscape) 3 else 1,
+                    maxLines = if (isLandscape) 20 else 6,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                    keyboardActions = KeyboardActions(onSend = { doSend() }),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = Color.Transparent,
+                        unfocusedBorderColor = Color.Transparent
+                    )
+                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(onClick = onPickImage) {
+                        Icon(Icons.Filled.Image, contentDescription = "选择图片")
+                    }
+                    IconButton(onClick = onPickWorkbook) {
+                        Icon(Icons.Filled.AttachFile, contentDescription = "选择 Excel")
+                    }
+                    when {
+                        isVoiceRecording -> {
+                            Surface(
+                                shape = RoundedCornerShape(24.dp),
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.clickable { onStopRecordingClick() }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Filled.Stop,
+                                        contentDescription = "停止录音",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Text(
+                                        "对话中",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = Color.White
+                                    )
+                                }
+                            }
+                        }
+                        isTranscribing -> {
+                            Surface(
+                                shape = RoundedCornerShape(24.dp),
+                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        strokeWidth = 2.dp,
+                                        color = Color.White
+                                    )
+                                    Text(
+                                        "识别中",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = Color.White
+                                    )
+                                }
+                            }
+                        }
+                        else -> {
+                            IconButton(onClick = onVoiceRecordClick) {
+                                Icon(Icons.Filled.Mic, contentDescription = "语音输入")
+                            }
+                        }
+                    }
+                    // Model selector
+                    Box(
+                        modifier = Modifier.weight(1f),
+                        contentAlignment = Alignment.CenterEnd
+                    ) {
+                        TextButton(
+                            onClick = { showModelMenu = true }
+                        ) {
+                            if (isRefreshingModels) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(12.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                            }
+                            Text(
+                                selectedModel.ifBlank { "模型" },
+                                style = MaterialTheme.typography.labelSmall,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = showModelMenu,
+                            onDismissRequest = { showModelMenu = false }
+                        ) {
+                            if (availableModels.isEmpty()) {
+                                DropdownMenuItem(
+                                    text = { Text("暂无可用模型") },
+                                    onClick = { showModelMenu = false }
+                                )
+                            } else {
+                                for (model in availableModels) {
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                model,
+                                                fontWeight = if (model == selectedModel) FontWeight.Bold else FontWeight.Normal
+                                            )
+                                        },
+                                        onClick = {
+                                            onSelectModel(model)
+                                            showModelMenu = false
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    if (sending) {
+                        IconButton(onClick = onStopSending) {
+                            Icon(Icons.Filled.Stop, contentDescription = "停止")
+                        }
+                    } else {
+                        IconButton(onClick = { doSend() }) {
+                            Icon(Icons.Filled.ArrowUpward, contentDescription = "发送")
+                        }
+                    }
+                }
+            }
         }
     }
 }
