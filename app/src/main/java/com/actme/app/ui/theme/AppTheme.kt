@@ -1,11 +1,18 @@
 package com.actme.app.ui.theme
 
+import android.app.Activity
+import android.content.res.Configuration
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalView
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 
 // ── Logo color scale (preserved for branding / accent use) ──
 // Based on logo primary #2178E6 (H=214, S=80%, L=52%)
@@ -105,8 +112,25 @@ private val AppDarkColorScheme = darkColorScheme(
 
 @Composable
 fun AppTheme(content: @Composable () -> Unit) {
+    val isDark = isSystemInDarkTheme()
+    val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val view = LocalView.current
+
+    if (!view.isInEditMode) {
+        SideEffect {
+            val window = (view.context as Activity).window
+            val controller = WindowCompat.getInsetsController(window, view)
+            controller.isAppearanceLightStatusBars = !isDark
+            if (isLandscape) {
+                controller.hide(WindowInsetsCompat.Type.statusBars())
+            } else {
+                controller.show(WindowInsetsCompat.Type.statusBars())
+            }
+        }
+    }
+
     MaterialTheme(
-        colorScheme = if (isSystemInDarkTheme()) AppDarkColorScheme else AppLightColorScheme,
+        colorScheme = if (isDark) AppDarkColorScheme else AppLightColorScheme,
         content = content
     )
 }
