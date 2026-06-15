@@ -20,6 +20,7 @@ class AsrManager(
     }
 
     private var session: MnnLlmSession? = null
+    private var currentLanguage: String = "Chinese"
 
     val isLoaded: Boolean get() = session?.isLoaded == true
 
@@ -38,9 +39,7 @@ class AsrManager(
                         json.put(key, llmConfig.get(key))
                     }
                 }
-                // ASR uses a fully-formed prompt template and must not be wrapped again
-                // by the generic chat template/history path.
-                json.put("use_template", false)
+                applyAsrRuntimeConfig(json, currentLanguage)
                 json.put("prompt_cache", false)
                 json.put("system_prompt", "")
                 json.toString()
@@ -64,14 +63,22 @@ class AsrManager(
     }
 
     suspend fun transcribe(audioFile: File, language: String = "Chinese"): String = withContext(Dispatchers.IO) {
-        val s = session ?: throw IllegalStateException("ASR not initialized")
+        session ?: throw IllegalStateException("ASR not initialized")
+        if (language != currentLanguage) {
+            currentLanguage = language
+            release()
+            if (!init()) {
+                throw IllegalStateException("ASR reinit failed")
+            }
+        }
+        val activeSession = session ?: throw IllegalStateException("ASR not initialized")
 
-        val prompt = buildAsrPrompt(audioFile, language)
+        val prompt = buildAsrPrompt(audioFile)
         AppLogger.i(TAG, "Transcribing: ${audioFile.absolutePath} (${audioFile.length()} bytes)")
         AppLogger.i(TAG, "Prompt: $prompt")
 
         try {
-            val result = s.submitRaw(prompt)
+            val result = activeSession.submitRaw(prompt)
             AppLogger.i(TAG, "ASR result: $result")
             result.trim()
         } finally {
@@ -110,7 +117,7 @@ class AsrManager(
             put("audio_start", 151669)
             put("audio_end", 151670)
             put("audio_pad", 151676)
-            put("use_template", false)
+            applyAsrRuntimeConfig(this, currentLanguage)
             put("prompt_cache", false)
             put("system_prompt", "")
             put("mllm", JSONObject().apply {
@@ -122,9 +129,23 @@ class AsrManager(
         }.toString()
     }
 
-    private fun buildAsrPrompt(audioFile: File, language: String): String {
-        return "<|im_start|>system<|im_end|>" +
-            "<|im_start|>user<audio>${audioFile.absolutePath}</audio><|im_end|>" +
-            "<|im_start|>assistantlanguage $language<asr_text>"
+    private fun applyAsrRuntimeConfig(json: JSONObject, language: String) {
+        json.put("asr_language", language)
+        if (!json.has("jinja")) {
+            json.put("jinja", JSONObject().apply {
+                put(
+                    "chat_template",
+                    "{%- set content = messages[-1].content -%}<|im_start|>system<|im_end|><|im_start|>user{{ content }}<|im_end|>{%- if add_generation_prompt and content is string and '<audio>' in content and '</audio>' in content -%}<|im_start|>assistantlanguage {{ asr_language }}<asr_text>{%- endif -%}"
+                )
+                put("context", JSONObject().apply {
+                    put("asr_language", language)
+                })
+                put("eos", "<|im_end|>")
+            })
+        }
+    }
+
+    private fun buildAsrPrompt(audioFile: File): String {
+        return "<audio>${audioFile.absolutePath}</audio>"
     }
 }
