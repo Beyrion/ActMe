@@ -1,5 +1,13 @@
 # Release Notes
 
+## 1.3.1 - 2026-06-22
+
+### Build And MNN Compatibility
+
+- Updated the Android app version to `1.3.1`.
+- Synchronized the documented MNN version/build requirements with the current native runtime integration.
+- Clarified that release builds should use the matching MNN prebuilt/runtime output for the current app branch to avoid ABI, packaging, or chat-template mismatches.
+
 ## 1.3.0 - 2026-06-07
 
 ### Report And File Generation
