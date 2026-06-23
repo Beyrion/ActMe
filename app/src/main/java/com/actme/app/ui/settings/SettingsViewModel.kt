@@ -27,6 +27,7 @@ class SettingsViewModel(
     private val prefs = application.getSharedPreferences("actme_voice_settings", Context.MODE_PRIVATE)
     private val modelManager = ModelManager(application)
     private val visionModelManager = VisionModelManager(application)
+    private val ocrModelManager = VisionModelManager(application, VisionModelManager.OCR_MODEL_NAME)
 
     val providers: StateFlow<List<ProviderEntity>> = repository.providers
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
@@ -39,16 +40,24 @@ class SettingsViewModel(
 
     private val _isModelReady = MutableStateFlow(modelManager.isModelReady)
     val isModelReady: StateFlow<Boolean> = _isModelReady
+    private val _localAsrModelDir = MutableStateFlow(modelManager.modelDir)
+    val localAsrModelDir: StateFlow<String> = _localAsrModelDir
 
     private val _isVisionModelReady = MutableStateFlow(visionModelManager.isModelReady)
     val isVisionModelReady: StateFlow<Boolean> = _isVisionModelReady
     private val _localVisionModelDir = MutableStateFlow(visionModelManager.modelDir)
     val localVisionModelDir: StateFlow<String> = _localVisionModelDir
+    private val _isOcrModelReady = MutableStateFlow(ocrModelManager.isModelReady)
+    val isOcrModelReady: StateFlow<Boolean> = _isOcrModelReady
+    private val _localOcrModelDir = MutableStateFlow(ocrModelManager.modelDir)
+    val localOcrModelDir: StateFlow<String> = _localOcrModelDir
 
     val downloadState: StateFlow<DownloadState> = modelManager.downloadState
     val modelInfo: StateFlow<ModelInfo?> = modelManager.modelInfo
     val visionDownloadState: StateFlow<DownloadState> = visionModelManager.downloadState
     val visionModelInfo: StateFlow<ModelInfo?> = visionModelManager.modelInfo
+    val ocrDownloadState: StateFlow<DownloadState> = ocrModelManager.downloadState
+    val ocrModelInfo: StateFlow<ModelInfo?> = ocrModelManager.modelInfo
 
     fun setAsrLanguage(lang: String) {
         _asrLanguage.value = lang
@@ -73,6 +82,15 @@ class SettingsViewModel(
         }
     }
 
+    fun downloadOcrModel() {
+        viewModelScope.launch {
+            try {
+                ocrModelManager.downloadModel()
+                _isOcrModelReady.value = ocrModelManager.isModelReady
+            } catch (_: Exception) {}
+        }
+    }
+
     fun deleteModel() {
         File(modelManager.modelDir).deleteRecursively()
         _isModelReady.value = false
@@ -81,6 +99,11 @@ class SettingsViewModel(
     fun deleteVisionModel() {
         File(visionModelManager.modelDir).deleteRecursively()
         _isVisionModelReady.value = false
+    }
+
+    fun deleteOcrModel() {
+        File(ocrModelManager.modelDir).deleteRecursively()
+        _isOcrModelReady.value = false
     }
 
     fun clearAllChatHistory() {

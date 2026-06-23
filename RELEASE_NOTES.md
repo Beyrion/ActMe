@@ -1,5 +1,45 @@
 # Release Notes
 
+## 1.4.0 - 2026-06-23
+
+### GUI Agent
+
+- Added a minimal mobile GUI sub-agent for operating other Android apps through ActMe's normal main-agent planning workflow.
+- Added planner/executor separation: the cloud/main agent writes the GUI plan and guidance, while the local visual executor reads screenshots and performs one GUI action per step.
+- Added full `[ActMe]` logcat diagnostics for GUI model prompts, model outputs, parsed actions, coordinates, ADB commands, execution results, and terminal states.
+- Added a persistent top-right overlay while GUI execution is running to reduce background-kill risk and make the active GUI task visible over other apps.
+- Added a GUI completion overlay with a dedicated model-result bubble, close button, return-to-ActMe button, text input, and local voice input.
+- Follow-up text from the GUI result overlay now returns through the normal ActMe conversation path, preserving the full main-agent planning workflow before any further GUI operation.
+
+### Wireless ADB Pairing And Input
+
+- Added screenshot-based wireless debugging pairing: ActMe watches for a new Android Settings screenshot, copies it into app storage, OCRs the pairing information, and attempts pair/connect automatically.
+- Added automatic cleanup of the captured wireless-debugging screenshot after ADB is connected.
+- Added connection reuse for saved wireless ADB sessions to avoid repeatedly showing the wireless-debugging connection prompt when an existing connection is still valid.
+- Added ADB Keyboard integration for robust non-English text entry during GUI automation.
+- Improved ADB command/process logging so expanded GUI execution steps show the full command and output path.
+
+### Local OCR And Vision Models
+
+- Switched the default local visual model reference to `MNN/GUI-Owl-1.5-2B-Instruct-MNN` for GUI screenshots.
+- Added `MNN/GLM-OCR-MNN` as a dedicated local OCR model for wireless-debugging screenshot parsing and OCR-heavy image tasks.
+- Improved OCR screenshot preprocessing limits for pairing screenshots, preserving higher resolution while bounding image size for mobile inference.
+- Added rule-based ADB pairing information extraction on top of OCR output, so the local model only needs to recognize text and the app extracts host, ports, and pairing code deterministically.
+
+### Local ASR And Overlay UX
+
+- Reused ActMe's local `Qwen3-ASR-0.6B-INT8-MNN` ASR path in the GUI result overlay instead of Android system speech recognition.
+- Updated the overlay voice button to record with ActMe's recorder, stop on the second tap, run local ASR, and insert the transcription into the overlay input box.
+- Fixed result-overlay input focus so tapping the input box no longer submits or restarts a GUI task.
+- Localized the overlay action buttons to `关闭`, `返回ActMe`, and `输入`, with a microphone button above the input box.
+
+### Build And Runtime Fixes
+
+- Updated the Android app version to `1.4.0`.
+- Fixed OpenAI-compatible chat completion URL construction and Anthropic request defaults after provider retry-path cleanup.
+- Fixed model-list fetching to use the intended provider endpoint instead of a stale config reference.
+- Fixed overlay EditText single-line configuration for release Kotlin compilation.
+
 ## 1.3.1 - 2026-06-22
 
 ### Build And MNN Compatibility

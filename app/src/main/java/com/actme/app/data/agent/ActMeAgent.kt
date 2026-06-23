@@ -50,6 +50,9 @@ data class SystemCall(
     val code: String = "",
     val command: String = "",
     val input: String = "",
+    val plan: String = "",
+    @SerialName("target_text") val targetText: String = "",
+    val guidance: String = "",
     @SerialName("timeout_ms") val timeoutMs: Long = 3_000L,
     @SerialName("output_files") val outputFiles: List<String> = emptyList(),
     @SerialName("generated_files") val generatedFiles: List<String> = emptyList(),
@@ -98,6 +101,9 @@ data class ScheduleSubAgentPlan(
 data class ScheduleBatchPlan(
     val schedules: List<ScheduleSubAgentPlan> = emptyList()
 )
+
+private const val HISTORY_TOOL_CONTEXT_MAX_CHARS = 12_000
+private const val HISTORY_TOOL_LINE_MAX_CHARS = 1_200
 
 class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
     private val json = Json {
@@ -318,6 +324,23 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
         val input = callObj.stringValue("input")
             ?: argumentsObj?.stringValue("input")
             ?: ""
+        val plan = callObj.stringValue("plan")
+            ?: argumentsObj?.stringValue("plan")
+            ?: callObj.stringValue("steps")
+            ?: argumentsObj?.stringValue("steps")
+            ?: ""
+        val targetText = callObj.stringValue("target_text")
+            ?: argumentsObj?.stringValue("target_text")
+            ?: callObj.stringValue("targetText")
+            ?: argumentsObj?.stringValue("targetText")
+            ?: callObj.stringValue("text_to_type")
+            ?: argumentsObj?.stringValue("text_to_type")
+            ?: ""
+        val guidance = callObj.stringValue("guidance")
+            ?: argumentsObj?.stringValue("guidance")
+            ?: callObj.stringValue("hint")
+            ?: argumentsObj?.stringValue("hint")
+            ?: ""
         val timeoutMs = callObj.longValue("timeout_ms")
             ?: argumentsObj?.longValue("timeout_ms")
             ?: callObj.longValue("timeoutMs")
@@ -342,6 +365,9 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
             code = code,
             command = command,
             input = input,
+            plan = plan,
+            targetText = targetText,
+            guidance = guidance,
             timeoutMs = timeoutMs,
             outputFiles = outputFiles,
             generatedFiles = generatedFiles,
@@ -430,6 +456,16 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
                     ?: extractLooseStringField(block, "cmd")
                     ?: ""
                 val input = extractLooseStringField(block, "input").orEmpty()
+                val plan = extractLooseStringField(block, "plan")
+                    ?: extractLooseStringField(block, "steps")
+                    ?: ""
+                val targetText = extractLooseStringField(block, "target_text")
+                    ?: extractLooseStringField(block, "targetText")
+                    ?: extractLooseStringField(block, "text_to_type")
+                    ?: ""
+                val guidance = extractLooseStringField(block, "guidance")
+                    ?: extractLooseStringField(block, "hint")
+                    ?: ""
                 val outputFiles = extractLooseStringArray(block, "output_files")
                 val generatedFiles = extractLooseStringArray(block, "generated_files")
                 val expectedOutputs = extractLooseStringArray(block, "expected_outputs")
@@ -441,6 +477,9 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
                     code = code,
                     command = command,
                     input = input,
+                    plan = plan,
+                    targetText = targetText,
+                    guidance = guidance,
                     outputFiles = outputFiles,
                     generatedFiles = generatedFiles,
                     expectedOutputs = expectedOutputs,
@@ -499,6 +538,7 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
             "browse_url" to listOf("browse_url", "browser_url", "web_browse", "open_url"),
             "html_to_pdf" to listOf("html_to_pdf", "render_html_pdf", "webview_pdf"),
             "adb_shell" to listOf("adb_shell", "run_adb", "adb"),
+            "gui_agent" to listOf("gui_agent", "mobile_gui_agent", "mobile_use"),
             "get_current_time" to listOf("get_current_time", "current_time")
         )
         aliases.forEach { (canonical, names) ->
@@ -600,9 +640,93 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
                 imageMimeType = entity.imageMimeType
             )
         }
-        messages += MessagePayload("user", userInput, imageBase64 = imageBase64, imageMimeType = imageMimeType)
+        val injectGuiReference = shouldInjectGuiAppLaunchReference(userInput, historyMessages)
+        AppLogger.i(TAG, "buildMessages guiLaunchReferenceInjected=$injectGuiReference")
+        val augmentedUserInput = if (injectGuiReference) {
+            userInput + "\n\n" + guiAppLaunchReference()
+        } else {
+            userInput
+        }
+        messages += MessagePayload("user", augmentedUserInput, imageBase64 = imageBase64, imageMimeType = imageMimeType)
         return messages
     }
+
+    private fun shouldInjectGuiAppLaunchReference(
+        userInput: String,
+        historyMessages: List<ChatMessageEntity>
+    ): Boolean {
+        val current = userInput.lowercase()
+        if (current.contains("\"gui_agent\"") ||
+            current.contains("gui agent") ||
+            current.contains("gui_agent") ||
+            current.contains("打开") ||
+            current.contains("进入") ||
+            current.contains("操作") ||
+            current.contains("点击") ||
+            current.contains("导航") ||
+            current.contains("搜索") ||
+            current.contains("发消息") ||
+            current.contains("下单") ||
+            current.contains("设置") ||
+            current.contains("高德") ||
+            current.contains("地图") ||
+            current.contains("微信") ||
+            current.contains("支付宝") ||
+            current.contains("淘宝") ||
+            current.contains("京东")
+        ) {
+            return true
+        }
+        return historyMessages.takeLast(4).any { entity ->
+            val text = (entity.content + "\n" + entity.searchResult.orEmpty()).lowercase()
+            text.contains("[gui_agent") ||
+                text.contains("gui-agent") ||
+                text.contains("\"gui_agent\"") ||
+                text.contains("[gui_agent_action_error]") ||
+                text.contains("[gui_agent_error]")
+        }
+    }
+
+    private fun guiAppLaunchReference(): String = """
+        【本轮 GUI Agent 启动参考】
+        这段信息只用于本轮需要操作手机 GUI 的任务。若你决定调用 gui_agent，必须在 gui_agent.plan 的第 1 步写清楚目标 App 的包名，并要求本地 GUI executor 先打开该包名对应 App，再继续点控。不要把这段参考作为最终回复展示给用户。
+
+        常见国产 App 打开方式/包名参考：
+        - 高德地图 / Amap：com.autonavi.minimap
+        - 百度地图：com.baidu.BaiduMap
+        - 腾讯地图：com.tencent.map
+        - 微信：com.tencent.mm
+        - QQ：com.tencent.mobileqq
+        - 支付宝：com.eg.android.AlipayGphone
+        - 淘宝：com.taobao.taobao
+        - 天猫：com.tmall.wireless
+        - 京东：com.jingdong.app.mall
+        - 拼多多：com.xunmeng.pinduoduo
+        - 美团：com.sankuai.meituan
+        - 大众点评：com.dianping.v1
+        - 饿了么：me.ele
+        - 抖音：com.ss.android.ugc.aweme
+        - 快手：com.smile.gifmaker
+        - 小红书：com.xingin.xhs
+        - 哔哩哔哩：tv.danmaku.bili
+        - 微博：com.sina.weibo
+        - 百度：com.baidu.searchbox
+        - 夸克：com.quark.browser
+        - UC 浏览器：com.UCMobile
+        - WPS：cn.wps.moffice_eng
+        - 手机设置：com.android.settings
+        - 小米应用商店：com.xiaomi.market
+
+        gui_agent.plan 推荐格式：
+        1. Open package <packageName> from launcher.
+        2. Wait for the app home screen.
+        3. Tap the exact visible entry/search/input field.
+        4. Type target_text exactly if input is needed.
+        5. Continue one visible action at a time.
+
+        示例：
+        {"type":"gui_agent","command":"Open Amap and navigate to destination","plan":"1. Open package com.autonavi.minimap from launcher.\n2. Wait for Amap home screen.\n3. Tap the top search box.\n4. Type target_text exactly.\n5. Tap the matching destination result.\n6. Tap route/navigation.","target_text":"华东师范大学普陀校区","guidance":"","timeout_ms":120000}
+    """.trimIndent()
 
     private fun sanitizeHistoryContent(entity: ChatMessageEntity): String {
         if (entity.role == "tool_execution") {
@@ -613,7 +737,7 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
                 }
                 if (!entity.searchResult.isNullOrBlank()) {
                     appendLine("[历史工具中间结果]")
-                    appendLine(entity.searchResult.trim())
+                    appendLine(compactHistoryToolContext(entity.searchResult.trim()))
                 }
             }.trim()
         }
@@ -627,7 +751,27 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
             .replace(Regex("\\n?---\\n[🔍📖🌐] \\[展开(?:搜索结果|网页阅读内容|联网资料)]\\(search://result\\)"), "")
             .trim()
         val toolContext = entity.searchResult.orEmpty().trim()
-        return if (toolContext.isBlank()) visible else "$visible\n\n[历史工具/中间结果]\n$toolContext"
+        return if (toolContext.isBlank()) visible else "$visible\n\n[历史工具/中间结果]\n${compactHistoryToolContext(toolContext)}"
+    }
+
+    private fun compactHistoryToolContext(text: String): String {
+        if (text.isBlank()) return text
+        val compact = text.lineSequence()
+            .filter { line ->
+                line.contains("[GUI_AGENT") ||
+                    line.contains("[PYTHON_") ||
+                    line.contains("[ADB_") ||
+                    line.contains("[HTML_PDF_") ||
+                    line.contains("[BROWSE_") ||
+                    line.contains(" action=") ||
+                    line.contains(" ok=") ||
+                    line.contains(" error=") ||
+                    line.contains("执行步骤") ||
+                    line.contains("命令执行完整输出") ||
+                    !text.contains("[GUI_AGENT")
+            }
+            .joinToString("\n") { it.take(HISTORY_TOOL_LINE_MAX_CHARS) }
+        return compact.take(HISTORY_TOOL_CONTEXT_MAX_CHARS)
     }
 
     suspend fun generateReminderInsight(title: String, detail: String, config: ProviderConfig): String {
@@ -822,10 +966,21 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
             - When passing long Markdown to write_report, use Python triple-quoted strings: markdown_text = '''# Title\n...'''. Do not put a multi-line report into a normal quoted string such as md = "# Title ...", because embedded quotes and newlines will break Python/JSON parsing.
             - When python_exec creates any file, including PDF, Excel, CSV, image, JSON, or text, fill output_files with every generated relative filename/path.
             Native ADB workflow:
-            - If the user asks you to inspect or control the Android device/app UI and ADB has been paired in settings, you may call adb_shell.
+            - Use adb_shell only for diagnostics, read-only inspection, logcat, package listing, settings queries, screenshots, or an explicit low-level ADB command requested by the user as an ADB command.
+            - Any operation in another app MUST use gui_agent. Do not use adb_shell to operate third-party app UI, launch app deep links, or chain am/input commands for a user task.
             - adb_shell call format: {"type":"adb_shell","command":"dumpsys window | head -50","timeout_ms":15000}
-            - Prefer read-only commands first, such as dumpsys, settings get, pm list, logcat -d, uiautomator dump, screencap, or input keyevent/tap/text only when the user intent requires GUI control.
+            - Prefer read-only commands first, such as dumpsys, settings get, pm list, logcat -d, uiautomator dump, or screencap.
             - ADB is powerful. Do not run destructive package/data/file commands unless the user explicitly asks for that exact action.
+            Native GUI agent workflow:
+            - If the user asks ActMe to operate another Android app or complete a phone UI task, call gui_agent. Do not replace it with adb_shell deep links or manual input commands, even if a deep link seems available.
+            - gui_agent call format: {"type":"gui_agent","command":"Open Settings and ...","plan":"1. Open the target app.\n2. Tap the search box.\n3. Type the destination.\n4. Choose the result and start navigation.","target_text":"exact text to type, if any","guidance":"optional correction after reading the previous GUI agent result or error","timeout_ms":120000}
+            - The cloud/main agent is the planner. It cannot see screenshots, but it must provide a concise text plan in gui_agent.plan before each GUI execution. The local GUI agent is the visual executor: it sees screenshots and executes the current next action according to command + plan + guidance.
+            - Always write gui_agent.command as concise ASCII English. Put the exact destination/search/input string in gui_agent.target_text. The local GUI executor will force type actions to use target_text, because the visual model must not guess or rewrite input text.
+            - After a gui_agent run returns [GUI_AGENT_ACTION_ERROR], [GUI_AGENT_ERROR], parse failure, wrong action, wrong click, or stalled app flow, inspect that returned text and call gui_agent again with an updated plan and concise guidance. The guidance field is injected into the GUI model prompt as cloud-agent guidance.
+            - If a GUI ADB action failed, do not stop with a generic apology. Use the error to revise the plan, for example: "previous type failed, first tap the visible search box, then paste text".
+            - gui_agent uses the saved wireless ADB connection; if ADB is not connected it will start the screenshot-based wireless debugging pairing watcher first.
+            - During GUI execution, the app shows a small overlay in the top-right corner. The GUI model receives screenshots and must output one action per step. Coordinates may be normalized 0-1000 or absolute pixels; the executor logs scaling and maps them to the real screenshot size.
+            - The GUI loop stops when the model returns answer/terminate, the step budget is reached, or repeated parsing/execution failures occur.
             【关于本 App】
             $systemMemoryText
 
@@ -928,6 +1083,9 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
                     compact.contains("\"render_html_pdf\"") ||
                     compact.contains("\"webview_pdf\"") ||
                     compact.contains("\"adb_shell\"") ||
+                    compact.contains("\"gui_agent\"") ||
+                    compact.contains("\"mobile_gui_agent\"") ||
+                    compact.contains("\"mobile_use\"") ||
                     compact.contains("\"get_current_time\"")
                 )
     }
@@ -989,7 +1147,7 @@ class ActMeAgent(private val openAiClient: OpenAiResponsesClient) {
         // via shouldRetryWithoutResponseFormat in OpenAiResponsesClient.
         val agentResultResponseFormat: JsonObject by lazy {
             Json.parseToJsonElement(
-                """{"type":"json_schema","json_schema":{"name":"agent_result","strict":true,"schema":{"type":"object","properties":{"reply":{"type":"string"},"system_calls":{"type":"array","items":{"type":"object","properties":{"type":{"type":"string"},"query":{"type":"string"},"url":{"type":"string"},"code":{"type":"string"},"command":{"type":"string"},"input":{"type":"string"},"timeout_ms":{"type":"number"},"output_files":{"type":"array","items":{"type":"string"}},"generated_files":{"type":"array","items":{"type":"string"}},"expected_outputs":{"type":"array","items":{"type":"string"}},"files":{"type":"array","items":{"type":"string"}}},"required":["type","query","url","code","command","input","timeout_ms","output_files","generated_files","expected_outputs","files"],"additionalProperties":false}},"memory_updates":{"type":"array","items":{"type":"object","properties":{"category":{"type":"string"},"content":{"type":"string"}},"required":["category","content"],"additionalProperties":false}},"schedule_updates":{"type":"array","items":{"type":"object","properties":{"title":{"type":"string"},"detail":{"type":"string"},"start_at":{"anyOf":[{"type":"integer"},{"type":"null"}]},"reminder_at":{"anyOf":[{"type":"integer"},{"type":"null"}]},"repeat_type":{"anyOf":[{"type":"string"},{"type":"null"}]},"repeat_days_of_week":{"type":"array","items":{"type":"integer"}},"repeat_day_of_month":{"anyOf":[{"type":"integer"},{"type":"null"}]},"reminder_time":{"anyOf":[{"type":"string"},{"type":"null"}]}},"required":["title","detail","start_at","reminder_at","repeat_type","repeat_days_of_week","repeat_day_of_month","reminder_time"],"additionalProperties":false}},"skill_updates":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"description":{"type":"string"},"trigger_keywords":{"type":"array","items":{"type":"string"}},"action_template":{"type":"string"}},"required":["name","description","trigger_keywords","action_template"],"additionalProperties":false}}},"required":["reply","system_calls","memory_updates","schedule_updates","skill_updates"],"additionalProperties":false}}}"""
+                """{"type":"json_schema","json_schema":{"name":"agent_result","strict":true,"schema":{"type":"object","properties":{"reply":{"type":"string"},"system_calls":{"type":"array","items":{"type":"object","properties":{"type":{"type":"string"},"query":{"type":"string"},"url":{"type":"string"},"code":{"type":"string"},"command":{"type":"string"},"input":{"type":"string"},"plan":{"type":"string"},"target_text":{"type":"string"},"guidance":{"type":"string"},"timeout_ms":{"type":"number"},"output_files":{"type":"array","items":{"type":"string"}},"generated_files":{"type":"array","items":{"type":"string"}},"expected_outputs":{"type":"array","items":{"type":"string"}},"files":{"type":"array","items":{"type":"string"}}},"required":["type","query","url","code","command","input","plan","target_text","guidance","timeout_ms","output_files","generated_files","expected_outputs","files"],"additionalProperties":false}},"memory_updates":{"type":"array","items":{"type":"object","properties":{"category":{"type":"string"},"content":{"type":"string"}},"required":["category","content"],"additionalProperties":false}},"schedule_updates":{"type":"array","items":{"type":"object","properties":{"title":{"type":"string"},"detail":{"type":"string"},"start_at":{"anyOf":[{"type":"integer"},{"type":"null"}]},"reminder_at":{"anyOf":[{"type":"integer"},{"type":"null"}]},"repeat_type":{"anyOf":[{"type":"string"},{"type":"null"}]},"repeat_days_of_week":{"type":"array","items":{"type":"integer"}},"repeat_day_of_month":{"anyOf":[{"type":"integer"},{"type":"null"}]},"reminder_time":{"anyOf":[{"type":"string"},{"type":"null"}]}},"required":["title","detail","start_at","reminder_at","repeat_type","repeat_days_of_week","repeat_day_of_month","reminder_time"],"additionalProperties":false}},"skill_updates":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"description":{"type":"string"},"trigger_keywords":{"type":"array","items":{"type":"string"}},"action_template":{"type":"string"}},"required":["name","description","trigger_keywords","action_template"],"additionalProperties":false}}},"required":["reply","system_calls","memory_updates","schedule_updates","skill_updates"],"additionalProperties":false}}}"""
             ).jsonObject
         }
     }

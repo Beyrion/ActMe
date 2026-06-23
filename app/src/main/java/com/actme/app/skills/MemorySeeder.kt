@@ -26,14 +26,17 @@ object MemorySeeder {
                     it.readBytes().toString(Charsets.UTF_8)
                 }
             }.getOrElse { return@launch }
+
             val list = runCatching {
                 json.decodeFromString<List<MemorySeedModel>>(content)
             }.getOrDefault(emptyList())
-            list.forEach {
+
+            list.forEach { seed ->
+                if (seed.content.isBlank()) return@forEach
                 memoryDao.upsert(
                     MemoryItemEntity(
-                        category = it.category,
-                        content = it.content,
+                        category = seed.category.ifBlank { "系统" },
+                        content = seed.content,
                         source = "system"
                     )
                 )

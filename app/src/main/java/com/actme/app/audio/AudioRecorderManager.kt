@@ -1,6 +1,8 @@
 package com.actme.app.audio
 
 import android.Manifest
+import android.app.Activity
+import android.content.Context
 import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioRecord
@@ -15,8 +17,10 @@ import java.nio.ByteOrder
 import java.util.concurrent.atomic.AtomicBoolean
 
 class AudioRecorderManager(
-    private val activity: android.app.Activity
+    private val context: Context
 ) {
+    private val activity: Activity? = context as? Activity
+
     companion object {
         const val SAMPLE_RATE = 16000
         const val CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO
@@ -34,13 +38,17 @@ class AudioRecorderManager(
     var onError: ((String) -> Unit)? = null
 
     fun hasPermission(): Boolean {
-        return ContextCompat.checkSelfPermission(activity, Manifest.permission.RECORD_AUDIO) ==
+        return ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
                PackageManager.PERMISSION_GRANTED
     }
 
     fun requestPermission() {
+        val hostActivity = activity ?: run {
+            onError?.invoke("Microphone permission required")
+            return
+        }
         ActivityCompat.requestPermissions(
-            activity,
+            hostActivity,
             arrayOf(Manifest.permission.RECORD_AUDIO),
             REQUEST_RECORD_AUDIO
         )

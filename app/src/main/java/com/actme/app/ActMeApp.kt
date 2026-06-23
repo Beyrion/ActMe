@@ -64,11 +64,20 @@ class ActMeApp : Application() {
         }
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(channel)
+        val adbChannel = NotificationChannel(
+            ADB_CHANNEL_ID,
+            "ActMe ADB",
+            NotificationManager.IMPORTANCE_HIGH
+        ).apply {
+            description = "ActMe ADB 配对、截图和连接状态通知"
+        }
+        manager.createNotificationChannel(adbChannel)
         AppLogger.i(TAG, "notification channel ready: $REMINDER_CHANNEL_ID")
     }
 
     companion object {
         const val REMINDER_CHANNEL_ID = "actme_reminder_channel"
+        const val ADB_CHANNEL_ID = "actme_adb_channel"
         private const val TAG = "ActMeApp"
     }
 }

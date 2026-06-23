@@ -9,6 +9,7 @@ message(STATUS "MNN_SOURCE_ROOT: ${MNN_SOURCE_ROOT}")
 message(STATUS "MNN_INSTALL_ROOT: ${MNN_INSTALL_ROOT}")
 
 include_directories("${MNN_SOURCE_ROOT}/include/")
+include_directories("${MNN_INSTALL_ROOT}/include/")
 include_directories("${MNN_SOURCE_ROOT}/transformers/llm/engine/include")
 include_directories("${MNN_SOURCE_ROOT}/tools/audio/include")
 include_directories("${MNN_SOURCE_ROOT}/3rd_party/")

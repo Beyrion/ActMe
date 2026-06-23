@@ -277,6 +277,21 @@ class ChatViewModel(
         }
     }
 
+    fun sendMessageWhenReady(input: String) {
+        if (input.isBlank()) return
+        viewModelScope.launch {
+            if (currentConversationIdMutable.value == null) {
+                currentConversationIdMutable.value = repository.ensureActiveConversationId()
+            }
+            var waitCount = 0
+            while (_sendingConversationId.value != null && waitCount < 40) {
+                kotlinx.coroutines.delay(250)
+                waitCount += 1
+            }
+            sendMessage(input)
+        }
+    }
+
     fun stopSending() {
         sendingJob?.cancel()
     }

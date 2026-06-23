@@ -14,15 +14,23 @@ import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
 
-class VisionModelManager(private val context: Context) {
+class VisionModelManager(
+    private val context: Context,
+    private val modelName: String = MODEL_NAME
+) {
     companion object {
         const val TAG = "VisionModelManager"
         const val MODEL_OWNER = "MNN"
-        const val MODEL_NAME = "Qwen3-VL-2B-Instruct-MNN"
+        const val MODEL_NAME = "GUI-Owl-1.5-2B-Instruct-MNN"
+        const val OCR_MODEL_NAME = "GLM-OCR-MNN"
         private const val BASE_URL = "https://modelscope.cn/api/v1/models"
 
         fun getDefaultModelDir(context: Context): String {
             return "${context.filesDir}/models/$MODEL_NAME"
+        }
+
+        fun getOcrModelDir(context: Context): String {
+            return "${context.filesDir}/models/$OCR_MODEL_NAME"
         }
     }
 
@@ -39,15 +47,20 @@ class VisionModelManager(private val context: Context) {
     private val _modelInfo = MutableStateFlow<ModelInfo?>(null)
     val modelInfo: StateFlow<ModelInfo?> = _modelInfo
 
-    val modelDir: String get() = getDefaultModelDir(context)
+    val modelDir: String get() = "${context.filesDir}/models/$modelName"
 
     val isModelReady: Boolean
-        get() = File(modelDir, "config.json").exists() &&
-            File(modelDir, "llm.mnn.weight").exists() &&
-            File(modelDir, "visual.mnn.weight").exists()
+        get() {
+            val dir = File(modelDir)
+            val commonReady = File(dir, "config.json").exists() &&
+                File(dir, "llm.mnn.weight").exists() &&
+                File(dir, "visual.mnn.weight").exists()
+            if (!commonReady) return false
+            return modelName != OCR_MODEL_NAME || File(dir, "embeddings_bf16.bin").exists()
+        }
 
     suspend fun fetchModelInfo(): ModelInfo = withContext(Dispatchers.IO) {
-        val url = "$BASE_URL/$MODEL_OWNER/$MODEL_NAME/repo/files?Revision=master&Recursive=true"
+        val url = "$BASE_URL/$MODEL_OWNER/$modelName/repo/files?Revision=master&Recursive=true"
         AppLogger.i(TAG, "Fetching vision model info from: $url")
 
         val request = Request.Builder().url(url).get()
@@ -83,11 +96,11 @@ class VisionModelManager(private val context: Context) {
         }
 
         if (files.isEmpty()) return@withContext fallbackFileList()
-        ModelInfo(name = MODEL_NAME, files = files, totalSize = totalSize, fileCount = files.size)
+        ModelInfo(name = modelName, files = files, totalSize = totalSize, fileCount = files.size)
     }
 
     private fun fallbackFileList(): ModelInfo {
-        val files = listOf(
+        val files = mutableListOf(
             ModelFile("config.json", 1024, "file"),
             ModelFile("llm.mnn", 1024 * 512, "lfs"),
             ModelFile("llm.mnn.json", 1024 * 1024, "file"),
@@ -97,8 +110,11 @@ class VisionModelManager(private val context: Context) {
             ModelFile("visual.mnn", 1024 * 512, "lfs"),
             ModelFile("visual.mnn.weight", 1024L * 1024 * 238, "lfs")
         )
+        if (modelName == OCR_MODEL_NAME) {
+            files.add(6, ModelFile("embeddings_bf16.bin", 1024L * 1024 * 128, "lfs"))
+        }
         return ModelInfo(
-            name = MODEL_NAME,
+            name = modelName,
             files = files,
             totalSize = files.sumOf { it.size },
             fileCount = files.size
@@ -138,7 +154,8 @@ class VisionModelManager(private val context: Context) {
                     return@forEachIndexed
                 }
 
-                val downloadUrl = "$BASE_URL/$MODEL_OWNER/$MODEL_NAME/repo?Revision=master&FilePath=${file.name}"
+                val downloadUrl = "$BASE_URL/$MODEL_OWNER/$modelName/repo?Revision=master&FilePath=${file.name}"
+                AppLogger.i(TAG, "Downloading vision model file: model=$modelName, file=${file.name}, size=${file.size}, url=$downloadUrl")
                 val request = Request.Builder().url(downloadUrl).get().build()
                 val response = client.newCall(request).execute()
                 if (!response.isSuccessful) {
@@ -173,7 +190,7 @@ class VisionModelManager(private val context: Context) {
             }
 
             _downloadState.value = DownloadState.Completed(modelDir)
-            AppLogger.i(TAG, "Vision model download complete: $modelDir")
+            AppLogger.i(TAG, "Vision model download complete: model=$modelName, dir=$modelDir")
             modelDir
         } catch (e: Exception) {
             AppLogger.e(TAG, "Vision model download failed", e)

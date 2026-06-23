@@ -96,6 +96,7 @@ class MainActivity : ComponentActivity() {
                             val asrLanguage by settingsViewModel.asrLanguage.collectAsStateWithLifecycle("Chinese")
                             val isModelReady by settingsViewModel.isModelReady.collectAsStateWithLifecycle(false)
                             val localVisionModelDir by settingsViewModel.localVisionModelDir.collectAsStateWithLifecycle("")
+                            val localOcrModelDir by settingsViewModel.localOcrModelDir.collectAsStateWithLifecycle("")
                             val sessionInfos by chatViewModel.sessionInfos.collectAsStateWithLifecycle(emptyList())
                             val currentConversationId by chatViewModel.currentConversationId.collectAsStateWithLifecycle(null)
                             val pendingWorkbook by chatViewModel.pendingWorkbookAttachment.collectAsStateWithLifecycle(null)
@@ -127,6 +128,7 @@ class MainActivity : ComponentActivity() {
                                     isModelReady = isModelReady,
                                     onStopSending = chatViewModel::stopSending,
                                     localVisionModelDir = localVisionModelDir,
+                                    localOcrModelDir = localOcrModelDir,
                                     pendingWorkbook = pendingWorkbook,
                                     onWorkbookConsumed = chatViewModel::consumeWorkbookAttachment,
                                     onNavigateToMenu = { showMenu = true },
@@ -265,8 +267,12 @@ class MainActivity : ComponentActivity() {
                             val downloadState by settingsViewModel.downloadState.collectAsStateWithLifecycle(DownloadState.NotStarted)
                             val isVisionModelReady by settingsViewModel.isVisionModelReady.collectAsStateWithLifecycle(false)
                             val visionDownloadState by settingsViewModel.visionDownloadState.collectAsStateWithLifecycle(DownloadState.NotStarted)
+                            val isOcrModelReady by settingsViewModel.isOcrModelReady.collectAsStateWithLifecycle(false)
+                            val ocrDownloadState by settingsViewModel.ocrDownloadState.collectAsStateWithLifecycle(DownloadState.NotStarted)
                             val asrLanguage by settingsViewModel.asrLanguage.collectAsStateWithLifecycle("Chinese")
+                            val localAsrModelDir by settingsViewModel.localAsrModelDir.collectAsStateWithLifecycle("")
                             val localVisionModelDir by settingsViewModel.localVisionModelDir.collectAsStateWithLifecycle("")
+                            val localOcrModelDir by settingsViewModel.localOcrModelDir.collectAsStateWithLifecycle("")
                             SettingsScreen(
                                 providers = providers,
                                 activeProviderId = activeProviderId,
@@ -274,13 +280,19 @@ class MainActivity : ComponentActivity() {
                                 downloadState = downloadState,
                                 isVisionModelReady = isVisionModelReady,
                                 visionDownloadState = visionDownloadState,
+                                isOcrModelReady = isOcrModelReady,
+                                ocrDownloadState = ocrDownloadState,
                                 asrLanguage = asrLanguage,
+                                localAsrModelDir = localAsrModelDir,
                                 localVisionModelDir = localVisionModelDir,
+                                localOcrModelDir = localOcrModelDir,
                                 onSetAsrLanguage = settingsViewModel::setAsrLanguage,
                                 onDownloadModel = settingsViewModel::downloadModel,
                                 onDeleteModel = settingsViewModel::deleteModel,
                                 onDownloadVisionModel = settingsViewModel::downloadVisionModel,
                                 onDeleteVisionModel = settingsViewModel::deleteVisionModel,
+                                onDownloadOcrModel = settingsViewModel::downloadOcrModel,
+                                onDeleteOcrModel = settingsViewModel::deleteOcrModel,
                                 onClearChatHistory = settingsViewModel::clearAllChatHistory,
                                 onAddProvider = settingsViewModel::addProvider,
                                 onUpdateProvider = settingsViewModel::updateProvider,
@@ -294,12 +306,14 @@ class MainActivity : ComponentActivity() {
             }
         }
         handleIncomingExcelIntent(intent)
+        handleIncomingGuiTaskIntent(intent)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         handleIncomingExcelIntent(intent)
+        handleIncomingGuiTaskIntent(intent)
     }
 
     private fun requestNotificationPermissionIfNeeded() {
@@ -325,6 +339,18 @@ class MainActivity : ComponentActivity() {
         }.onFailure { e ->
             AppLogger.e(TAG, "external workbook import failed", e)
         }
+    }
+
+    private fun handleIncomingGuiTaskIntent(intent: Intent?) {
+        if (intent?.action != GuiAgentOverlayService.ACTION_GUI_TASK) return
+        val prompt = intent.getStringExtra(GuiAgentOverlayService.EXTRA_GUI_TASK)
+            ?.trim()
+            .orEmpty()
+        intent.removeExtra(GuiAgentOverlayService.EXTRA_GUI_TASK)
+        intent.action = null
+        if (prompt.isBlank()) return
+        AppLogger.i(TAG, "incoming GUI task from overlay chars=${prompt.length}")
+        chatViewModel.sendMessageWhenReady(prompt)
     }
 
     private fun displayNameForUri(uri: Uri): String {

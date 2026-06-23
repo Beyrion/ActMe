@@ -166,6 +166,7 @@ fun ChatScreen(
     isModelReady: Boolean = false,
     onStopSending: () -> Unit = {},
     localVisionModelDir: String = "",
+    localOcrModelDir: String = "",
     pendingWorkbook: PendingWorkbookAttachment? = null,
     onWorkbookConsumed: () -> Unit = {},
     onNavigateToMenu: () -> Unit = {},
@@ -264,6 +265,10 @@ fun ChatScreen(
         val resolved = localVisionModelDir.trim().ifBlank { LocalImageImportManager.getDefaultModelPath(context) }
         LocalImageImportManager(resolved)
     }
+    val ocrImageImportManager = remember(localOcrModelDir) {
+        val resolved = localOcrModelDir.trim().ifBlank { LocalImageImportManager.getDefaultOcrModelPath(context) }
+        LocalImageImportManager(resolved)
+    }
 
     // Preload ASR model in parallel with recording
     fun startPreloadingModel() {
@@ -306,6 +311,12 @@ fun ChatScreen(
     DisposableEffect(imageImportManager) {
         onDispose {
             imageImportManager.release()
+        }
+    }
+
+    DisposableEffect(ocrImageImportManager) {
+        onDispose {
+            ocrImageImportManager.release()
         }
     }
 
@@ -440,7 +451,7 @@ fun ChatScreen(
                 return@launch
             }
             try {
-                val ocr = imageImportManager.extractText(imageFile)
+                val ocr = ocrImageImportManager.extractText(imageFile)
                 if (ocr.sourceText.isBlank()) {
                     Toast.makeText(context, "本地视觉模型未识别出文字内容", Toast.LENGTH_SHORT).show()
                 } else {
@@ -483,7 +494,7 @@ fun ChatScreen(
                 return@launch
             }
             try {
-                val plan = imageImportManager.parseTodos(imageFile)
+                val plan = ocrImageImportManager.parseTodos(imageFile)
                 if (plan.items.isEmpty()) {
                     Toast.makeText(context, "本地视觉模型未识别出待办项", Toast.LENGTH_SHORT).show()
                 } else {

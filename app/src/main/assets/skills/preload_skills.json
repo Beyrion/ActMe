@@ -1,32 +1,44 @@
 [
   {
-    "name": "面试攻略助手",
-    "description": "当提醒内容与面试相关时，补充面试准备建议。",
-    "trigger_keywords": ["面试", "自我介绍", "简历"],
-    "action_template": "面试前 10 分钟快查：公司背景、岗位 JD、STAR 案例各 1 条。"
+    "name": "Interview Prep",
+    "description": "Add concise interview preparation advice when a reminder or user request is interview-related.",
+    "trigger_keywords": ["interview", "resume", "self introduction"],
+    "action_template": "Before the interview, quickly review company background, the job description, and one STAR example."
   },
   {
-    "name": "久坐运动助手",
-    "description": "当提醒与久坐有关时，提供可立即执行的运动建议。",
-    "trigger_keywords": ["久坐", "站起来", "腰背", "肩颈"],
-    "action_template": "现在做 4 分钟：靠墙站 1 分钟 + 深蹲 20 个 + 颈部拉伸 1 分钟。"
+    "name": "Sedentary Break",
+    "description": "Suggest a short exercise when a reminder is related to sitting too long.",
+    "trigger_keywords": ["sitting", "stand up", "back", "neck"],
+    "action_template": "Do a 4-minute reset: wall stand for 1 minute, 20 squats, and 1 minute of neck stretching."
   },
   {
-    "name": "规律饮食助手",
-    "description": "当提醒吃饭时，推荐轻量饮食建议。",
-    "trigger_keywords": ["吃饭", "午餐", "晚餐", "早餐"],
-    "action_template": "一餐公式：优质蛋白 + 蔬菜 + 低 GI 主食，优先喝一杯温水。"
+    "name": "Regular Meals",
+    "description": "Suggest light meal guidance when the user asks about eating.",
+    "trigger_keywords": ["meal", "lunch", "dinner", "breakfast"],
+    "action_template": "Use the simple meal formula: protein, vegetables, and a low-GI staple. Drink warm water first."
   },
   {
-    "name": "防刷短视频助手",
-    "description": "当提醒不要刷短视频时，给出替代行动。",
-    "trigger_keywords": ["短视频", "刷手机", "分心", "拖延"],
-    "action_template": "先专注 20 分钟当前任务，结束后奖励 5 分钟放松。"
+    "name": "Short Video Guard",
+    "description": "Offer an alternative action when the user wants to avoid short-video distraction.",
+    "trigger_keywords": ["short video", "phone distraction", "doomscroll", "procrastination"],
+    "action_template": "Focus on the current task for 20 minutes first, then take a 5-minute break."
   },
   {
-    "name": "Markdown 报告生成工作流",
-    "description": "当用户要求生成报告、研报、周报、PDF、正式文档或可分享文件时，优先使用 Markdown 中间稿，再转换为最终文件。",
-    "trigger_keywords": ["报告", "研报", "周报", "PDF", "文档", "生成文件", "导出"],
-    "action_template": "生成报告时先写完整 Markdown：标题、摘要、目录、正文、表格、引用/来源、结论。优先在 python_exec 中调用 write_report(markdown_text, \"report_name\", title=\"...\")，它会保存 .md、生成 .html，并尽量生成 .pdf。生成的 .md/.html/.pdf 都使用相对路径，并全部写入 output_files。若 PDF 转换失败，至少返回 Markdown 文件和可读的 HTML 文件。"
+    "name": "GLM-OCR Image Extraction",
+    "description": "Use the local GLM-OCR-MNN model for screenshots, receipts, schedules, meeting images, and wireless debugging screenshots. The model performs OCR only; rules or text models extract schedules, todos, or ADB pairing details.",
+    "trigger_keywords": ["OCR", "screenshot", "image text", "image schedule", "image todo", "wireless debugging", "ADB pairing"],
+    "action_template": "For image OCR, prefer the local GLM-OCR-MNN path. Keep the OCR prompt short. Log the full OCR text, then parse device name, IP, connect port, pair port, and pair code with deterministic rules when the screenshot is an ADB pairing screen."
+  },
+  {
+    "name": "Markdown Report Workflow",
+    "description": "When the user asks for reports, PDF, weekly summaries, or shareable documents, create Markdown first, then convert to output files.",
+    "trigger_keywords": ["report", "PDF", "weekly report", "document", "export", "generated file"],
+    "action_template": "Write complete Markdown first. In python_exec call write_report(markdown_text, \"report_name\", title=\"...\") to create .md and .html, then call html_to_pdf to create .pdf. Use relative output paths and include every generated file in output_files."
+  },
+  {
+    "name": "Android GUI Sub-Agent",
+    "description": "When the user asks ActMe to operate phone UI, inspect another app, or complete a cross-app Android task, call gui_agent instead of manually chaining many adb tap commands.",
+    "trigger_keywords": ["operate phone", "tap for me", "open app", "settings page", "current screen", "GUI agent", "automate UI"],
+    "action_template": "For UI automation call {\"type\":\"gui_agent\",\"command\":\"the user's UI goal in concise English\",\"plan\":\"1. Text-only plan from the cloud/main agent.\\n2. Next expected GUI steps.\\n3. Include target text to type when needed.\",\"target_text\":\"exact text to type, if any\",\"guidance\":\"optional correction after previous GUI result/error\",\"timeout_ms\":120000}. The cloud/main agent is the planner and cannot see screenshots; the local GUI agent is the visual executor. If a GUI run returns [GUI_AGENT_ACTION_ERROR], fails, or stalls, inspect its result and call gui_agent again with an updated plan plus concise guidance. The GUI executor forces type actions to use target_text so the visual model cannot guess or rewrite user input. The GUI agent first checks wireless ADB, starts screenshot pairing if needed, captures screenshots, calls local GUI-Owl, maps normalized 0-1000 or absolute coordinates to the actual screenshot size, executes actions, and logs every model input/output and coordinate mapping to logcat."
   }
 ]

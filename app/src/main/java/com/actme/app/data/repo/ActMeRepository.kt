@@ -3,6 +3,7 @@ package com.actme.app.data.repo
 import com.actme.app.util.AppLogger
 import com.actme.app.data.agent.ActMeAgent
 import com.actme.app.data.agent.AgentResult
+import com.actme.app.data.agent.AgentTurnResult
 import com.actme.app.data.agent.PythonSkillEngine
 import com.actme.app.data.agent.ReplyExtractor
 import com.actme.app.data.agent.SystemCall
@@ -200,33 +201,37 @@ class ActMeRepository(
                 StepStatus.SKIPPED -> "[SKIP]"
                 StepStatus.RUNNING -> "[...]"
             }
-            if (step.detail.isBlank()) "$m ${step.title}" else "$m ${step.title} - ${step.detail.take(200)}"
+            if (step.detail.isBlank()) "$m ${step.title}" else "$m ${step.title} - ${step.detail}"
         }
 
         fun modelExecutionErrorText(e: Exception): String {
-            return "模型请求失败：${e.message?.take(120) ?: e::class.java.simpleName}"
+            val msg = e.message?.take(160) ?: e::class.java.simpleName
+            return if (msg.startsWith("\u6a21\u578b\u8bf7\u6c42\u5931\u8d25")) {
+                msg
+            } else {
+                "\u6a21\u578b\u8bf7\u6c42\u5931\u8d25\uff1a$msg"
+            }
         }
 
         fun briefErrorTag(e: Exception): String {
             val msg = e.message ?: ""
             return when {
-                msg.contains("timeout", ignoreCase = true) -> "请求超时"
-                msg.contains("connect", ignoreCase = true) || msg.contains("network", ignoreCase = true) || msg.contains("resolve", ignoreCase = true) -> "网络连接失败"
-                msg.contains("SSL", ignoreCase = true) || msg.contains("certificate", ignoreCase = true) -> "安全连接失败"
-                msg.contains("parse", ignoreCase = true) || msg.contains("json", ignoreCase = true) -> "响应解析失败"
-                msg.contains("refused", ignoreCase = true) -> "连接被拒绝"
-                msg.contains("reset", ignoreCase = true) -> "连接已重置"
+                msg.contains("timeout", ignoreCase = true) -> "\u8bf7\u6c42\u8d85\u65f6"
+                msg.contains("connect", ignoreCase = true) || msg.contains("network", ignoreCase = true) || msg.contains("resolve", ignoreCase = true) -> "\u7f51\u7edc\u8fde\u63a5\u5931\u8d25"
+                msg.contains("SSL", ignoreCase = true) || msg.contains("certificate", ignoreCase = true) -> "\u5b89\u5168\u8fde\u63a5\u5931\u8d25"
+                msg.contains("parse", ignoreCase = true) || msg.contains("json", ignoreCase = true) -> "\u54cd\u5e94\u89e3\u6790\u5931\u8d25"
+                msg.contains("refused", ignoreCase = true) -> "\u8fde\u63a5\u88ab\u62d2\u7edd"
+                msg.contains("reset", ignoreCase = true) -> "\u8fde\u63a5\u5df2\u91cd\u7f6e"
                 else -> e::class.java.simpleName.let { name ->
                     when {
-                        name.contains("Timeout") -> "请求超时"
-                        name.contains("Connect") -> "网络连接失败"
-                        name.contains("UnknownHost") -> "无法解析主机"
-                        else -> "请求失败"
+                        name.contains("Timeout") -> "\u8bf7\u6c42\u8d85\u65f6"
+                        name.contains("Connect") -> "\u7f51\u7edc\u8fde\u63a5\u5931\u8d25"
+                        name.contains("UnknownHost") -> "\u65e0\u6cd5\u89e3\u6790\u4e3b\u673a"
+                        else -> "\u8bf7\u6c42\u5931\u8d25"
                     }
                 }
             }
         }
-
         suspend fun updateChatContent(messageId: Long, content: String, reason: String) {
             AppLogger.i(
                 "ChatOutput",
@@ -282,6 +287,7 @@ class ActMeRepository(
                 imageMimeType = imageMimeType,
                 historyMessages = historyMessages
             ).collect { chunk ->
+                throwIfModelRequestErrorChunk(chunk.text)
                 streamingUsage = mergeStreamingUsage(streamingUsage, chunk.usage)
                 val display = extractor.consume(chunk.text)
                 if (display != null) {
@@ -314,6 +320,7 @@ class ActMeRepository(
 
         // ── Tool execution loop ──
         var searchResults: String? = null
+        var modelToolResults: String? = null
         val generatedFileRefs = linkedSetOf<String>()
         var searchSucceeded = false
         var searchFailed = false
@@ -334,7 +341,7 @@ class ActMeRepository(
                 detail = "reply and output files are empty; requesting completion",
                 status = StepStatus.RUNNING
             )
-            val toolContext = searchResults
+            val toolContext = modelToolResults
                 ?.takeIf { it.isNotBlank() }
                 ?: "No tool result is available yet. Decide whether to call tools or directly provide a non-empty reply."
             val recoveryInput = """
@@ -362,8 +369,9 @@ class ActMeRepository(
                 config = config,
                 enableWebSearch = true,
                 historyMessages = historyMessages,
-                webSearchResults = searchResults
+                webSearchResults = null
             ).collect { chunk ->
+                throwIfModelRequestErrorChunk(chunk.text)
                 recoveryUsage = mergeStreamingUsage(recoveryUsage, chunk.usage)
                 val display = recoveryExtractor.consume(chunk.text)
                 if (display != null) {
@@ -424,12 +432,14 @@ class ActMeRepository(
                 val isPython = type == "python_exec" || type == "run_python" || type == "python"
                 val isHtmlToPdf = type == "html_to_pdf" || type == "render_html_pdf" || type == "webview_pdf"
                 val isAdb = type == "adb_shell" || type == "adb" || type == "run_adb"
+                val isGuiAgent = type == "gui_agent" || type == "mobile_gui_agent" || type == "mobile_use"
                 val key = when {
                     isSearch -> call.query.trim().lowercase()
                     isBrowse -> call.url.ifBlank { call.query }.trim().lowercase()
                     isPython -> type + ":" + call.code.take(500) + ":" + call.input.take(500)
                     isHtmlToPdf -> type + ":" + call.url.ifBlank { call.query }.ifBlank { call.input }.trim().lowercase() + ":" + call.outputFiles.joinToString(",").lowercase()
                     isAdb -> type + ":" + call.command.ifBlank { call.code }.ifBlank { call.query }.take(500)
+                    isGuiAgent -> type + ":" + call.command.ifBlank { call.query }.ifBlank { call.input }.take(500) + ":" + call.plan.take(500) + ":" + call.guidance.take(500)
                     else -> type + ":" + call.query + ":" + call.url
                 }
                 val duplicate = (isSearch && key in searchedQueries) || (isBrowse && key in visitedUrls)
@@ -488,7 +498,9 @@ class ActMeRepository(
                 updateChatContent(replyMsgId, "已中止。", "cancel_reply_during_tool")
                 throw e
             }
+            val executedResultsForModel = compactToolResultsForModel(executedResults)
             searchResults = if (searchResults != null) "$searchResults\n$executedResults" else executedResults
+            modelToolResults = if (modelToolResults != null) "$modelToolResults\n$executedResultsForModel" else executedResultsForModel
             generatedFileRefs += extractWorkspaceFileRefs(executedResults)
             AppLogger.i(
                 "AgentFile",
@@ -506,16 +518,17 @@ class ActMeRepository(
                 detail = "remaining tools=${budget.maxToolCalls - budget.toolCalls}",
                 status = StepStatus.RUNNING
             )
-            val continuationInput = "用户问题：$userInput\n\nsystem_calls 执行结果：\n$executedResults\n\n请基于以上结果，回答用户问题。"
+            val continuationInput = "用户问题：$userInput\n\nsystem_calls 执行结果：\n$executedResultsForModel\n\n请基于以上结果，回答用户问题。"
             val remainingAfterExecution = budget.maxToolCalls - budget.toolCalls
             val continuationWithBudget = continuationInput + if (remainingAfterExecution > 0) {
-                "\n\nTool budget: remaining=$remainingAfterExecution. You may continue calling get_current_time, web_search, browse_url, python_exec, html_to_pdf, and adb_shell if useful. Decide freely whether more searching, browsing, Python processing, HTML-to-PDF rendering, or ADB inspection/control is needed based on the task, uncertainty, source quality, and user intent. Prefer primary or authoritative sources when they matter, and use multiple independent pages when helpful. If a search result only shows a breadcrumb URL such as https://www.boc.cn › fimarkets, you may convert it to https://www.boc.cn/fimarkets and browse it. Do not repeat the same query, URL, code, ADB command, or HTML-to-PDF render unless there is a clear reason. Return final reply when the answer is sufficiently supported or the user likely wants a quick answer."
+                "\n\nTool budget: remaining=$remainingAfterExecution. You may continue calling get_current_time, web_search, browse_url, python_exec, html_to_pdf, adb_shell, and gui_agent if useful. Any operation in another app MUST use gui_agent. Do not use adb_shell deep links or manual input chains to operate another app or complete a phone UI task, even if a deep link seems available. Use adb_shell mainly for diagnostics, read-only inspection, logcat, package listing, screenshots, settings queries, or explicit low-level ADB commands requested by the user as ADB commands. For gui_agent, the cloud/main agent must provide a concise text plan in the plan field; the local GUI agent only sees screenshots and executes the current next GUI action. If a previous gui_agent result shows [GUI_AGENT_ACTION_ERROR], [GUI_AGENT_ERROR], parse failure, wrong action, wrong click, unsupported action, or stalled app flow, call gui_agent again with the same goal, an updated plan, and concise guidance explaining the correction; guidance is injected into the GUI model prompt. Decide freely whether more searching, browsing, Python processing, HTML-to-PDF rendering, ADB inspection, or GUI control is needed based on the task, uncertainty, source quality, and user intent. Prefer primary or authoritative sources when they matter, and use multiple independent pages when helpful. If a search result only shows a breadcrumb URL such as https://www.boc.cn › fimarkets, you may convert it to https://www.boc.cn/fimarkets and browse it. Do not repeat the same query, URL, code, ADB command, GUI action, or HTML-to-PDF render unless there is a clear reason. Return final reply when the answer is sufficiently supported or the user likely wants a quick answer."
             } else {
                 "\n\nTool budget: remaining=0. Do not call more tools in this turn. Return the best final reply from the available results."
             }
             val continuationExtractor = ReplyExtractor()
             val continuationBuilder = StringBuilder()
             var continuationUsage: TokenUsage? = null
+            var continuationFallback: AgentTurnResult? = null
             try {
                 agent.runTurnStreamingWithUsage(
                     userInput = continuationWithBudget,
@@ -526,8 +539,9 @@ class ActMeRepository(
                     config = config,
                     enableWebSearch = true,
                     historyMessages = historyMessages,
-                    webSearchResults = searchResults
+                    webSearchResults = null
                 ).collect { chunk ->
+                    throwIfModelRequestErrorChunk(chunk.text)
                     continuationUsage = mergeStreamingUsage(continuationUsage, chunk.usage)
                     val display = continuationExtractor.consume(chunk.text)
                     if (display != null) {
@@ -540,19 +554,46 @@ class ActMeRepository(
                 }
             } catch (e: CancellationException) {
                 updateRunStep(thinkingStep, StepStatus.FAILED, "cancelled")
-                updateChatContent(toolMsgId, "已中止", "cancel_tool_continuation")
-                updateChatContent(replyMsgId, "已中止。", "cancel_reply_continuation")
+                updateChatContent(toolMsgId, "\u5df2\u4e2d\u6b62", "cancel_tool_continuation")
+                updateChatContent(replyMsgId, "\u5df2\u4e2d\u6b62\u3002", "cancel_reply_continuation")
                 throw e
             } catch (e: Exception) {
                 AppLogger.e(TAG, "continuation streaming error", e)
-                errorTag = briefErrorTag(e)
-                updateRunStep(thinkingStep, StepStatus.FAILED, e.message?.take(120) ?: e::class.java.simpleName)
-                if (toolMsgId != -1L) {
-                    updateChatContent(toolMsgId, "执行失败", "continuation_error_tool")
-                    chatDao.updateSearchResult(toolMsgId, buildStepLog())
+                updateRunStep(thinkingStep, StepStatus.RUNNING, "stream failed; retrying non-stream: ${e.message?.take(120) ?: e::class.java.simpleName}")
+                continuationFallback = runCatching {
+                    agent.runTurnWithUsage(
+                        userInput = continuationWithBudget,
+                        memories = userMemories,
+                        systemMemories = systemMemories,
+                        schedules = allSchedules,
+                        skills = enabledSkills,
+                        config = config,
+                        enableWebSearch = true,
+                        historyMessages = historyMessages,
+                        webSearchResults = null
+                    )
+                }.onSuccess { fallback ->
+                    AppLogger.i(TAG, "continuation non-stream fallback success: replyLen=${fallback.result.reply.length}, systemCalls=${fallback.result.systemCalls.size}")
+                }.onFailure { fallbackError ->
+                    AppLogger.e(TAG, "continuation non-stream fallback error", fallbackError)
+                }.getOrNull()
+                if (continuationFallback == null) {
+                    errorTag = briefErrorTag(e)
+                    updateRunStep(thinkingStep, StepStatus.FAILED, e.message?.take(120) ?: e::class.java.simpleName)
+                    if (toolMsgId != -1L) {
+                        updateChatContent(toolMsgId, "\u6267\u884c\u5931\u8d25", "continuation_error_tool")
+                        chatDao.updateSearchResult(toolMsgId, buildToolExecutionExpandLog(buildStepLog(), searchResults))
+                    }
+                    result = AgentResult(reply = modelExecutionErrorText(e))
+                    break
                 }
-                result = AgentResult(reply = modelExecutionErrorText(e))
-                break
+            }
+            if (continuationFallback != null) {
+                addApiUsage(continuationFallback.usage)
+                result = continuationFallback.result
+                updateRunStep(thinkingStep, StepStatus.DONE, "fallback reply=${result.reply.length} chars, next tools=${result.systemCalls.size}")
+                AppLogger.i(TAG, "pass $pass fallback result: replyLen=${result.reply.length}, systemCalls=${result.systemCalls.size}")
+                continue
             }
             addApiUsage(continuationUsage)
             val continuationRaw = continuationExtractor.getRaw()
@@ -573,7 +614,7 @@ class ActMeRepository(
         // Finalize tool execution bubble: collapsed "执行完成" + expandable step log
         if (toolMsgId != -1L) {
             updateChatContent(toolMsgId, "执行完成", "tool_execution_complete")
-            chatDao.updateSearchResult(toolMsgId, buildStepLog())
+            chatDao.updateSearchResult(toolMsgId, buildToolExecutionExpandLog(buildStepLog(), searchResults))
         }
 
         // Build and persist final reply
@@ -1158,6 +1199,69 @@ class ActMeRepository(
         }
     }
 
+    private fun buildToolExecutionExpandLog(stepLog: String, toolResults: String?): String {
+        val fullResults = toolResults.orEmpty().trim()
+        return buildString {
+            appendLine("执行步骤：")
+            appendLine(stepLog.ifBlank { "无" })
+            if (fullResults.isNotBlank()) {
+                appendLine()
+                appendLine("---")
+                appendLine("命令执行完整输出：")
+                appendLine(fullResults)
+            }
+        }.trim()
+    }
+
+    private fun compactToolResultsForModel(text: String): String {
+        if (text.isBlank()) return text
+        val compact = text.split("\n---\n").joinToString("\n---\n") { section ->
+            compactToolSectionForModel(section)
+        }
+        return compact.take(MODEL_TOOL_RESULTS_MAX_CHARS)
+    }
+
+    private fun compactToolSectionForModel(section: String): String {
+        val trimmed = section.trim()
+        if (trimmed.isBlank()) return trimmed
+        val isGui = trimmed.contains("[GUI_AGENT_RESULT]") ||
+            trimmed.contains("[GUI_AGENT_ERROR]") ||
+            trimmed.contains("[GUI_AGENT_ACTION_ERROR]")
+        if (!isGui) {
+            return trimmed.take(NON_GUI_TOOL_RESULT_MAX_CHARS)
+        }
+
+        val lines = trimmed.lineSequence().toList()
+        val important = lines.filter { line ->
+            line.contains("[GUI_AGENT") ||
+                line.contains(" action=") ||
+                line.contains(" ok=") ||
+                line.contains(" error=") ||
+                line.contains("parse_failed") ||
+                line.contains("screenshot failed") ||
+                line.contains("terminate") ||
+                line.contains("answer")
+        }
+        val selected = if (important.isNotEmpty()) {
+            important
+        } else {
+            lines.take(20) + lines.takeLast(20)
+        }
+        return buildString {
+            appendLine("[GUI_AGENT_RESULT_SUMMARY_FOR_MODEL]")
+            selected.forEach { line ->
+                appendLine(line.take(GUI_TOOL_LINE_MAX_CHARS))
+            }
+        }.trim().take(GUI_TOOL_RESULT_MAX_CHARS)
+    }
+
+    private fun throwIfModelRequestErrorChunk(text: String) {
+        val trimmed = text.trim()
+        if (trimmed.startsWith("模型请求失败")) {
+            throw IllegalStateException(trimmed)
+        }
+    }
+
     private fun extractWorkspaceFileRefs(text: String): List<String> {
         if (text.isBlank()) return emptyList()
         val refs = mutableListOf<String>()
@@ -1282,6 +1386,10 @@ class ActMeRepository(
 
     companion object {
         private const val TAG = "ActMeRepository"
+        private const val MODEL_TOOL_RESULTS_MAX_CHARS = 24_000
+        private const val NON_GUI_TOOL_RESULT_MAX_CHARS = 12_000
+        private const val GUI_TOOL_RESULT_MAX_CHARS = 8_000
+        private const val GUI_TOOL_LINE_MAX_CHARS = 1_200
         private val DATE_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd")
     }
 }

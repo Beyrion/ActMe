@@ -1,0 +1,896 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ActMe 创意设计</title>
+<style>
+@page { size: A4; margin: 15mm 14mm; }
+:root { color-scheme: light; --ink:#172033; --muted:#5b667a; --line:#d9e0ea; --panel:#f6f8fb; --accent:#0f766e; --accent2:#b45309; --blue:#1d4ed8; }
+* { box-sizing: border-box; }
+body { margin:0; background:#edf1f6; color:var(--ink); font-family:"Microsoft YaHei UI","Microsoft YaHei","Noto Sans CJK SC",Arial,sans-serif; line-height:1.72; }
+.page { width:min(1180px,100%); margin:0 auto; background:#fff; box-shadow:0 18px 60px rgba(23,32,51,.12); }
+.hero { min-height:520px; padding:58px 64px 44px; color:#fff; background:linear-gradient(120deg, rgba(14,26,45,.96), rgba(15,118,110,.88)), url('overview.png') center/cover no-repeat; display:flex; flex-direction:column; justify-content:space-between; }
+.hero h1 { margin:0; font-size:48px; line-height:1.08; letter-spacing:0; max-width:820px; }
+.subtitle { margin:22px 0 0; max-width:790px; font-size:19px; color:#e9f2f1; }
+.meta { display:flex; flex-wrap:wrap; gap:10px; margin-top:34px; }
+.pill { border:1px solid rgba(255,255,255,.28); background:rgba(255,255,255,.12); padding:7px 12px; border-radius:999px; font-size:13px; color:#fff; }
+.lead-grid { padding:34px 64px 20px; display:grid; grid-template-columns:1.1fr .9fr; gap:28px; align-items:start; } .lead-grid.single { grid-template-columns:1fr; }
+.callout { border-left:5px solid var(--accent); background:#eef8f6; padding:18px 22px; border-radius:8px; font-size:16px; }
+.metrics { display:grid; grid-template-columns:repeat(2,1fr); gap:12px; }
+.metric { border:1px solid var(--line); border-radius:8px; padding:14px 16px; background:#fff; }
+.metric b { display:block; font-size:22px; color:var(--accent); }
+.figure-band { padding:18px 64px 8px; display:grid; grid-template-columns:1fr 1fr; gap:20px; }
+figure { margin:0; border:1px solid var(--line); border-radius:8px; overflow:hidden; background:#fff; break-inside:avoid; }
+figure img { display:block; width:100%; height:auto; }
+figcaption { padding:10px 14px; color:var(--muted); font-size:13px; border-top:1px solid var(--line); }
+.toc { padding:26px 64px 18px; display:grid; grid-template-columns:repeat(2,1fr); gap:10px 20px; }
+.toc a { color:var(--blue); text-decoration:none; border-bottom:1px solid #bfdbfe; }
+.content { padding:18px 64px 64px; }
+.doc-section { padding:30px 0 34px; border-top:1px solid var(--line); break-inside:auto; }
+.section-kicker { color:var(--accent2); font-size:12px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; margin-bottom:8px; }
+h2 { margin:0 0 16px; font-size:30px; line-height:1.25; letter-spacing:0; color:#101827; }
+h3 { margin:28px 0 10px; font-size:21px; line-height:1.35; letter-spacing:0; color:#14315d; }
+h4 { margin:22px 0 8px; font-size:17px; letter-spacing:0; }
+p { margin:10px 0; }
+ul { margin:10px 0 14px; padding-left:22px; }
+li { margin:5px 0; }
+code { font-family:Consolas,"Cascadia Mono","Courier New",monospace; background:#eef2f7; border:1px solid #dbe3ee; border-radius:4px; padding:1px 5px; font-size:.92em; }
+pre { background:#101827; color:#e5edf7; border-radius:8px; padding:16px 18px; overflow:auto; border:1px solid #25334a; break-inside:avoid; white-space:pre-wrap; }
+pre code { background:transparent; border:0; padding:0; color:inherit; font-size:12.5px; }
+strong { color:#0f5132; }
+.footer { padding:22px 64px 34px; border-top:1px solid var(--line); color:var(--muted); font-size:13px; }
+@media print { body { background:#fff; } .page { width:auto; box-shadow:none; } .hero { min-height:360px; } .doc-section { page-break-inside:auto; } a { color:inherit; } }
+@media (max-width: 760px) { .hero, .lead-grid, .figure-band, .toc, .content, .footer { padding-left:22px; padding-right:22px; } .hero h1 { font-size:34px; } .lead-grid, .figure-band, .toc { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+<main class="page">
+<header class="hero"><div><div class="pill">ActMe / 端侧 Agent 创意设计</div><h1>从工具集合到端侧执行闭环</h1><p class="subtitle">围绕 ADB 截图配对、端侧 OCR、GUI Sub-Agent 与主 Agent 协作链路，ActMe 探索让移动端 Agent 不止会回答，还能在授权范围内观察、计划、执行和复盘。</p></div><div class="meta"><span class="pill">ADB + OCR + GUI-Owl</span><span class="pill">Agentic Loop</span></div></header>
+<section class="lead-grid single"><div class="callout">ActMe 的核心探索是把云端语言规划和端侧感知执行拆开：云端主 Agent 负责意图、计划和纠错，端侧 App 负责无线 ADB 连接、截图 OCR、视觉子 Agent、坐标映射和真实操作。这让手机本身成为 Agentic Loop 的执行现场。</div></section>
+<section class="figure-band"><figure><img src="overview.png" alt="ActMe overview"><figcaption>ActMe 功能总览：聊天 Agent、记忆、日程、本地模型与工具执行入口。</figcaption></figure><figure><img src="arch.png" alt="ActMe architecture"><figcaption>系统架构：Repository、Agent、工具执行器和端侧能力的关系。</figcaption></figure></section>
+<nav class="toc"><a href="#本地-adb-ocr-gui-sub-agent-链路">本地 ADB + OCR + GUI Sub-Agent 链路</a><a href="#actme-内置能力总览-三驾马车">内置能力总览</a><a href="#agentic-loop-设计">Agentic Loop 设计</a><a href="#内置-adb">内置 ADB</a><a href="#内置浏览器">内置浏览器</a><a href="#内置-python">内置 Python</a><a href="#skill-与-memory-设计">技能记忆设计</a></nav>
+<div class="content">
+<section class="doc-section">
+<div class="section-kicker">LOCAL_ADB_OCR_GUI_SUBAGENT.md</div>
+<h2 id="本地-adb-ocr-gui-sub-agent-链路">本地 ADB + OCR + GUI Sub-Agent 链路</h2>
+<p>这条链路是 ActMe 在端侧 Agent 执行能力上的一次探索：让云端主 Agent 负责意图理解、任务拆解和失败后的修正，让端侧 App 负责设备连接、截图感知、视觉判断和真实 UI 操作。它不是把手机变成一个简单的 <code>adb shell</code> 终端，而是把无线 ADB、端侧 OCR、端侧视觉模型和 Agentic Loop 串成一个可见、可中止、可复盘的执行闭环。</p>
+<h3 id="设计目标">设计目标</h3>
+<ul>
+<li>降低无线 ADB 配对门槛：用户只需要在系统无线调试页面截图，App 监听图库新增图片并尝试自动识别配对信息。</li>
+<li>把 OCR 留在端侧：GLM-OCR-MNN 只做图片文字转写，规则代码再从文本中解析设备名、IP、连接端口、配对端口和配对码。</li>
+<li>区分规划与执行：云端主 Agent 不直接看屏幕，只写 <code>gui_agent.plan</code>、<code>target_text</code> 和必要的 <code>guidance</code>；本地 GUI 子 Agent 看截图并执行当前一步。</li>
+<li>避免手写 ADB 点控链：第三方 App 操作必须走 <code>gui_agent</code>，<code>adb_shell</code> 主要用于诊断、只读观察、日志、包名、截图和用户明确要求的低层命令。</li>
+<li>保留端侧安全边界：执行过程显示 GUI 悬浮提示，步骤进入聊天工具气泡，失败结果返回主 Agent 继续修正，而不是静默乱点。</li>
+</ul>
+<h3 id="总体链路">总体链路</h3>
+<pre><code class="language-text">用户提出手机 GUI 任务
+  -&gt; 云端主 Agent 判断需要 gui_agent
+  -&gt; 写入 command / plan / target_text / guidance
+  -&gt; SystemSkillExecutor 调用 GuiSubAgent
+  -&gt; GuiSubAgent 检查无线 ADB 是否可用
+      -&gt; 不可用：启动截图监听，打开开发者设置，引导用户截图无线调试配对页
+      -&gt; 可用：截图、调用端侧 GUI-Owl、解析动作、执行 ADB 操作
+  -&gt; 返回 [GUI_AGENT_RESULT] / [GUI_AGENT_ACTION_ERROR] / [GUI_AGENT_NEEDS_ADB]
+  -&gt; 主 Agent 根据观察结果继续规划或给出最终回复</code></pre>
+<p>这条链路的关键不在于某一次点击成功，而在于把“看见手机屏幕 - 决定下一步 - 执行动作 - 再观察”的循环放进移动端 App 内部。ActMe 因此开始具备端侧 Agent 的基础形态：本地有感知、本地有执行、本地有可见状态，云端只承担语言层面的计划和纠错。</p>
+<h3 id="无线-adb-截图配对">无线 ADB 截图配对</h3>
+<p>相关代码：</p>
+<pre><code class="language-text">app/src/main/java/com/actme/app/data/agent/AdbPairingScreenshotService.kt
+app/src/main/java/com/actme/app/data/agent/AdbPairingScreenshotWatcher.kt
+app/src/main/java/com/actme/app/image/LocalImageImportManager.kt
+app/src/main/java/com/actme/app/data/agent/AdbSkillEngine.kt
+app/src/main/java/com/actme/app/ui/settings/SettingsScreen.kt</code></pre>
+<p>设置页的“内置 ADB”不再只弹出手动配对窗口，而是启动图库新增截图监听，并尝试打开系统开发者设置。用户在无线调试配对详情页截图后，<code>AdbPairingScreenshotWatcher</code> 会：</p>
+<ul>
+<li>记录启动时最新图片作为 baseline。</li>
+<li>通过 <code>MediaStore</code> observer 和轮询检测新的图片。</li>
+<li>把新图复制到 App 私有目录，并按 OCR 模型输入限制缩放。</li>
+<li>调用 <code>LocalImageImportManager.extractText()</code> 使用 GLM-OCR-MNN 做端侧 OCR。</li>
+<li>用确定性规则解析 ADB 连接信息。</li>
+<li>调用 <code>AdbSkillEngine.pair()</code> 完成配对，再调用 <code>testConnection()</code> 测试并保存连接端口。</li>
+</ul>
+<p>OCR 模型不负责“理解 ADB 配对流程”。它只输出可见文字；设备名称、地址、端口和配对码由规则解析。这一点很重要：端侧视觉模型负责感知，确定性代码负责高风险连接参数提取，减少模型幻觉进入 ADB 连接层的机会。</p>
+<h3 id="gui-sub-agent-执行器">GUI Sub-Agent 执行器</h3>
+<p>相关代码：</p>
+<pre><code class="language-text">app/src/main/java/com/actme/app/data/agent/GuiSubAgent.kt
+app/src/main/java/com/actme/app/ui/GuiAgentOverlayService.kt
+app/src/main/java/com/actme/app/data/agent/AdbKeyboardInput.kt
+app/src/main/java/com/actme/app/data/agent/SystemSkillExecutor.kt</code></pre>
+<p><code>GuiSubAgent</code> 是本地视觉执行器。它接收主 Agent 的任务、计划、固定输入文本和纠错指导，然后在端侧循环执行：</p>
+<pre><code class="language-text">检查 ADB
+  -&gt; 必要时预启动目标 App
+  -&gt; ADB 截图到本地文件
+  -&gt; 构造带截图的 GUI-Owl prompt
+  -&gt; 模型返回单个 JSON 动作
+  -&gt; 归一化坐标映射到真实像素
+  -&gt; ADB 执行 tap / swipe / keyevent / 输入
+  -&gt; 记录结果并进入下一步</code></pre>
+<p>当前允许的动作包括 <code>open_app</code>、<code>click</code>、<code>long_press</code>、<code>swipe</code>、<code>type</code>、<code>system_button</code>、<code>wait</code>、<code>answer</code> 和 <code>terminate</code>。每一轮只允许一个动作，避免模型一次性输出一串不可验证的操作。</p>
+<p>输入文本是单独的安全通道。主 Agent 必须把目的地、搜索词、消息内容等写入 <code>target_text</code>；本地 GUI 子 Agent 在执行 <code>type</code> 时会强制使用 <code>target_text</code>，即使视觉模型输出了不同文本也会覆盖。对于中文或复杂文本，<code>AdbKeyboardInput</code> 会优先尝试普通 <code>input text</code>，失败后安装并切换随包携带的 ADBKeyboard，通过 base64 broadcast 输入，再恢复原输入法。</p>
+<h3 id="主-agent-协议变化">主 Agent 协议变化</h3>
+<p><code>SystemCall</code> 新增字段：</p>
+<pre><code class="language-json">{
+  &quot;type&quot;: &quot;gui_agent&quot;,
+  &quot;command&quot;: &quot;Open Amap and navigate to destination&quot;,
+  &quot;plan&quot;: &quot;1. Open package com.autonavi.minimap from launcher.\n2. Tap the search box.\n3. Type target_text exactly.&quot;,
+  &quot;target_text&quot;: &quot;华东师范大学普陀校区&quot;,
+  &quot;guidance&quot;: &quot;&quot;,
+  &quot;timeout_ms&quot;: 120000
+}</code></pre>
+<p><code>ActMeAgent</code> 的系统提示中明确了分工：</p>
+<ul>
+<li><code>adb_shell</code> 只做诊断、只读观察、日志、包列表、设置查询、截图，或者用户明确要求的低层 ADB 命令。</li>
+<li>任何操作第三方 App UI 的任务都必须走 <code>gui_agent</code>。</li>
+<li>主 Agent 是 planner，不能假装看见屏幕；本地 GUI 子 Agent 是 visual executor，负责根据截图执行当前一步。</li>
+<li>GUI 子 Agent 失败后，主 Agent 应阅读返回的 <code>[GUI_AGENT_ACTION_ERROR]</code> 或 <code>[GUI_AGENT_ERROR]</code>，更新 plan/guidance 后再次调用，而不是直接放弃。</li>
+</ul>
+<p>为了提高启动成功率，主 Agent 在检测到“打开、进入、点击、导航、搜索、发消息、设置、地图、微信、支付宝”等 GUI 意图时，会注入常见国产 App 包名参考，要求 <code>gui_agent.plan</code> 的第一步写清楚目标包名。端侧执行器也会从任务和计划中推断包名并预启动目标 App。</p>
+<h3 id="可见性与调试">可见性与调试</h3>
+<p>这条链路强调可观察，而不是把自动化藏起来：</p>
+<ul>
+<li>ADB 配对截图监听以前台服务通知展示。</li>
+<li>GUI 执行时右上角显示 <code>ActMe GUI running</code> / <code>ActMe GUI step N</code> 悬浮提示。</li>
+<li><code>SystemSkillExecutor</code> 在聊天气泡里显示 <code>Run GUI Agent</code>。</li>
+<li><code>GuiSubAgent</code> 记录模型输入、模型输出、截图尺寸、坐标缩放、执行结果和错误。</li>
+<li>坐标既支持 0-1000 归一化，也支持绝对像素；执行前统一映射到真实截图尺寸并写日志。</li>
+</ul>
+<p>这些日志让端侧 Agent 的失败可复盘：到底是主 Agent 计划错、视觉模型看错、坐标映射错、ADB 操作失败，还是目标 App 状态变化导致流程卡住。</p>
+<h3 id="端侧-agent-探索意义">端侧 Agent 探索意义</h3>
+<p>当前链路的探索性体现在四个层面：</p>
+<ul>
+<li>感知本地化：截图 OCR 和 GUI 视觉判断发生在手机端，用户屏幕不必作为原始图像交给云端主 Agent。</li>
+<li>执行本地化：点击、输入、返回、截图和应用启动通过本地无线 ADB 完成，形成真正的端侧执行通道。</li>
+<li>规划分层：云端模型做语言规划和失败修正，端侧模型做视觉一步执行，降低单个模型同时承担“理解需求 + 看图 + 控制设备”的复杂度。</li>
+<li>安全收敛：高权限 ADB 被约束在工具层，第三方 App GUI 操作被收敛到 <code>gui_agent</code>，输入文本被 <code>target_text</code> 固定，失败返回结构化观察供下一轮修正。</li>
+</ul>
+<p>因此，这不是传统脚本自动化，也不是纯云端 mobile-use。它更接近一个移动端个人 Agent 的早期原型：在本机拥有感知、连接、执行、提示和日志，能够围绕真实 App 状态做多步闭环。</p>
+<h3 id="当前边界">当前边界</h3>
+<ul>
+<li>无线 ADB 仍依赖用户主动开启无线调试、授予图片读取权限，并在配对页截图。</li>
+<li>OCR 对系统页面布局、截图清晰度和端口文本可见性敏感；规则解析会拒绝缺失字段或配对端口等于连接端口的异常结果。</li>
+<li>GUI-Owl 每轮只执行一步，复杂任务需要多轮截图和模型调用，速度不是脚本级别。</li>
+<li>坐标点击仍可能受弹窗、动画、输入法、系统权限页遮挡影响。</li>
+<li>高风险 ADB 命令仍应保留用户确认，不应让 GUI Agent 绕过用户授权边界。</li>
+</ul>
+<p>这些边界是当前设计刻意保留的约束。ActMe 现阶段追求的是可控的端侧 Agent 链路，而不是无人值守、不可解释的全自动手机控制。</p>
+
+</section>
+<section class="doc-section">
+<div class="section-kicker">BUILTIN_CAPABILITIES.md</div>
+<h2 id="actme-内置能力总览-三驾马车">ActMe 内置能力总览：三驾马车</h2>
+<p>ActMe 的 Agent 能力不是只依赖大模型本身，而是由三类 App 内置执行能力共同支撑：</p>
+<ul>
+<li>内置浏览器：让 Agent 能联网搜索、打开网页、读取渲染后的页面内容。</li>
+<li>内置 Python：让 Agent 能做确定性计算、数据处理、Excel 读写、通用文件生成和脚本复用。</li>
+<li>内置 ADB：让 Agent 在用户授权后具备观察和操作本机 Android 环境的能力。</li>
+</ul>
+<p>这三类能力构成 ActMe 的执行层。大模型负责规划、判断、生成工具调用和总结结果；App 负责真实执行、展示步骤、返回观察结果，并允许用户中止。</p>
+<h3 id="设计目标-2">设计目标</h3>
+<p>ActMe 的目标是把移动端 Agent 从“会聊天”推进到“能执行”：</p>
+<ul>
+<li>遇到最新信息、事实核验、网页资料时，调用内置浏览器。</li>
+<li>遇到计算、解析、表格、Excel、文件生成时，调用内置 Python。</li>
+<li>遇到本机 App 状态、系统页面、UI 自动化、日志/截图/输入操作时，调用内置 ADB。</li>
+</ul>
+<p>三者组合后，Agent 可以完成更长链路任务，例如：</p>
+<ul>
+<li>搜索多个网页，浏览权威来源，用 Python 清洗和汇总数据，生成 Excel 或 PDF。</li>
+<li>浏览官网和公告，提取关键文本，用 Python 比对表格，再给出结论。</li>
+<li>使用 ADB 读取当前手机界面状态，执行输入/点击，再观察结果继续操作。</li>
+</ul>
+<h3 id="system-calls">System Calls</h3>
+<p>Agent 通过 <code>system_calls</code> 请求 App 执行工具。典型格式：</p>
+<pre><code class="language-json">{
+  &quot;system_calls&quot;: [
+    {
+      &quot;type&quot;: &quot;web_search&quot;,
+      &quot;query&quot;: &quot;中国银行 积存金 价格&quot;
+    },
+    {
+      &quot;type&quot;: &quot;browse_url&quot;,
+      &quot;url&quot;: &quot;https://www.boc.cn/fimarkets/&quot;
+    },
+    {
+      &quot;type&quot;: &quot;python_exec&quot;,
+      &quot;code&quot;: &quot;emit({&#39;answer&#39;: 2 + 2})&quot;,
+      &quot;input&quot;: &quot;&quot;,
+      &quot;timeout_ms&quot;: 3000
+    },
+    {
+      &quot;type&quot;: &quot;html_to_pdf&quot;,
+      &quot;url&quot;: &quot;reports/report.html&quot;,
+      &quot;output_files&quot;: [&quot;reports/report.pdf&quot;]
+    },
+    {
+      &quot;type&quot;: &quot;adb_shell&quot;,
+      &quot;command&quot;: &quot;dumpsys window | head -50&quot;,
+      &quot;timeout_ms&quot;: 15000
+    }
+  ]
+}</code></pre>
+<p>App 执行后会把结果写回多步执行循环，Agent 可以观察结果后继续调用更多工具，直到信息足够或工具预算耗尽。</p>
+<h3 id="用户可见性">用户可见性</h3>
+<p>三驾马车不是后台黑盒。ActMe 会在聊天中展示工具执行步骤：</p>
+<ul>
+<li>正在搜索什么。</li>
+<li>正在打开哪个网页。</li>
+<li>正在运行 Python。</li>
+<li>正在执行 ADB 命令。</li>
+<li>哪一步成功、失败或被跳过。</li>
+</ul>
+<p>用户可以在执行过程中中止当前任务。</p>
+<h3 id="能力边界">能力边界</h3>
+<p>三驾马车提升的是执行能力，不等于完全自动自治：</p>
+<ul>
+<li>浏览器读取网页可能受登录、反爬、地区、动态渲染和网站结构影响。</li>
+<li>Python 沙箱允许导入标准库和已安装包；Python 层不额外拦截文件读写删改，实际权限交给 Android App 沙箱和系统权限决定；进程、native code、包安装和系统 shell 等危险能力仍受限。</li>
+<li>报告类文件优先通过 <code>write_report</code> 生成 Markdown 和 HTML；需要 PDF 时调用 <code>html_to_pdf</code>，由 Android WebView 渲染 HTML 并写出 PDF。</li>
+<li>ADB 需要用户手动授权无线调试和悬浮窗权限，且连接端口可能随系统状态变化。</li>
+<li>高风险操作需要谨慎，尤其是 ADB 的删除、卸载、清数据、权限修改等命令。</li>
+</ul>
+<h3 id="文档入口">文档入口</h3>
+<ul>
+<li>[内置浏览器](BUILTIN_BROWSER.md)</li>
+<li>[内置 Python](BUILTIN_PYTHON.md)</li>
+<li>[内置 ADB](BUILTIN_ADB.md)</li>
+</ul>
+
+</section>
+<section class="doc-section">
+<div class="section-kicker">AGENTIC_LOOP.md</div>
+<h2 id="agentic-loop-设计">Agentic Loop 设计</h2>
+<p>ActMe 的 Agentic Loop 是让 Agent 在一次用户请求中多轮调用工具、观察结果、继续决策的执行框架。它的目标是支持复杂任务，而不是只做单轮问答。</p>
+<h3 id="目标">目标</h3>
+<p>Agentic Loop 解决的问题：</p>
+<ul>
+<li>用户的问题可能需要多步完成。</li>
+<li>联网结果需要继续打开网页验证。</li>
+<li>网页文本需要 Python 清洗和计算。</li>
+<li>ADB 操作需要观察当前 UI，再执行点击/输入，再继续观察。</li>
+<li>工具调用失败时需要降级或换路径。</li>
+</ul>
+<p>因此 ActMe 允许 Agent 在一次回复过程中反复执行：</p>
+<pre><code class="language-text">思考 -&gt; system_calls -&gt; App 执行工具 -&gt; 观察结果 -&gt; 继续思考 -&gt; 更多工具或最终回复</code></pre>
+<h3 id="核心流程">核心流程</h3>
+<p>主要代码位置：</p>
+<pre><code class="language-text">app/src/main/java/com/actme/app/data/repo/ActMeRepository.kt
+app/src/main/java/com/actme/app/data/agent/ActMeAgent.kt
+app/src/main/java/com/actme/app/data/agent/SystemSkillExecutor.kt</code></pre>
+<p>职责划分：</p>
+<ul>
+<li><code>ActMeAgent</code>：构造提示词、调用 LLM、解析 JSON 输出和 system_calls。</li>
+<li><code>ActMeRepository</code>：驱动多步循环、管理工具预算、写入聊天消息和步骤展示。</li>
+<li><code>SystemSkillExecutor</code>：执行具体工具，包括浏览器、Python、ADB、时间等。</li>
+</ul>
+<h3 id="agent-输出协议">Agent 输出协议</h3>
+<p>Agent 每轮输出 JSON：</p>
+<pre><code class="language-json">{
+  &quot;reply&quot;: &quot;&quot;,
+  &quot;memory_updates&quot;: [],
+  &quot;schedule_updates&quot;: [],
+  &quot;skill_updates&quot;: [],
+  &quot;system_calls&quot;: [
+    {
+      &quot;type&quot;: &quot;web_search&quot;,
+      &quot;query&quot;: &quot;搜索内容&quot;
+    }
+  ]
+}</code></pre>
+<p>如果 <code>system_calls</code> 非空，<code>reply</code> 可以为空。App 会先执行工具，再把结果作为下一轮输入交给模型。</p>
+<h3 id="多步执行">多步执行</h3>
+<p>一次用户消息可能触发多个 pass：</p>
+<ul>
+<li>第一轮模型判断需要工具。</li>
+<li>App 执行工具。</li>
+<li>App 把工具结果拼入 continuation input。</li>
+<li>模型基于工具结果继续输出：</li>
+<p>- 继续调用更多工具。 - 或生成最终回复。</p>
+<li>达到工具预算或信息足够后停止。</li>
+</ul>
+<p>工具结果会用分隔符拼接，避免不同工具输出混淆。</p>
+<h3 id="工具预算">工具预算</h3>
+<p>为了防止无限循环，ActMe 对工具调用做预算控制：</p>
+<ul>
+<li>总工具调用数。</li>
+<li>搜索调用数。</li>
+<li>浏览调用数。</li>
+<li>多步 pass 上限。</li>
+</ul>
+<p>当预算耗尽时，App 会暂停工具循环，让 Agent 基于已有结果给出当前最好回答。若还有后续工具请求，用户可以发送“继续”让任务继续执行。</p>
+<p>从 1.3.0 开始，循环预算提高到更适合报告、网页调研和多文件生成的规模，同时仍保留去重和上限保护。对于“模型空回复且没有任何输出文件”的 pass，Repository 会自动触发恢复提示，让 Agent 继续生成最终回复或继续完成用户要求的结果，而不是把空消息交给用户。</p>
+<h3 id="去重策略">去重策略</h3>
+<p>ActMe 会避免重复执行明显相同的工具调用：</p>
+<ul>
+<li>相同 <code>web_search.query</code> 不重复搜索。</li>
+<li>相同 <code>browse_url.url</code> 不重复浏览。</li>
+<li>相同 Python 代码和输入不重复执行。</li>
+<li>相同 ADB 命令不重复执行，除非 Agent 给出新命令或用户继续要求。</li>
+</ul>
+<p>去重的目标是减少死循环和无效消耗。</p>
+<h3 id="可见执行步骤">可见执行步骤</h3>
+<p>Agentic Loop 的每一步都会进入聊天 UI 的工具执行气泡：</p>
+<ul>
+<li>工具开始。</li>
+<li>工具完成。</li>
+<li>工具失败。</li>
+<li>工具被跳过。</li>
+<li>工具循环暂停。</li>
+</ul>
+<p>这让用户能看到 Agent 正在做什么，也方便调试。</p>
+<h3 id="可中止">可中止</h3>
+<p>用户可以在执行过程中中止当前任务。中止后：</p>
+<ul>
+<li>当前 coroutine 会取消。</li>
+<li>工具执行气泡显示已中止。</li>
+<li>不再继续调用后续工具。</li>
+</ul>
+<p>这对联网、浏览、Python 和 ADB 都很重要，因为这些操作可能耗时或产生副作用。</p>
+<h3 id="文件输出收集">文件输出收集</h3>
+<p>从 1.2.0 开始，Agentic Loop 把生成文件作为一等输出处理。任意 pass 的任意工具都可能产生文件，尤其是 <code>python_exec</code>。</p>
+<p>处理策略：</p>
+<ul>
+<li><code>SystemSkillExecutor</code> 合并模型声明的 <code>output_files</code> / <code>generated_files</code> / <code>expected_outputs</code> / <code>files</code>。</li>
+<li>Python 执行器会自动检测 <code>agent_workspace</code> 中新增或修改的文件。</li>
+<li><code>ActMeRepository</code> 在每一轮工具执行结束后立即收集文件引用。</li>
+<li>最终回复前再次扫描累计工具结果和最终 reply。</li>
+<li>使用有序集合去重，避免重名路径重复显示。</li>
+<li>Chat UI 会从消息正文和隐藏的工具结果中识别文件，并显示打开按钮。</li>
+</ul>
+<p>这意味着即使 Agent 没有在最终自然语言回复中提到某个文件，只要工具真实生成并返回到 observation，最终聊天气泡也应显示文件入口。</p>
+<p>报告生成是 1.3.0 的重点路径。Agent 应优先通过 <code>write_report(markdown_text, &quot;reports/name&quot;, title=&quot;...&quot;)</code> 生成 Markdown 和 HTML；需要 PDF 时继续调用 <code>html_to_pdf</code>，由 Android WebView 把 HTML 渲染为 PDF。任意 pass 中产生的 <code>.md</code>、<code>.html</code>、<code>.pdf</code>、Excel、CSV、图片或文本文件都会被累计收集，并在最终消息里去重展示。</p>
+<h3 id="失败降级">失败降级</h3>
+<p>工具失败时，不应该把内部 JSON 或异常堆栈直接暴露给用户。ActMe 的策略是：</p>
+<ul>
+<li>工具返回结构化错误。</li>
+<li>Agent 观察错误后尝试换工具、换来源或降级回答。</li>
+<li>最终回复中只说明用户需要知道的失败原因。</li>
+</ul>
+<p>例如：</p>
+<ul>
+<li>Bing HTML 失败，可以尝试 Bing Gecko 或其他搜索后端。</li>
+<li>GeckoView 读不到正文，可以尝试 HTTP 文本抽取。</li>
+<li>Python 报语法错误，可以修改代码后再次执行。</li>
+<li>Python 返回空回复且没有文件时，App 会要求 Agent 继续，不让用户手动补一句“继续”。</li>
+<li>ADB 连接失败，提示用户重新测试并保存连接端口。</li>
+</ul>
+<h3 id="与三驾马车的关系">与三驾马车的关系</h3>
+<p>Agentic Loop 是三驾马车的调度层：</p>
+<ul>
+<li>内置浏览器负责信息获取。</li>
+<li>内置 Python 负责确定性处理。</li>
+<li>内置 ADB 负责本机观察和操作。</li>
+</ul>
+<p>Loop 让它们可以组合成连续工作流，而不是孤立工具。</p>
+<h3 id="设计边界">设计边界</h3>
+<p>当前实现是低配版 agentic workflow，不是完整任务队列系统：</p>
+<ul>
+<li>没有跨进程任务恢复。</li>
+<li>没有长期后台无人值守执行。</li>
+<li>工具预算较保守。</li>
+<li>高风险操作仍需要用户确认和可见步骤。</li>
+</ul>
+<p>这个设计适合移动端个人 Agent：可见、可控、可暂停、可继续。</p>
+
+</section>
+<section class="doc-section">
+<div class="section-kicker">BUILTIN_ADB.md</div>
+<h2 id="内置-adb">内置 ADB</h2>
+<p>内置 ADB 是 ActMe 的本机 Android 环境操作能力。它让 Agent 在用户授权后，可以通过无线调试连接本机 <code>adbd</code>，执行 <code>adb shell</code> 命令，用于观察系统状态、读取 UI 信息、查看日志和进行受控输入操作。</p>
+<h3 id="目标-2">目标</h3>
+<p>内置 ADB 的目标不是替代完整桌面 adb，而是给移动端 Agent 一个轻量执行通道：</p>
+<ul>
+<li>查看当前窗口、Activity、输入法、屏幕状态。</li>
+<li>读取 logcat。</li>
+<li>使用 <code>uiautomator dump</code> 获取 UI 层级。</li>
+<li>执行 <code>input tap</code>、<code>input text</code>、<code>input keyevent</code> 等简单 GUI 操作。</li>
+<li>配合多步 Agent 循环，实现“观察 -&gt; 决策 -&gt; 操作 -&gt; 再观察”。</li>
+</ul>
+<h3 id="主要实现">主要实现</h3>
+<p>核心代码位置：</p>
+<pre><code class="language-text">app/src/main/java/com/actme/app/data/agent/AdbSkillEngine.kt
+app/src/main/java/com/actme/app/data/agent/SystemSkillExecutor.kt
+app/src/main/java/com/actme/app/ui/AdbOverlayService.kt</code></pre>
+<p>实现分层：</p>
+<ul>
+<li><code>AdbSkillEngine</code>：负责保存 host/port、配对、测试连接、执行 shell。</li>
+<li><code>SystemSkillExecutor</code>：接收 Agent 的 <code>adb_shell</code> system call。</li>
+<li><code>AdbOverlayService</code>：系统悬浮窗，用于在无线调试设置页上方完成配对输入。</li>
+</ul>
+<h3 id="为什么需要悬浮窗">为什么需要悬浮窗</h3>
+<p>Android 无线调试配对时，系统会显示配对码弹窗。这个弹窗离开或关闭后，配对端口和验证码可能失效。</p>
+<p>因此 ActMe 不能把配对表单放在普通 App 页面里。正确方式是：</p>
+<ul>
+<li>用户打开 ActMe 的“内置 ADB”。</li>
+<li>ActMe 启动悬浮窗。</li>
+<li>ActMe 打开系统开发者选项。</li>
+<li>用户进入无线调试并点击“使用配对码配对设备”。</li>
+<li>用户保持系统配对码弹窗不关闭，在 ActMe 悬浮窗里输入配对端口和验证码。</li>
+</ul>
+<p>部分系统还要求开启：</p>
+<ul>
+<li>显示在其他应用上层。</li>
+<li>允许在“设置”上重叠显示。</li>
+</ul>
+<p>否则悬浮窗可能不能显示在系统设置页面上方。</p>
+<h3 id="悬浮窗交互">悬浮窗交互</h3>
+<p>悬浮窗默认是小窗，避免挡住系统设置页面：</p>
+<ul>
+<li>标题：内置 ADB。</li>
+<li>按钮：设置、展开、关闭。</li>
+<li>状态区：显示当前提示或错误。</li>
+</ul>
+<p>点击“展开”后显示滚动表单：</p>
+<ul>
+<li>Host</li>
+<li>配对端口</li>
+<li>验证码</li>
+<li>连接端口</li>
+<li>shell 测试命令</li>
+</ul>
+<p>展开区域高度固定，内容通过滚动查看。</p>
+<p>连接、配对或 shell 失败时：</p>
+<ul>
+<li>状态区显示红字错误。</li>
+<li>同时弹出 Toast。</li>
+</ul>
+<h3 id="agent-调用示例">Agent 调用示例</h3>
+<pre><code class="language-json">{
+  &quot;type&quot;: &quot;adb_shell&quot;,
+  &quot;command&quot;: &quot;dumpsys window | head -50&quot;,
+  &quot;timeout_ms&quot;: 15000
+}</code></pre>
+<p>兼容别名：</p>
+<ul>
+<li><code>adb_shell</code></li>
+<li><code>adb</code></li>
+<li><code>run_adb</code></li>
+</ul>
+<p>命令可以写成：</p>
+<pre><code class="language-text">dumpsys window | head -50</code></pre>
+<p>也可以写成：</p>
+<pre><code class="language-text">adb shell dumpsys window | head -50</code></pre>
+<p>执行器会自动去掉 <code>adb shell</code> 前缀。</p>
+<h3 id="连接持续性">连接持续性</h3>
+<p>点击“测试并保存连接”成功后，ActMe 会保存当前 <code>host:port</code>。</p>
+<p>之后悬浮窗可以关闭，Agent 仍可继续调用 <code>adb_shell</code>。每次调用时，App 会读取保存的连接配置，并临时建立 ADB 连接执行命令。</p>
+<p>需要注意：</p>
+<ul>
+<li>无线调试连接端口可能在关闭/重开无线调试、重启手机后变化。</li>
+<li>端口变化后需要重新测试并保存连接。</li>
+<li>配对关系通常会保留，除非用户撤销配对、清除应用数据或系统重置无线调试状态。</li>
+</ul>
+<h3 id="安全边界">安全边界</h3>
+<p>ADB 是高权限能力，必须谨慎使用：</p>
+<ul>
+<li>默认优先执行只读命令，例如 <code>dumpsys</code>、<code>settings get</code>、<code>pm list</code>、<code>logcat -d</code>、<code>uiautomator dump</code>。</li>
+<li>只有用户明确要求时才执行 GUI 操作，例如点击、输入、返回键。</li>
+<li>不应擅自执行删除、卸载、清数据、改权限、改系统设置等破坏性命令。</li>
+</ul>
+<p>建议 Agent 遵循：</p>
+<ul>
+<li>先观察。</li>
+<li>再解释准备执行什么。</li>
+<li>对高风险命令等待用户确认。</li>
+<li>执行后再次观察结果。</li>
+</ul>
+<h3 id="与其他能力配合">与其他能力配合</h3>
+<p>内置 ADB 可以和浏览器、Python 组合：</p>
+<ul>
+<li>ADB 获取当前 UI XML。</li>
+<li>Python 解析 XML，找出控件坐标。</li>
+<li>ADB 执行点击/输入。</li>
+<li>ADB 再次 dump UI 验证结果。</li>
+</ul>
+<p>这使 ActMe 具备低配版 GUI 自动化能力。</p>
+
+</section>
+<section class="doc-section">
+<div class="section-kicker">BUILTIN_BROWSER.md</div>
+<h2 id="内置浏览器">内置浏览器</h2>
+<p>内置浏览器是 ActMe 的联网信息获取能力。它让 Agent 可以搜索网页、打开指定 URL，并读取渲染后的页面文本。</p>
+<h3 id="目标-3">目标</h3>
+<p>内置浏览器解决两个问题：</p>
+<ul>
+<li>大模型知识可能过期，必须联网确认。</li>
+<li>普通 HTTP 抓取经常读不到动态页面，需要真实浏览器渲染。</li>
+</ul>
+<p>因此 ActMe 使用 GeckoView 作为内置浏览器基础，并在 Agent 工具层提供：</p>
+<ul>
+<li><code>web_search</code></li>
+<li><code>browse_url</code></li>
+<li><code>browser_url</code></li>
+<li><code>web_browse</code></li>
+<li><code>open_url</code></li>
+</ul>
+<p>其中 <code>browse_url</code> / <code>browser_url</code> 会打开网页并返回渲染后的文本。</p>
+<h3 id="主要实现-2">主要实现</h3>
+<p>核心代码位置：</p>
+<pre><code class="language-text">app/src/main/java/com/actme/app/data/agent/SystemSkillExecutor.kt
+app/src/main/java/com/actme/app/data/agent/GeckoSearchEngine.kt
+app/src/main/java/com/actme/app/ui/GeckoDebugActivity.kt</code></pre>
+<p>实现分层：</p>
+<ul>
+<li><code>SystemSkillExecutor</code>：接收 Agent 的 system call，决定调用搜索还是网页浏览。</li>
+<li><code>GeckoSearchEngine</code>：管理 GeckoView runtime/session，执行搜索或网页渲染读取。</li>
+<li><code>GeckoDebugActivity</code>：设置页里的“内置浏览器”调试入口，用于人工验证页面加载和搜索效果。</li>
+</ul>
+<h3 id="agent-调用示例-2">Agent 调用示例</h3>
+<p>搜索：</p>
+<pre><code class="language-json">{
+  &quot;type&quot;: &quot;web_search&quot;,
+  &quot;query&quot;: &quot;2026年5月31日国际金价实时价格&quot;
+}</code></pre>
+<p>打开网页：</p>
+<pre><code class="language-json">{
+  &quot;type&quot;: &quot;browse_url&quot;,
+  &quot;url&quot;: &quot;https://www.boc.cn/fimarkets/&quot;
+}</code></pre>
+<h3 id="搜索策略">搜索策略</h3>
+<p>当前搜索后端由 <code>SystemSkillExecutor</code> 管理。优先级包含：</p>
+<ul>
+<li>Bing Gecko</li>
+<li>Bing HTML</li>
+<li>DuckDuckGo API</li>
+<li>DuckDuckGo HTML</li>
+<li>Baidu</li>
+<li>SearXNG</li>
+</ul>
+<p>实际使用中，ActMe 倾向于让 Agent 多搜索、多浏览来源进行确认，尤其是：</p>
+<ul>
+<li>当前信息。</li>
+<li>金融价格。</li>
+<li>官网公告。</li>
+<li>政策法规。</li>
+<li>产品参数。</li>
+<li>需要高准确性的事实。</li>
+</ul>
+<h3 id="页面读取">页面读取</h3>
+<p>浏览网页时，App 会尽量返回渲染后的页面文本。Agent 可据此：</p>
+<ul>
+<li>判断页面是否权威。</li>
+<li>提取正文。</li>
+<li>继续打开页面中的相关链接。</li>
+<li>对多个来源做交叉验证。</li>
+</ul>
+<p>如果搜索结果只提供面包屑式 URL，例如：</p>
+<pre><code class="language-text">https://www.boc.cn › fimarkets</code></pre>
+<p>Agent 可以还原为：</p>
+<pre><code class="language-text">https://www.boc.cn/fimarkets</code></pre>
+<p>再调用 <code>browse_url</code>。</p>
+<h3 id="ui-与调试">UI 与调试</h3>
+<p>设置页提供“内置浏览器”入口，打开后可以：</p>
+<ul>
+<li>手动输入 URL。</li>
+<li>查看 GeckoView 页面加载。</li>
+<li>验证搜索 URL。</li>
+<li>查看 logcat 中的浏览器行为。</li>
+</ul>
+<p>这个入口主要用于调试，不是最终用户主流程。</p>
+<h3 id="限制">限制</h3>
+<ul>
+<li>某些页面需要登录或验证码，内置浏览器不一定能自动读取。</li>
+<li>页面文本提取可能包含导航、广告、脚本生成文本。</li>
+<li>Bing 等搜索结果在不同网络、地区、Cookie 状态下可能变化。</li>
+<li>动态页面即使渲染成功，也可能需要额外交互才能看到数据。</li>
+</ul>
+<h3 id="与其他能力配合-2">与其他能力配合</h3>
+<p>内置浏览器通常和 Python 配合使用：</p>
+<ul>
+<li><code>web_search</code> 找来源。</li>
+<li><code>browse_url</code> 读取页面。</li>
+<li><code>python_exec</code> 清洗、排序、去重、计算。</li>
+<li>Agent 总结结论并引用来源文本。</li>
+</ul>
+
+</section>
+<section class="doc-section">
+<div class="section-kicker">BUILTIN_PYTHON.md</div>
+<h2 id="内置-python">内置 Python</h2>
+<p>内置 Python 是 ActMe 的确定性计算和文件处理能力。它让 Agent 不只依赖语言模型推理，而是可以运行代码完成计算、解析、表格处理、Excel 读写、通用文件生成和脚本复用。</p>
+<h3 id="目标-4">目标</h3>
+<p>内置 Python 主要解决这些问题：</p>
+<ul>
+<li>数学和数据计算需要确定性。</li>
+<li>网页或文本提取后需要清洗、排序、去重、统计。</li>
+<li>Excel、PDF、CSV、图片、JSON、文本等文件需要读取、分析或生成。</li>
+<li>复杂任务需要可复用脚本，而不是每次重新生成一段代码。</li>
+</ul>
+<h3 id="主要实现-3">主要实现</h3>
+<p>核心代码位置：</p>
+<pre><code class="language-text">app/src/main/java/com/actme/app/data/agent/PythonSkillEngine.kt
+app/src/main/python/agent_python.py
+app/src/main/java/com/actme/app/data/agent/SystemSkillExecutor.kt</code></pre>
+<p>实现分层：</p>
+<ul>
+<li><code>PythonSkillEngine</code>：初始化 Chaquopy Python runtime，并从 Kotlin 调用 Python。</li>
+<li><code>agent_python.py</code>：提供沙箱执行、输入输出、Excel 读写、通用文件跟踪、脚本保存和编译。</li>
+<li><code>SystemSkillExecutor</code>：接收 Agent 的 <code>python_exec</code> system call，执行后把结果返回给多步循环。</li>
+</ul>
+<h3 id="agent-调用示例-3">Agent 调用示例</h3>
+<pre><code class="language-json">{
+  &quot;type&quot;: &quot;python_exec&quot;,
+  &quot;code&quot;: &quot;emit({&#39;answer&#39;: 2 + 2})&quot;,
+  &quot;input&quot;: &quot;&quot;,
+  &quot;timeout_ms&quot;: 3000
+}</code></pre>
+<p>Python 代码里可以使用：</p>
+<pre><code class="language-python">input_text
+input_json
+emit(value)
+set_result(value)
+result
+workspace_dir
+report_font_dir
+read_excel(path, max_rows=200, max_sheets=10)
+write_excel(filename, sheets)
+write_report(markdown_text, base_name=&quot;report&quot;, title=None)
+save_script(name, source)
+load_script(name)
+list_scripts()
+compile_script(name)
+run_script(name)</code></pre>
+<p>从 1.2.0 开始，Python import 策略从“允许列表”改为“默认允许已安装包和标准库，少数危险能力受限”。当前随 APK 打包的常用库包括 <code>numpy</code>、<code>pandas</code>、<code>openpyxl</code>、<code>Pillow</code>、<code>matplotlib</code>、<code>reportlab</code>、<code>markdown</code>、<code>fpdf2</code> 和 <code>fonttools</code>，因此表格分析、Excel、图片、Markdown 和 HTML 生成可以直接走 <code>python_exec</code>。PDF 报告优先走 Android 侧 <code>html_to_pdf</code>。</p>
+<h3 id="excel-能力">Excel 能力</h3>
+<p>ActMe 已内置 <code>openpyxl</code>、<code>pandas</code> 和 <code>numpy</code>，支持：</p>
+<ul>
+<li>读取 <code>.xlsx</code></li>
+<li>读取 <code>.xlsm</code></li>
+<li>生成 <code>.xlsx</code></li>
+<li>从聊天中返回生成文件路径</li>
+<li>从系统“打开方式/分享”接收 Excel 文件并载入当前会话</li>
+</ul>
+<p>示例：</p>
+<pre><code class="language-json">{
+  &quot;type&quot;: &quot;python_exec&quot;,
+  &quot;code&quot;: &quot;data = read_excel(&#39;/path/to/file.xlsx&#39;)\nemit(data)&quot;,
+  &quot;input&quot;: &quot;&quot;,
+  &quot;timeout_ms&quot;: 10000
+}</code></pre>
+<p>生成 Excel：</p>
+<pre><code class="language-json">{
+  &quot;type&quot;: &quot;python_exec&quot;,
+  &quot;code&quot;: &quot;path = write_excel(&#39;result.xlsx&#39;, {&#39;Sheet1&#39;: [[&#39;name&#39;, &#39;score&#39;], [&#39;A&#39;, 95]]})\nemit({&#39;file&#39;: path})&quot;,
+  &quot;input&quot;: &quot;&quot;,
+  &quot;timeout_ms&quot;: 10000
+}</code></pre>
+<h3 id="通用文件输出">通用文件输出</h3>
+<p>Python 执行前后会扫描 <code>agent_workspace</code>。只要脚本在工作区内生成或修改文件，执行器会自动把文件加入 <code>output_files</code>。</p>
+<p>Agent 也可以显式声明输出文件：</p>
+<pre><code class="language-json">{
+  &quot;type&quot;: &quot;python_exec&quot;,
+  &quot;code&quot;: &quot;open(&#39;summary.txt&#39;, &#39;w&#39;, encoding=&#39;utf-8&#39;).write(&#39;done&#39;)&quot;,
+  &quot;output_files&quot;: [&quot;summary.txt&quot;]
+}</code></pre>
+<p>Repository 会在 Agent loop 的每一轮工具执行后收集文件，并在最终聊天消息中去重显示。Chat UI 会为存在的文件显示打开按钮。</p>
+<p>当前通用打开支持：</p>
+<ul>
+<li>Excel: <code>.xlsx</code>, <code>.xlsm</code>, <code>.xls</code></li>
+<li>文本和结构化数据: <code>.txt</code>, <code>.md</code>, <code>.csv</code>, <code>.json</code></li>
+<li>文档: <code>.pdf</code></li>
+<li>图片: <code>.png</code>, <code>.jpg</code>, <code>.jpeg</code></li>
+<li>其他文件回退到系统通用打开器</li>
+</ul>
+<h3 id="报告生成">报告生成</h3>
+<p>从 1.3.0 开始，报告类任务优先使用 <code>write_report</code>，而不是让 Agent 手写 ReportLab 或 FPDF 样板代码：</p>
+<pre><code class="language-python">markdown_text = &quot;&quot;&quot;# 示例报告
+
+## 摘要
+这是中文报告内容。
+&quot;&quot;&quot;
+files = write_report(markdown_text, &quot;reports/example_report&quot;, title=&quot;示例报告&quot;)
+emit(files)</code></pre>
+<p><code>write_report</code> 会：</p>
+<ul>
+<li>生成 UTF-8 BOM 编码的 Markdown 文件，方便 Windows 编辑器正确识别中文。</li>
+<li>把 Markdown 转成 HTML。</li>
+<li>返回 <code>markdown</code>、<code>html</code> 和 <code>output_files</code>，执行器也会自动扫描工作区新增文件。</li>
+</ul>
+<p>如果用户需要 PDF，Agent 应在 <code>write_report</code> 生成 HTML 后继续调用 <code>html_to_pdf</code>：</p>
+<pre><code class="language-json">{
+  &quot;type&quot;: &quot;html_to_pdf&quot;,
+  &quot;url&quot;: &quot;reports/example_report.html&quot;,
+  &quot;output_files&quot;: [&quot;reports/example_report.pdf&quot;]
+}</code></pre>
+<p><code>html_to_pdf</code> 使用 Android WebView 渲染 HTML 并通过系统打印管线写出 PDF，避免在 Python/Chaquopy 中维护复杂的 HTML-to-PDF native 依赖链。</p>
+<p><code>report_font_dir</code> 是 App 拷贝出来的字体目录，可能位于 <code>agent_workspace</code> 外。它是运行时资源，不是生成文件目录。Agent 不需要把字体路径写进 <code>output_files</code>。为了让文件按钮稳定显示，模型应把报告、表格、图片等用户可见产物写入 <code>agent_workspace</code> 下的相对路径。</p>
+<h3 id="运行期脚本">运行期脚本</h3>
+<p>Agent 可以保存脚本：</p>
+<pre><code class="language-python">save_script(&quot;tools/analyze.py&quot;, source)</code></pre>
+<p>然后编译：</p>
+<pre><code class="language-python">compile_script(&quot;tools/analyze.py&quot;)</code></pre>
+<p>再执行：</p>
+<pre><code class="language-python">run_script(&quot;tools/analyze.py&quot;)</code></pre>
+<p>这让 Agent 可以逐步构建自己的轻量工具库。</p>
+<h3 id="安全边界-2">安全边界</h3>
+<p>内置 Python 是沙箱式能力：</p>
+<ul>
+<li>默认允许导入标准库和已安装包。</li>
+<li>Python 层不额外拦截文件写入、删除、重命名；实际能否成功交给 Android App 沙箱和系统权限决定。Prompt 仍要求 Agent 把用户可见的生成文件写到 <code>agent_workspace</code> 相对路径，便于 App 收集并显示打开按钮。</li>
+<li>读取类操作尽量放开，以便第三方库读取自身资源、App 打包资源和用户可读文件。</li>
+<li>禁止或限制包安装、进程控制、native code、系统 shell 等危险能力，例如 <code>pip</code>、<code>venv</code>、<code>subprocess</code>、<code>ctypes</code>、<code>multiprocessing</code>、<code>os.system</code>。</li>
+<li>常见 cache/config 路径会指向工作区，例如 <code>HOME</code>、<code>MPLCONFIGDIR</code>、<code>XDG_CACHE_HOME</code>。</li>
+</ul>
+<h3 id="与其他能力配合-3">与其他能力配合</h3>
+<p>典型链路：</p>
+<ul>
+<li>内置浏览器搜索和读取网页。</li>
+<li>Python 解析文本、清洗数据、计算结果。</li>
+<li>Python 清洗数据、计算结果或生成 Excel/PDF/CSV/图片等文件。</li>
+<li>Agent 把结论和文件按钮返回给用户。</li>
+</ul>
+
+</section>
+<section class="doc-section">
+<div class="section-kicker">SKILL_MEMORY_DESIGN.md</div>
+<h2 id="skill-与-memory-设计">Skill 与 Memory 设计</h2>
+<p>ActMe 的 Skill 与 Memory 是 Agent 个性化和长期可用性的基础。Memory 负责记录用户长期信息，Skill 负责沉淀可复用做事方法。</p>
+<h3 id="设计目标-3">设计目标</h3>
+<p>Memory 与 Skill 分别解决不同问题：</p>
+<ul>
+<li>Memory：用户是谁、有什么偏好、目标、关系、健康状态、近期事项。</li>
+<li>Skill：遇到某类任务时，Agent 应该采用什么固定流程、检查表或行动模板。</li>
+</ul>
+<p>二者共同让 ActMe 从“每轮重新理解用户”变成“持续适应用户”的个人 Agent。</p>
+<h3 id="数据位置">数据位置</h3>
+<p>主要代码位置：</p>
+<pre><code class="language-text">app/src/main/java/com/actme/app/data/local/Entities.kt
+app/src/main/java/com/actme/app/data/local/Daos.kt
+app/src/main/java/com/actme/app/skills/MemorySeeder.kt
+app/src/main/java/com/actme/app/skills/SkillSeeder.kt
+app/src/main/java/com/actme/app/data/agent/ActMeAgent.kt
+app/src/main/java/com/actme/app/data/repo/ActMeRepository.kt</code></pre>
+<p>当前 Memory 和 Skill 都存储在本地 Room 数据库。</p>
+<h3 id="memory-数据模型">Memory 数据模型</h3>
+<p>Memory 使用 <code>MemoryItemEntity</code>：</p>
+<pre><code class="language-kotlin">data class MemoryItemEntity(
+    val id: Long,
+    val category: String,
+    val content: String,
+    val source: String,
+    val updatedAt: Long
+)</code></pre>
+<p>典型分类包括：</p>
+<ul>
+<li>系统</li>
+<li>短期目标</li>
+<li>长期目标</li>
+<li>个人焦虑</li>
+<li>近期烦恼</li>
+<li>个人偏好</li>
+<li>人际关系</li>
+<li>健康状态</li>
+<li>学习工作</li>
+</ul>
+<p>其中“系统”类 memory 用于 App 身份和固定能力说明，一般不允许 Agent 随意写入。</p>
+<h3 id="memory-写入">Memory 写入</h3>
+<p>Agent 可以在输出 JSON 中写入：</p>
+<pre><code class="language-json">{
+  &quot;memory_updates&quot;: [
+    {
+      &quot;category&quot;: &quot;长期目标&quot;,
+      &quot;content&quot;: &quot;用户希望长期提升英语口语能力。&quot;
+    }
+  ]
+}</code></pre>
+<p>Repository 接收后写入本地数据库。</p>
+<p>Memory 写入原则：</p>
+<ul>
+<li>只记录长期有用的信息。</li>
+<li>不把一次性闲聊全部写入。</li>
+<li>不写入过于敏感或不确定的信息。</li>
+<li>不重复记录已存在的明显相同内容。</li>
+</ul>
+<h3 id="memory-注入">Memory 注入</h3>
+<p>每轮对话前，ActMe 会把部分 memory 注入 system prompt：</p>
+<ul>
+<li>系统 memory 优先注入。</li>
+<li>用户 memory 取最近或最相关的一部分。</li>
+<li>注入内容控制数量，避免 prompt 过长。</li>
+</ul>
+<p>注入格式类似：</p>
+<pre><code class="language-text">用户记忆：
+- [长期目标] 用户希望长期提升英语口语能力。
+- [个人偏好] 用户喜欢直接、可执行的建议。</code></pre>
+<h3 id="skill-数据模型">Skill 数据模型</h3>
+<p>Skill 使用 <code>SkillEntity</code>：</p>
+<pre><code class="language-kotlin">data class SkillEntity(
+    val id: Long,
+    val name: String,
+    val description: String,
+    val triggerKeywords: String,
+    val actionTemplate: String,
+    val enabled: Boolean,
+    val createdAt: Long
+)</code></pre>
+<p>当前 Skill 是轻量结构：</p>
+<ul>
+<li><code>name</code>：技能名。</li>
+<li><code>description</code>：用途描述。</li>
+<li><code>triggerKeywords</code>：触发关键词，JSON 字符串数组。</li>
+<li><code>actionTemplate</code>：触发后追加给用户或 Agent 的行动模板。</li>
+<li><code>enabled</code>：是否启用。</li>
+</ul>
+<h3 id="skill-写入">Skill 写入</h3>
+<p>Agent 可以输出：</p>
+<pre><code class="language-json">{
+  &quot;skill_updates&quot;: [
+    {
+      &quot;name&quot;: &quot;考试复习计划&quot;,
+      &quot;description&quot;: &quot;当用户提到考试和复习时，生成分阶段计划。&quot;,
+      &quot;trigger_keywords&quot;: [&quot;考试&quot;, &quot;复习&quot;, &quot;备考&quot;],
+      &quot;action_template&quot;: &quot;先确认考试日期和科目，再拆分每日复习任务，并设置提醒。&quot;
+    }
+  ]
+}</code></pre>
+<p>Repository 将其保存为本地 Skill。</p>
+<h3 id="skill-注入">Skill 注入</h3>
+<p>每轮对话前，ActMe 会注入启用的 Skill 列表：</p>
+<pre><code class="language-text">当前技能：
+- 考试复习计划: [&quot;考试&quot;,&quot;复习&quot;,&quot;备考&quot;]</code></pre>
+<p>此外，Repository 会根据用户输入匹配关键词，触发本地 skill hint，把 <code>actionTemplate</code> 追加到最终回复或过程上下文。</p>
+<h3 id="与-claude-codex-skill-的关系">与 Claude/Codex Skill 的关系</h3>
+<p>当前 Skill 模型是轻量版，不等于 Claude/Codex 的目录型 skill。</p>
+<p>Claude/Codex 风格 skill 通常包含：</p>
+<ul>
+<li><code>SKILL.md</code></li>
+<li>scripts</li>
+<li>references</li>
+<li>templates</li>
+<li>assets</li>
+</ul>
+<p>ActMe 当前已有工具 <code>tools/adapt_claude_skills.py</code>，可以下载 Claude-style skill 并转换为当前 App 能识别的轻量 preload JSON，同时保留完整 skill 内容到 assets。</p>
+<p>未来更完整的方案应该扩展 Skill schema：</p>
+<ul>
+<li><code>source</code></li>
+<li><code>content</code></li>
+<li><code>resourcePath</code></li>
+<li><code>version</code></li>
+<li><code>format</code></li>
+<li><code>enabled</code></li>
+</ul>
+<p>并在 prompt 构造时按任务相关性注入完整 <code>SKILL.md</code> 或摘要。</p>
+<h3 id="skill-与-memory-的区别">Skill 与 Memory 的区别</h3>
+<p>Memory 记录“关于用户的事实”：</p>
+<pre><code class="language-text">用户每周三晚上有英语课。
+用户喜欢表格式计划。
+用户近期在准备期末考试。</code></pre>
+<p>Skill 记录“做事方法”：</p>
+<pre><code class="language-text">当用户要求备考计划时，先确认考试日期，再拆每日任务，再设置提醒。</code></pre>
+<p>简单判断：</p>
+<ul>
+<li>这是用户个人信息 -&gt; Memory。</li>
+<li>这是可复用流程 -&gt; Skill。</li>
+</ul>
+<h3 id="与-agentic-loop-的关系">与 Agentic Loop 的关系</h3>
+<p>Memory 和 Skill 是 Agentic Loop 的上下文层：</p>
+<ul>
+<li>Memory 告诉 Agent 用户是谁、偏好什么、当前目标是什么。</li>
+<li>Skill 告诉 Agent 遇到某类任务时应该如何行动。</li>
+<li>Agentic Loop 根据这些上下文决定是否调用浏览器、Python、ADB 或日程能力。</li>
+</ul>
+<h3 id="学生场景示例">学生场景示例</h3>
+<p>Memory：</p>
+<pre><code class="language-text">[长期目标] 用户准备考研英语。
+[学习工作] 用户每周一、三、五晚上复习数学。
+[个人偏好] 用户希望计划以每日 checklist 展示。</code></pre>
+<p>Skill：</p>
+<pre><code class="language-text">考试复习计划：先确认考试日期、科目、当前水平，再生成每日计划和提醒。
+论文资料整理：先联网搜索多个来源，再按主题提炼观点和引用链接。
+Excel 数据分析：先读取表格结构，再用 Python 汇总统计，最后生成结果文件。</code></pre>
+<h3 id="风险与边界">风险与边界</h3>
+<ul>
+<li>Memory 不应过度记录敏感信息。</li>
+<li>Skill 不应沉淀错误流程。</li>
+<li>用户应该能查看、删除和禁用 memory/skill。</li>
+<li>长期应支持去重、合并、过期和可信来源标记。</li>
+</ul>
+<p>Memory 和 Skill 的核心价值是让 Agent 更像“长期助手”，而不是一次性问答模型。</p>
+
+</section>
+
+</div>
+<footer class="footer">ActMe 创意设计文档：聚焦 Agentic Loop、内置工具链与端侧 GUI Agent 探索。</footer>
+</main>
+</body>
+</html>

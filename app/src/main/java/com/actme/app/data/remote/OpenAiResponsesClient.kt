@@ -16,6 +16,7 @@ import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
@@ -23,7 +24,10 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
 import java.net.URI
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 
 data class ProviderConfig(
     val providerFormat: String, // "openai" or "anthropic"
@@ -100,7 +104,7 @@ class OpenAiResponsesClient {
     ): LlmResult {
         if (config.sk.isBlank()) {
             AppLogger.i(TAG, "run aborted: api key is blank")
-            return LlmResult("当前未配置 API Key，请在设置中添加提供商。")
+            return LlmResult("\u5f53\u524d\u672a\u914d\u7f6e API Key\uff0c\u8bf7\u5728\u8bbe\u7f6e\u4e2d\u6dfb\u52a0\u63d0\u4f9b\u5546\u3002")
         }
         val url = when (config.providerFormat) {
             "anthropic" -> apiUrl(config.endpoint, "messages")
@@ -116,18 +120,59 @@ class OpenAiResponsesClient {
             else -> buildOpenAiRequest(messages, config, enableWebSearch, responseFormat = responseFormat)
         }
 
-        var response = okHttp.newCall(request).execute()
+        var response = try {
+            executeRequestWithTransientRetries(request, "run")
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            if (config.providerFormat != "anthropic" && responseFormat != null) {
+                AppLogger.w(TAG, "run request failed before response; retry compat fallback without response_format/stream_options: ${e.message}")
+                val fallback = runCatching {
+                    executeRequestWithTransientRetries(
+                        buildOpenAiRequest(messages, config, enableWebSearch, includeUsage = false, responseFormat = null),
+                        "run exception compat fallback"
+                    )
+                }
+                if (fallback.isSuccess) {
+                    fallback.getOrThrow()
+                } else {
+                    AppLogger.e(TAG, "run exception compat fallback error: ${fallback.exceptionOrNull()?.message}")
+                    AppLogger.e(TAG, "run error: ${e.message}")
+                    return LlmResult(safeNetworkErrorText(e))
+                }
+            } else {
+                AppLogger.e(TAG, "run error: ${e.message}")
+                return LlmResult(safeNetworkErrorText(e))
+            }
+        }
         var body = response.body?.string().orEmpty()
         if (!response.isSuccessful && shouldRetryWithoutOpenAiUsage(config, body)) {
             AppLogger.w(TAG, "run retry without stream_options.include_usage")
             response.close()
-            response = okHttp.newCall(buildOpenAiRequest(messages, config, enableWebSearch, includeUsage = false, responseFormat = responseFormat)).execute()
+            response = try {
+                executeRequestWithTransientRetries(
+                    buildOpenAiRequest(messages, config, enableWebSearch, includeUsage = false, responseFormat = responseFormat),
+                    "run fallback without usage"
+                )
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                AppLogger.e(TAG, "run fallback without usage error: ${e.message}")
+                return LlmResult(safeNetworkErrorText(e))
+            }
             body = response.body?.string().orEmpty()
         }
         if (!response.isSuccessful && responseFormat != null && shouldRetryWithoutResponseFormat(body)) {
             AppLogger.w(TAG, "run retry without response_format")
             response.close()
-            response = okHttp.newCall(buildOpenAiRequest(messages, config, enableWebSearch, includeUsage = false)).execute()
+            response = try {
+                executeRequestWithTransientRetries(
+                    buildOpenAiRequest(messages, config, enableWebSearch, includeUsage = false),
+                    "run fallback without response_format"
+                )
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                AppLogger.e(TAG, "run fallback without response_format error: ${e.message}")
+                return LlmResult(safeNetworkErrorText(e))
+            }
             body = response.body?.string().orEmpty()
         }
         if (!response.isSuccessful) {
@@ -155,14 +200,16 @@ class OpenAiResponsesClient {
         responseFormat: JsonObject? = null
     ): Flow<LlmStreamChunk> = flow {
         if (config.sk.isBlank()) {
-            emit(LlmStreamChunk(text = "当前未配置 API Key，请在设置中添加提供商。"))
+            emit(LlmStreamChunk(text = "\u5f53\u524d\u672a\u914d\u7f6e API Key\uff0c\u8bf7\u5728\u8bbe\u7f6e\u4e2d\u6dfb\u52a0\u63d0\u4f9b\u5546\u3002"))
             return@flow
         }
+
         val request = when (config.providerFormat) {
             "anthropic" -> buildAnthropicRequest(messages, config, enableWebSearch)
             else -> buildOpenAiRequest(messages, config, enableWebSearch, responseFormat = responseFormat)
         }
         val call = okHttp.newCall(request)
+        var emittedAny = false
         try {
             val response = call.execute()
             if (!response.isSuccessful) {
@@ -186,7 +233,10 @@ class OpenAiResponsesClient {
                         while (!fallbackSource.exhausted()) {
                             val line = fallbackSource.readUtf8Line() ?: break
                             val chunk = parseSseLine(line, config.providerFormat)
-                            if (chunk != null && (chunk.text.isNotEmpty() || chunk.usage != null)) emit(chunk)
+                            if (chunk != null && (chunk.text.isNotEmpty() || chunk.usage != null)) {
+                                emittedAny = true
+                                emit(chunk)
+                            }
                         }
                     } finally {
                         fallback.cancel()
@@ -201,19 +251,109 @@ class OpenAiResponsesClient {
             while (!source.exhausted()) {
                 val line = source.readUtf8Line() ?: break
                 val chunk = parseSseLine(line, config.providerFormat)
-                if (chunk != null && (chunk.text.isNotEmpty() || chunk.usage != null)) emit(chunk)
+                if (chunk != null && (chunk.text.isNotEmpty() || chunk.usage != null)) {
+                    emittedAny = true
+                    emit(chunk)
+                }
             }
         } catch (e: Exception) {
             if (e is CancellationException) throw e
             AppLogger.e(TAG, "runStreaming error: ${e.message}")
-            emit(LlmStreamChunk(text = "模型请求失败：${e.message ?: e::class.java.simpleName}"))
+            if (!emittedAny && isTransientStreamError(e)) {
+                repeat(3) { index ->
+                    val attempt = index + 1
+                    val backoffMs = 800L * attempt
+                    AppLogger.w(TAG, "runStreaming transient error before chunks; retry $attempt/3 after ${backoffMs}ms: ${e.message}")
+                    delay(backoffMs)
+                    val useCompatFallback = attempt >= 2 && config.providerFormat != "anthropic"
+                    val retryRequest = if (useCompatFallback) {
+                        AppLogger.w(TAG, "runStreaming retry $attempt/3 using compat fallback without response_format/stream_options")
+                        buildOpenAiRequest(messages, config, enableWebSearch, includeUsage = false, responseFormat = null)
+                    } else {
+                        request
+                    }
+                    val retryCall = okHttp.newCall(retryRequest)
+                    try {
+                        val retryResponse = retryCall.execute()
+                        if (!retryResponse.isSuccessful) {
+                            val retryBody = retryResponse.body?.string().orEmpty()
+                            AppLogger.w(TAG, "stream retry $attempt/3 after exception failed: code=${retryResponse.code}, bodyLen=${retryBody.length}, bodyB64=${LogCodec.utf8Base64(retryBody.take(4000))}")
+                            if (attempt == 3) {
+                                emit(LlmStreamChunk(text = safeHttpErrorText(retryResponse.code)))
+                                return@flow
+                            }
+                            return@repeat
+                        }
+                        val retrySource = retryResponse.body?.source() ?: return@flow
+                        while (!retrySource.exhausted()) {
+                            val line = retrySource.readUtf8Line() ?: break
+                            val chunk = parseSseLine(line, config.providerFormat)
+                            if (chunk != null && (chunk.text.isNotEmpty() || chunk.usage != null)) {
+                                emittedAny = true
+                                emit(chunk)
+                            }
+                        }
+                        return@flow
+                    } catch (retryError: Exception) {
+                        if (retryError is CancellationException) throw retryError
+                        AppLogger.e(TAG, "runStreaming retry $attempt/3 error: ${retryError.message}")
+                    } finally {
+                        retryCall.cancel()
+                    }
+                }
+            }
+            emit(LlmStreamChunk(text = safeNetworkErrorText(e)))
         } finally {
             call.cancel()
         }
     }.flowOn(Dispatchers.IO)
 
+    private fun isTransientStreamError(error: Exception): Boolean {
+        val message = error.message.orEmpty().lowercase()
+        return error is UnknownHostException ||
+            error is SocketTimeoutException ||
+            message == "timeout" ||
+            message.contains("timed out") ||
+            message.contains("unable to resolve host") ||
+            message.contains("software caused connection abort") ||
+            message.contains("connection reset") ||
+            message.contains("broken pipe") ||
+            message.contains("stream was reset") ||
+            message.contains("unexpected end of stream")
+    }
+
+    private fun safeNetworkErrorText(error: Exception): String {
+        val message = error.message ?: error::class.java.simpleName
+        return if (error is UnknownHostException || message.contains("Unable to resolve host", ignoreCase = true)) {
+            "\u6a21\u578b\u8bf7\u6c42\u5931\u8d25\uff1a\u7f51\u7edc DNS \u89e3\u6790\u5931\u8d25\uff0c\u65e0\u6cd5\u8fde\u63a5\u6a21\u578b\u670d\u52a1\uff08$message\uff09\u3002\u8bf7\u68c0\u67e5\u7f51\u7edc\u3001DNS/\u4ee3\u7406\uff0c\u6216\u7a0d\u540e\u91cd\u8bd5\u3002"
+        } else {
+            "\u6a21\u578b\u8bf7\u6c42\u5931\u8d25\uff1a$message"
+        }
+    }
+
     private fun safeHttpErrorText(code: Int): String {
-        return "模型请求失败（HTTP $code）。请检查模型、接口地址、API Key 或稍后重试。"
+        return "\u6a21\u578b\u8bf7\u6c42\u5931\u8d25\uff08HTTP $code\uff09\u3002\u8bf7\u68c0\u67e5\u6a21\u578b\u3001\u63a5\u53e3\u5730\u5740\u3001API Key \u6216\u7a0d\u540e\u91cd\u8bd5\u3002"
+    }
+    private suspend fun executeRequestWithTransientRetries(
+        request: Request,
+        label: String,
+        retries: Int = 3
+    ): Response {
+        var lastError: Exception? = null
+        for (attemptIndex in 0..retries) {
+            val attempt = attemptIndex + 1
+            try {
+                return okHttp.newCall(request).execute()
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                lastError = e
+                if (!isTransientStreamError(e) || attemptIndex == retries) throw e
+                val backoffMs = 800L * attempt
+                AppLogger.w(TAG, "$label transient error; retry $attempt/$retries after ${backoffMs}ms: ${e.message}")
+                delay(backoffMs)
+            }
+        }
+        throw lastError ?: IllegalStateException("$label failed without error")
     }
 
     suspend fun fetchModels(endpoint: String, sk: String, providerFormat: String = "openai"): List<String> {
@@ -306,7 +446,8 @@ class OpenAiResponsesClient {
     private fun buildAnthropicRequest(
         messages: List<MessagePayload>,
         config: ProviderConfig,
-        enableWebSearch: Boolean
+        enableWebSearch: Boolean,
+        stream: Boolean = true
     ): Request {
         // Separate system message from conversation
         val systemMessages = mutableListOf<String>()
@@ -325,7 +466,7 @@ class OpenAiResponsesClient {
         val payload = buildJsonObject {
             put("model", config.model)
             put("max_tokens", 4096)
-            put("stream", true)
+            put("stream", stream)
             if (systemPrompt.isNotBlank()) {
                 put("system", systemPrompt)
             }
@@ -340,6 +481,7 @@ class OpenAiResponsesClient {
                 }
             }
         }
+
 
         return Request.Builder()
             .url(apiUrl(config.endpoint, "messages"))

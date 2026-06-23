@@ -148,6 +148,7 @@ object SystemSkillExecutor {
                 "python_exec", "run_python", "python" -> executePython(call)
                 "html_to_pdf", "render_html_pdf", "webview_pdf" -> executeHtmlToPdf(call)
                 "adb_shell", "adb", "run_adb" -> executeAdbShell(call)
+                "gui_agent", "mobile_gui_agent", "mobile_use" -> executeGuiAgent(call)
                 else -> {
                     AppLogger.w(TAG, "Unknown call: " + call.type)
                     "[TOOL_ERROR] Unknown system call: ${call.type}"
@@ -171,6 +172,9 @@ object SystemSkillExecutor {
         if (call.type == "adb_shell" || call.type == "adb" || call.type == "run_adb") {
             return "Run ADB"
         }
+        if (call.type == "gui_agent" || call.type == "mobile_gui_agent" || call.type == "mobile_use") {
+            return "Run GUI Agent"
+        }
         return when (call.type) {
             "get_current_time" -> "获取当前时间"
             "web_search" -> "联网搜索"
@@ -182,17 +186,21 @@ object SystemSkillExecutor {
 
     private fun toolDetail(call: SystemCall): String {
         if (call.type == "python_exec" || call.type == "run_python" || call.type == "python") {
-            return call.code.lineSequence().firstOrNull()?.trim().orEmpty().ifBlank { "python_exec" }.take(240)
+            return call.code.ifBlank { "python_exec" }
         }
         if (call.type == "adb_shell" || call.type == "adb" || call.type == "run_adb") {
-            return adbCommand(call).take(240)
+            return adbCommand(call)
+        }
+        if (call.type == "gui_agent" || call.type == "mobile_gui_agent" || call.type == "mobile_use") {
+            return call.plan.trim()
+                .ifBlank { guiAgentInstruction(call) }
         }
         return when (call.type) {
             "web_search" -> call.query
             "browse_url", "browser_url", "web_browse", "open_url" -> call.url.ifBlank { call.query }
             "html_to_pdf", "render_html_pdf", "webview_pdf" -> call.url.ifBlank { call.query }.ifBlank { call.input }
             else -> call.type
-        }.take(240)
+        }
     }
 
     private fun summarizeToolResult(result: String): String {
@@ -202,6 +210,8 @@ object SystemSkillExecutor {
         if (result.contains("[HTML_PDF_ERROR]")) return "PDF generation failed"
         if (result.contains("[ADB_RESULT]")) return "ADB completed, ${result.length} chars"
         if (result.contains("[ADB_ERROR]")) return "ADB failed"
+        if (result.contains("[GUI_AGENT_RESULT]")) return "GUI agent completed, ${result.length} chars"
+        if (result.contains("[GUI_AGENT_ERROR]") || result.contains("[GUI_AGENT_NEEDS_ADB]")) return "GUI agent needs attention"
         return when {
             result.contains("[BROWSE_RESULT]") -> "网页内容已读取，${result.length} 字符"
             result.contains("[BROWSE_ERROR]") -> "网页读取失败"
@@ -439,6 +449,23 @@ object SystemSkillExecutor {
     private fun adbCommand(call: SystemCall): String {
         val raw = call.command.ifBlank { call.code }.ifBlank { call.query }.trim()
         return raw.removePrefix("adb shell ").removePrefix("shell ").trim()
+    }
+
+    // ---- gui_agent ----
+
+    private suspend fun executeGuiAgent(call: SystemCall): String {
+        val instruction = guiAgentInstruction(call)
+        if (instruction.isBlank()) return "[GUI_AGENT_ERROR] Empty GUI task instruction."
+        val plan = call.plan.trim()
+        val targetText = call.targetText.trim()
+        val guidance = call.guidance.trim()
+        val timeoutMs = call.timeoutMs.coerceIn(30_000L, 180_000L)
+        AppLogger.i(TAG, "GUI-AGENT-EXEC: instruction=${instruction.take(240)}, instructionB64=${LogCodec.utf8Base64(instruction)}, plan=${plan.take(240)}, planB64=${LogCodec.utf8Base64(plan)}, targetText=${targetText.take(120)}, targetTextB64=${LogCodec.utf8Base64(targetText)}, guidance=${guidance.take(240)}, guidanceB64=${LogCodec.utf8Base64(guidance)}, timeoutMs=$timeoutMs")
+        return GuiSubAgent.run(instruction, timeoutMs, guidance, plan, targetText)
+    }
+
+    private fun guiAgentInstruction(call: SystemCall): String {
+        return call.command.ifBlank { call.query }.ifBlank { call.input }.ifBlank { call.code }.trim()
     }
 
     // ---- browse_url ----

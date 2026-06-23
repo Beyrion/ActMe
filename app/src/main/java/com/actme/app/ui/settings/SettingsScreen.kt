@@ -1,11 +1,14 @@
 package com.actme.app.ui.settings
 
+import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -62,8 +65,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+import com.actme.app.data.agent.AdbPairingScreenshotWatcher
 import com.actme.app.data.agent.AdbSkillEngine
 import com.actme.app.mnn.DownloadState
+import com.actme.app.mnn.ModelManager
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -75,13 +81,19 @@ fun SettingsScreen(
     downloadState: DownloadState,
     isVisionModelReady: Boolean,
     visionDownloadState: DownloadState,
+    isOcrModelReady: Boolean,
+    ocrDownloadState: DownloadState,
     asrLanguage: String,
+    localAsrModelDir: String,
     localVisionModelDir: String,
+    localOcrModelDir: String,
     onSetAsrLanguage: (String) -> Unit,
     onDownloadModel: () -> Unit,
     onDeleteModel: () -> Unit,
     onDownloadVisionModel: () -> Unit,
     onDeleteVisionModel: () -> Unit,
+    onDownloadOcrModel: () -> Unit,
+    onDeleteOcrModel: () -> Unit,
     onClearChatHistory: () -> Unit,
     onAddProvider: (String, String, String, String, String) -> Unit,
     onUpdateProvider: (Long, String, String, String, String, String) -> Unit,
@@ -105,9 +117,30 @@ fun SettingsScreen(
     var deleteTarget by remember { mutableStateOf<ProviderEntity?>(null) }
     var showDeleteModelDialog by remember { mutableStateOf(false) }
     var showDeleteVisionModelDialog by remember { mutableStateOf(false) }
+    var showDeleteOcrModelDialog by remember { mutableStateOf(false) }
     var langExpanded by remember { mutableStateOf(false) }
     var showAdbDialog by remember { mutableStateOf(false) }
     var showAdbOverlayPermissionDialog by remember { mutableStateOf(false) }
+
+    fun beginAdbScreenshotWatch() {
+        AdbPairingScreenshotWatcher.start(context)
+        Toast.makeText(context, "已开始监听图库新增截图，请在无线调试页面截图 ADB 配对信息。", Toast.LENGTH_LONG).show()
+        runCatching {
+            context.startActivity(Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS))
+        }.onFailure {
+            Toast.makeText(context, "无法打开无线调试设置页：${it.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    val adbScreenshotPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            beginAdbScreenshotWatch()
+        } else {
+            Toast.makeText(context, "需要图库读取权限才能检测新增截图。", Toast.LENGTH_LONG).show()
+        }
+    }
 
     if (showAdbDialog) {
         AdbPairingDialog(onDismiss = { showAdbDialog = false })
@@ -205,6 +238,23 @@ fun SettingsScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showDeleteVisionModelDialog = false }) { Text("取消") }
+            }
+        )
+    }
+
+    if (showDeleteOcrModelDialog) {
+        AlertDialog(
+            onDismissRequest = { showDeleteOcrModelDialog = false },
+            title = { Text("删除 OCR 模型") },
+            text = { Text("确定要删除 GLM-OCR-MNN 吗？删除后需要重新下载才能使用 ADB 截图 OCR。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    onDeleteOcrModel()
+                    showDeleteOcrModelDialog = false
+                }) { Text("删除", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteOcrModelDialog = false }) { Text("取消") }
             }
         )
     }
@@ -361,8 +411,12 @@ fun SettingsScreen(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
         ) {
+            Column(modifier = Modifier.padding(16.dp)) {
             ListItem(
-                headlineContent = { Text("本地语音识别模型") },
+                headlineContent = { Text(ModelManager.MODEL_NAME) },
+                supportingContent = {
+                    Text("ModelScope: ${ModelManager.MODEL_OWNER}, dir: $localAsrModelDir")
+                },
                 trailingContent = {
                     when {
                         isModelReady -> {
@@ -424,7 +478,7 @@ fun SettingsScreen(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 12.dp),
+                    .padding(top = 12.dp, bottom = 12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
@@ -466,6 +520,7 @@ fun SettingsScreen(
                     }
                 }
             }
+            }
         }
 
         Spacer(Modifier.height(16.dp))
@@ -484,7 +539,7 @@ fun SettingsScreen(
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 ListItem(
-                    headlineContent = { Text("Qwen3-VL-2B-Instruct-MNN") },
+                    headlineContent = { Text("GUI-Owl-1.5-2B-Instruct-MNN") },
                     supportingContent = {
                         Text("来源：ModelScope 社区，目录：$localVisionModelDir")
                     },
@@ -543,6 +598,67 @@ fun SettingsScreen(
                         }
                     }
                 )
+                HorizontalDivider()
+                ListItem(
+                    headlineContent = { Text("GLM-OCR-MNN") },
+                    supportingContent = {
+                        Text("来源：ModelScope 社区，专用于 ADB 截图 OCR，目录：$localOcrModelDir")
+                    },
+                    trailingContent = {
+                        when {
+                            isOcrModelReady -> {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Text(
+                                        "已下载",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                    IconButton(
+                                        onClick = { showDeleteOcrModelDialog = true },
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
+                                        Icon(
+                                            Icons.Outlined.DeleteOutline,
+                                            contentDescription = "删除 OCR 模型",
+                                            modifier = Modifier.size(18.dp),
+                                            tint = MaterialTheme.colorScheme.error
+                                        )
+                                    }
+                                }
+                            }
+                            ocrDownloadState is DownloadState.Downloading -> {
+                                val state = ocrDownloadState as DownloadState.Downloading
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        strokeWidth = 2.dp
+                                    )
+                                    Text(
+                                        "${(state.currentFileProgress * 100).toInt()}%",
+                                        style = MaterialTheme.typography.labelSmall
+                                    )
+                                }
+                            }
+                            ocrDownloadState is DownloadState.Checking -> {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp
+                                )
+                            }
+                            else -> {
+                                TextButton(onClick = onDownloadOcrModel) {
+                                    Text("下载")
+                                }
+                            }
+                        }
+                    }
+                )
             }
         }
 
@@ -587,21 +703,18 @@ fun SettingsScreen(
 
             ListItem(
                 headlineContent = { Text("内置 ADB") },
-                supportingContent = { Text("手动配对无线调试，供 Agent 调用 adb shell") },
+                supportingContent = { Text("截图识别无线调试配对信息，并自动连接 adb shell") },
                 leadingContent = {
                     Icon(Icons.Outlined.Api, null, Modifier.size(24.dp))
                 },
                 modifier = Modifier.clickable {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(context)) {
-                        showAdbOverlayPermissionDialog = true
+                    val permission = AdbPairingScreenshotWatcher.imageReadPermission()
+                    if (permission == null ||
+                        ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
+                    ) {
+                        beginAdbScreenshotWatch()
                     } else {
-                        runCatching {
-                            context.startService(Intent(context, AdbOverlayService::class.java))
-                            Toast.makeText(context, "如果系统提示，请开启“允许在设置上重叠显示”。", Toast.LENGTH_LONG).show()
-                            context.startActivity(Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS))
-                        }.onFailure {
-                            Toast.makeText(context, "无法打开 ADB 悬浮窗：${it.message}", Toast.LENGTH_LONG).show()
-                        }
+                        adbScreenshotPermissionLauncher.launch(permission)
                     }
                 }
             )
